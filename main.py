@@ -1,69 +1,49 @@
+import nextcord
+from nextcord.ext import commands
+import dotenv
 import os
+import asyncio
 
-import discord 
-from discord import app_commands
-from discord.ext import commands
+# Load environment variables
+env_vars = dotenv.dotenv_values(".env")
+DISCORD_BOT_TOKEN = env_vars["DISCORD_BOT_TOKEN"]
+GUILD_ID = int(env_vars["GUILD_ID"])
+APPLICATION_ID = int(env_vars["APPLICATION_ID"])
 
-from dotenv import dotenv_values, load_dotenv
-import aiohttp
+# Bot & Intent config
+bot = commands.Bot(
+    command_prefix='.',
+    intents=nextcord.Intents.all(),
+    application_id=APPLICATION_ID
+)
+# Slash command to ensure bot is functional
+@bot.slash_command(name="hello", description="Hello command")
+async def hello(interaction: nextcord.Interaction):
+    await interaction.response.send_message(
+        f"Hello {interaction.user.mention}!",
+        ephemeral=True
+    )
 
-# - - - - - - - - Configs - - - - - - - -
+# - - - - - - - - Load Cogs - - - - - - - -
+def load_extensions():
+    for filename in os.listdir('./cogs'):
+        if filename.endswith('.py'):
+            bot.load_extension(f'cogs.{filename[:-3]}')
+            print(f"Loaded extension: cogs.{filename[:-3]}")
 
-
-# Bot configuration
-bot = commands.Bot(command_prefix='.', intents=discord.Intents.all())
-
-# .env configuration
-load_dotenv()
-DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-OMDB_API_KEY = os.getenv('OMDB_API_KEY')
-
-# OMDB API Config
-OMDB_API_URL = "http://www.omdbapi.com/?i=tt3896198&apikey="
-OMDB_API_POSTER_URL = "http://img.omdbapi.com/?i=tt3896198&h=600&apikey="
-
-# - - - - - - - - Events - - - - - - - -
+# - - - - - - - - Bot Start - - - - - - - -
+async def main():
+    load_extensions()
+    await bot.start(DISCORD_BOT_TOKEN)
 
 @bot.event
 async def on_ready():
-    print(f'Bot is ready and running.')
+    print('Bot is ready and running.')
     try:
-        synced = await bot.tree.sync()
-        print(f"Commands synced: {len(synced)}")
-    except Exception as e:
-        print(f"Error syncing commands:\n{e}")
+        # Sync commands to a specific guild during development
+        synced = await bot.sync_application_commands(guild_id=GUILD_ID)
+        print(f"Synced commands to the guild.")
+    except nextcord.HTTPException as e:
+        print(f"An error occurred while syncing commands: {e}")
 
-# - - - - - - - - Slash Commands - - - - - - - -
-
-@bot.tree.command(name="movie")
-@app_commands.describe(title="Movie title to search for.")
-async def say(interaction: discord.Interaction, title: str):
-    await interaction.response.send_message(f"Searching for {title}...")
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{OMDB_API_URL}{OMDB_API_KEY}&t={title}") as response:
-            movie_data = await response.json()
-            print(movie_data)  # Debugging: Print the response data
-    
-    if movie_data['Response'] == 'True':
-        poster = movie_data.get('Poster', None) #Better fetching of Movie poster vs separate API call
-        embed = discord.Embed(
-            title=movie_data['Title'],
-            description=movie_data['Plot'],
-            color=discord.Color.blue()
-        )
-        if poster and poster != 'N/A':
-            embed.set_image(url=poster)
-        await interaction.followup.send(embed=embed)
-    else:
-        await interaction.followup.send("Movie not found")
-
-
-@bot.tree.command(name="hello")
-async def hello(interaction: discord.Interaction):
-    await interaction.response.send_message(f"Hello {interaction.user.mention}!", 
-    ephemeral=True)
-
-
-# - - - - - - - - Run the Bot - - - - - - - -
-bot.run(DISCORD_BOT_TOKEN)
+asyncio.run(main())
