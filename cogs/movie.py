@@ -1,28 +1,23 @@
 # cogs/movies.py
 import os
 
-import discord
-from discord.ext import commands
-from discord import app_commands
+import nextcord
+from nextcord.ext import commands
 
 import dotenv
 import aiohttp
 
 #.env Variable for secret keys
-DISCORD_BOT_TOKEN = dotenv.dotenv_values(".env")["DISCORD_BOT_TOKEN"]
 OMDB_API_KEY = dotenv.dotenv_values(".env")["OMDB_API_KEY"]
 OMDB_API_URL = "http://www.omdbapi.com/?i=tt3896198&apikey="
-
 
 
 class MovieCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.bot.tree.add_command(self.movie)
 
-    @app_commands.command(name="movie")
-    @app_commands.describe(title="Movie title to search for.")
-    async def movie(self, interaction: discord.Interaction, title: str):
+    @nextcord.slash_command(name="movie", description="Search for a movie")
+    async def movie(self, interaction: nextcord.Interaction, title: str):
         await interaction.response.send_message(f"Searching for {title}...")
         
         async with aiohttp.ClientSession() as session:
@@ -32,20 +27,16 @@ class MovieCog(commands.Cog):
         
         if movie_data['Response'] == 'True':
             poster = movie_data.get('Poster', None)
-            embed = discord.Embed(
+            embed = nextcord.Embed(
                 title=movie_data['Title'],
                 description=movie_data['Plot'],
-                color=discord.Color.blue()
+                color=nextcord.Color.blue()
             )
             if poster and poster != 'N/A':
                 embed.set_image(url=poster)
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send("Movie not found")
-        
-    async def cog_load(self):
-        await self.bot.tree.sync()
 
-
-def setup(bot):
+async def setup(bot):
     bot.add_cog(MovieCog(bot))
