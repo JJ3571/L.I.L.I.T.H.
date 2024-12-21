@@ -1,16 +1,10 @@
 # cogs/movies.py
-import os
-
 import nextcord
 from nextcord.ext import commands
-
-import dotenv
+import os
 import aiohttp
 
-#.env Variable for secret keys
-OMDB_API_KEY = dotenv.dotenv_values(".env")["OMDB_API_KEY"]
-OMDB_API_URL = "http://www.omdbapi.com/?i=tt3896198&apikey="
-
+from server_configs.cogs_config import OMDB_API_KEY, OMDB_API_URL 
 
 class MovieCog(commands.Cog):
     def __init__(self, bot):

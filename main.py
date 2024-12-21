@@ -1,14 +1,9 @@
 import nextcord
 from nextcord.ext import commands
-import dotenv
-import os
+import os, sys
 import asyncio
 
-# Load environment variables
-env_vars = dotenv.dotenv_values(".env")
-DISCORD_BOT_TOKEN = env_vars["DISCORD_BOT_TOKEN"]
-GUILD_ID = int(env_vars["GUILD_ID"])
-APPLICATION_ID = int(env_vars["APPLICATION_ID"])
+from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
 # Bot & Intent config
 bot = commands.Bot(
@@ -16,8 +11,9 @@ bot = commands.Bot(
     intents=nextcord.Intents.all(),
     application_id=APPLICATION_ID
 )
+
 # Slash command to ensure bot is functional
-@bot.slash_command(name="hello", description="Hello command")
+@bot.slash_command(name="decembertwentieth", description="Hello command", guild_ids=[GUILD_ID])
 async def hello(interaction: nextcord.Interaction):
     await interaction.response.send_message(
         f"Hello {interaction.user.mention}!",
@@ -40,7 +36,6 @@ async def main():
 async def on_ready():
     print('Bot is ready and running.')
     try:
-        # Sync commands to a specific guild during development
         synced = await bot.sync_application_commands(guild_id=GUILD_ID)
         print(f"Synced commands to the guild.")
     except nextcord.HTTPException as e:

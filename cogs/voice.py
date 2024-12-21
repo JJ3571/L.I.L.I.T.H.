@@ -2,34 +2,17 @@ import nextcord
 from nextcord.ext import commands, tasks
 import datetime
 
+from server_configs.cogs_config import allowed_user_ids, voice_channel_ids, create_fireteam_channel_id, watch_party_channel_id, watch_party_event_id, seen_category_id, hidden_category_id
+
 # ---------- Controls ---------- #
 INACTIVITY_THRESHOLD = 10  # In seconds (1 minute)
 INACTIVITY_CHECK_INTERVAL = 10  # In seconds
 
-instant_hide_inactive = True # Set to True to instantly hide inactive channels
+instant_hide_inactive = False # Set to True to instantly hide inactive channels
 
 WATCH_PARTY_PRE_EVENT = datetime.timedelta(minutes=30)  # Time before event to show channel
 WATCH_PARTY_POST_EVENT = datetime.timedelta(hours=2, minutes=30)  # Time after event start to hide channel
 WATCH_PARTY_CHECK_INTERVAL = 5 # In minutes
-
-allowed_user_ids = [321888250136363009, 321888250136363009]  # User IDs allowed to run the tidy_up and watch party commands
-
-# ---------- Channel IDs ---------- #
-voice_channels = [
-    1301726027982180433,  # Fireteam 1
-    1301726164208844864,  # Fireteam 2
-    1301726212934209576,  # Fireteam 3
-]
-
-create_fireteam_channel_id = 421980223391924235
-watch_party_channel_id = 1301993545544241263
-watch_party_event_id = 1300919180283088916
-
-# ---------- Category IDs ---------- #
-seen_category_id = 1299278913616482305
-hidden_category_id = 1300918817278529557
-
-
 
 # ---------- VoiceCog ---------- #
 class VoiceCog(commands.Cog):
@@ -154,7 +137,7 @@ class VoiceCog(commands.Cog):
             print(f"{member.name} has joined the create_fireteam channel.")
             # Move a voice channel from hidden_category to seen_category
             moved_channel = None
-            for channel_id in voice_channels:
+            for channel_id in voice_channel_ids:
                 channel = guild.get_channel(channel_id)
                 if channel and channel.category and channel.category.id == hidden_category_id:
                     overwrites = channel.overwrites
@@ -171,7 +154,7 @@ class VoiceCog(commands.Cog):
                 print(f"Moved {member.name} to '{moved_channel.name}'.")
 
         # Handle channels becoming empty or occupied
-        if before.channel and before.channel.id in voice_channels:
+        if before.channel and before.channel.id in voice_channel_ids:
             if len(before.channel.members) == 0:
                 if instant_hide_inactive:
                     print(f"'{before.channel.name}' is now empty. Instantly hiding the channel.")
@@ -184,7 +167,7 @@ class VoiceCog(commands.Cog):
                     self.empty_voice_channels.pop(before.channel.id, None)
                 print(f"'{before.channel.name}' is no longer empty. Resetting inactivity timer.")
 
-        if after.channel and after.channel.id in voice_channels:
+        if after.channel and after.channel.id in voice_channel_ids:
             if not instant_hide_inactive:
                 self.empty_voice_channels.pop(after.channel.id, None)
             print(f"{member.name} joined '{after.channel.name}'. Resetting inactivity timer if it was set.")
@@ -263,7 +246,7 @@ class VoiceCog(commands.Cog):
             print("Categories not found during tidy_up command.")
             return
 
-        for channel_id in voice_channels:
+        for channel_id in voice_channel_ids:
             channel = guild.get_channel(channel_id)
             if channel and channel.category and channel.category.id == seen_category_id:
                 overwrites = channel.overwrites
