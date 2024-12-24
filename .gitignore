@@ -1,7 +1,7 @@
 # Personally added
-/server_configs/
+
 config.py
-voice_config.py
+cogs_config.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
