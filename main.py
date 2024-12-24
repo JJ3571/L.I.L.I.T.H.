@@ -2,7 +2,6 @@ import nextcord
 from nextcord.ext import commands
 import os
 import asyncio
-import signal
 
 from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -24,7 +23,7 @@ async def hello(interaction: nextcord.Interaction):
 # - - - - - - - - Load Cogs - - - - - - - -
 def load_extensions():
     for filename in os.listdir('./cogs'):
-        if filename.endswith('.py'):
+        if filename.endswith('.py') and filename != '__init__.py':
             bot.load_extension(f'cogs.{filename[:-3]}')
             print(f"Loaded extension: cogs.{filename[:-3]}")
 

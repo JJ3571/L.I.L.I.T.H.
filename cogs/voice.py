@@ -1,11 +1,10 @@
 import nextcord
-from nextcord import SlashOption
+from nextcord import SlashOption, ui
 from nextcord.ext import commands
-import datetime, re
-import asyncio
+import datetime, time, re, asyncio
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import allowed_user_ids, voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
+from server_configs.cogs_config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
 
 class VoiceCog(commands.Cog):
     def __init__(self, bot):
@@ -51,18 +50,18 @@ class VoiceCog(commands.Cog):
 
         # Handle channels becoming empty or occupied
         if before.channel and before.channel.id in voice_channel_ids:
-            if len(before.channel.members) == 0 and before.channel.id not in self.reserved_channels:
-                await self.hide_channel(before.channel)
+            if len(before.channel.members) == 0:
+                reservation_end_time = self.reserved_channels.get(before.channel.id)
+                if reservation_end_time and time.time() < reservation_end_time.timestamp():
+                    print(f"Channel '{before.channel.name}' is reserved until {reservation_end_time}.")
+                else:
+                    await self.hide_channel(before.channel)
+                    self.reserved_channels.pop(before.channel.id, None)
             else:
                 self.reserved_channels.pop(before.channel.id, None)
-
-        if after.channel and after.channel.id in voice_channel_ids:
-            self.reserved_channels.pop(after.channel.id, None)
-
-        # Handle league channel
-        if before.channel and before.channel.id == league_channel_id:
-            if len(before.channel.members) == 0:
-                await self.hide_channel(before.channel)
+        # Removes the reservation time when another user joins. May be useful in the future.
+        # if after.channel and after.channel.id in voice_channel_ids:
+        #     self.reserved_channels.pop(after.channel.id, None)
 
     async def hide_channel(self, channel):
         guild = channel.guild
@@ -77,13 +76,13 @@ class VoiceCog(commands.Cog):
         await channel.edit(category=hidden_category, overwrites=overwrites)
         print(f"Moved '{channel.name}' to hidden category and updated permissions.")
 
-    @nextcord.slash_command(name="tidy_up", description="Manually tidy up voice channels.")
+    @nextcord.slash_command(name="voice", description="Voice channel management commands.")
+    async def voice(self, interaction: nextcord.Interaction):
+        pass
+
+    @voice.subcommand(name="tidy_up", description="Manually tidy up voice channels.")
     async def tidy_up(self, interaction: nextcord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in allowed_user_ids:
-            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
-            print(f"{interaction.user.name} attempted to use tidy_up without permission.")
-            return
 
         guild = interaction.guild
         if guild.id != GUILD_ID:
@@ -104,7 +103,7 @@ class VoiceCog(commands.Cog):
         await interaction.followup.send("Voice channels have been tidied up.", ephemeral=True)
         print(f"{interaction.user.name} ran tidy_up command.")
 
-    @nextcord.slash_command(name="reserve_channel", description="Reserve a voice channel for a set amount of time.")
+    @voice.subcommand(name="reserve_channel", description="Reserve a voice channel for a set amount of time.")
     async def reserve_channel(
         self,
         interaction: nextcord.Interaction,
@@ -116,10 +115,6 @@ class VoiceCog(commands.Cog):
         )
     ):
         await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in allowed_user_ids:
-            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
-            print(f"{interaction.user.name} attempted to use reserve_channel without permission.")
-            return
 
         guild = interaction.guild
         if guild.id != GUILD_ID:
@@ -132,10 +127,10 @@ class VoiceCog(commands.Cog):
             return
 
         if unit == "minutes":
-            reservation_time = datetime.datetime.utcnow() + datetime.timedelta(minutes=duration)
+            reservation_time = datetime.datetime.now() + datetime.timedelta(minutes=duration)
             delay = duration * 60
         elif unit == "hours":
-            reservation_time = datetime.datetime.utcnow() + datetime.timedelta(hours=duration)
+            reservation_time = datetime.datetime.now() + datetime.timedelta(hours=duration)
             delay = duration * 3600
         else:
             await interaction.followup.send("Invalid time unit. Use 'minutes' or 'hours'.", ephemeral=True)
@@ -155,13 +150,9 @@ class VoiceCog(commands.Cog):
             await channel.edit(category=hidden_category)
             print(f"Moved channel {channel.name} to hidden category after reservation time.")
 
-    @nextcord.slash_command(name="create_temp_channel", description="Create a temporary voice channel with a custom name.")
+    @voice.subcommand(name="create_temp_channel", description="Create a temporary voice channel with a custom name.")
     async def create_temp_channel(self, interaction: nextcord.Interaction, name: str):
         await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in allowed_user_ids:
-            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
-            print(f"{interaction.user.name} attempted to use create_temp_channel without permission.")
-            return
 
         if not re.match(r'^[\w-]+$', name):
             await interaction.followup.send("Invalid channel name. Use only letters, numbers, hyphens, and underscores.", ephemeral=True)
@@ -190,13 +181,9 @@ class VoiceCog(commands.Cog):
                 print(f"Deleted temporary voice channel: {name}")
                 break
 
-    @nextcord.slash_command(name="league", description="Pull the league channel out of the hidden category.")
+    @voice.subcommand(name="league", description="Pull the league channel out of the hidden category.")
     async def league(self, interaction: nextcord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in allowed_user_ids:
-            await interaction.followup.send("You do not have permission to use this command.", ephemeral=True)
-            print(f"{interaction.user.name} attempted to use league without permission.")
-            return
 
         guild = interaction.guild
         if guild.id != GUILD_ID:
@@ -217,6 +204,52 @@ class VoiceCog(commands.Cog):
         await league_channel.edit(category=seen_category, overwrites=overwrites)
         await interaction.followup.send("League channel has been moved to the seen category.", ephemeral=True)
         print(f"League channel '{league_channel.name}' moved to seen category.")
+
+    @voice.subcommand(name="select_channel", description="Select a channel to receive from the hidden category.")
+    async def select_channel(self, interaction: nextcord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if guild.id != GUILD_ID:
+            return
+
+        hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
+        if not hidden_category:
+            await interaction.followup.send("Hidden category not found.", ephemeral=True)
+            return
+
+        class ChannelSelectView(nextcord.ui.View):
+            def __init__(self, cog, interaction):
+                super().__init__(timeout=60)
+                self.cog = cog
+                self.interaction = interaction
+
+            async def on_timeout(self):
+                await self.interaction.followup.send("Channel selection timed out.", ephemeral=True)
+
+            @nextcord.ui.button(label="Cancel", style=nextcord.ButtonStyle.danger)
+            async def cancel(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+                await interaction.response.send_message("Channel selection cancelled.", ephemeral=True)
+                self.stop()
+
+        view = ChannelSelectView(self, interaction)
+
+        for channel_id in voice_channel_ids:
+            channel = guild.get_channel(channel_id)
+            if channel and channel.category and channel.category.id == hidden_category_id:
+                button = nextcord.ui.Button(label=channel.name, style=nextcord.ButtonStyle.primary)
+
+                async def button_callback(interaction: nextcord.Interaction, channel=channel, view=view):
+                    overwrites = channel.overwrites
+                    overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True)
+                    await channel.edit(category=nextcord.utils.get(guild.categories, id=seen_category_id), overwrites=overwrites)
+                    await interaction.response.send_message(f"Moved '{channel.name}' to seen category.", ephemeral=True)
+                    view.stop()
+
+                button.callback = button_callback
+                view.add_item(button)
+
+        await interaction.followup.send("Select a channel to receive from the hidden category:", view=view, ephemeral=True)
 
 async def setup(bot):
     bot.add_cog(VoiceCog(bot))
