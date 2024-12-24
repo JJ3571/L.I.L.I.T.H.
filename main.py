@@ -1,7 +1,8 @@
 import nextcord
 from nextcord.ext import commands
-import os, sys
+import os
 import asyncio
+import signal
 
 from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -30,7 +31,14 @@ def load_extensions():
 # - - - - - - - - Bot Start - - - - - - - -
 async def main():
     load_extensions()
-    await bot.start(DISCORD_BOT_TOKEN)
+
+    async def close_bot():
+        await bot.close()
+
+    try:
+        await bot.start(DISCORD_BOT_TOKEN)
+    except KeyboardInterrupt:
+        await close_bot()
 
 @bot.event
 async def on_ready():
@@ -41,4 +49,8 @@ async def on_ready():
     except nextcord.HTTPException as e:
         print(f"An error occurred while syncing commands: {e}")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot has been stopped.")
