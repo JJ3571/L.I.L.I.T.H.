@@ -71,6 +71,7 @@ class WatchPartyCog(commands.Cog):
         seen_category = guild.get_channel(seen_category_id)
 
         if watch_party_channel and seen_category:
+            await interaction.response.defer()
             await watch_party_channel.edit(category=seen_category)
             self.reservation_end_time = datetime.datetime.now(pytz.timezone('US/Pacific')) + WATCH_PARTY_AUTO_HIDE_TIMEOUT
             readable_time = self.reservation_end_time.strftime("%m/%d at %I:%M%p PST")
@@ -78,7 +79,7 @@ class WatchPartyCog(commands.Cog):
             overwrites = watch_party_channel.overwrites
             overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True)
             await watch_party_channel.edit(overwrites=overwrites)
-            await interaction.response.send_message(f"{watch_party_channel.name} reserved until {readable_time}.")
+            await interaction.followup.send(f"{watch_party_channel.name} reserved until {readable_time}.")
         else:
             await interaction.response.send_message("Failed to move the channel. Please check the configuration.")
 
@@ -89,9 +90,10 @@ class WatchPartyCog(commands.Cog):
         hidden_category = guild.get_channel(hidden_category_id)
 
         if watch_party_channel and hidden_category:
+            await interaction.response.defer()
             await watch_party_channel.edit(category=hidden_category)
             self.reservation_end_time = None
-            await interaction.response.send_message(f"{watch_party_channel.name} has been hidden.")
+            await interaction.followup.send(f"{watch_party_channel.name} has been hidden.")
         else:
             await interaction.response.send_message("Failed to move the channel. Please check the configuration.")
 
@@ -111,7 +113,6 @@ class WatchPartyCog(commands.Cog):
             return
 
         overwrites = channel.overwrites
-        # Deny @everyone the permission to view the channel
         overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=False)
         await channel.edit(category=hidden_category, overwrites=overwrites)
         print(f"Moved '{channel.name}' to hidden category and updated permissions.")
