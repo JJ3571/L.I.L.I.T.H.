@@ -2,6 +2,9 @@
 
 config.py
 cogs_config.py
+economy.db
+waterboard.db
+pokemon.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

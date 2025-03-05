@@ -2,6 +2,7 @@ import nextcord
 from nextcord import SlashOption, ui
 from nextcord.ext import commands
 import datetime, time, re, asyncio
+import unicodedata
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
@@ -80,6 +81,8 @@ class VoiceCog(commands.Cog):
     async def voice(self, interaction: nextcord.Interaction):
         pass
 
+    import unicodedata
+
     @voice.subcommand(name="tidy_up", description="Manually tidy up voice channels.")
     async def tidy_up(self, interaction: nextcord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -99,6 +102,12 @@ class VoiceCog(commands.Cog):
             channel = guild.get_channel(channel_id)
             if channel and channel.category and channel.category.id == seen_category_id:
                 await self.hide_channel(channel)
+
+        for channel in guild.voice_channels:
+            if "💧" in channel.name:
+                print(f"Deleting channel: {channel.name.encode('ascii', 'ignore').decode('ascii')}")  # Debug print
+                await channel.delete()
+                print(f"Deleted temporary voice channel: {channel.name.encode('ascii', 'ignore').decode('ascii')}")
 
         await interaction.followup.send("Voice channels have been tidied up.", ephemeral=True)
         print(f"{interaction.user.name} ran tidy_up command.")
