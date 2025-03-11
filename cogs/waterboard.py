@@ -7,6 +7,8 @@ import sqlite3
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import seen_category_id, bot_spam_id
 
+from cogs.economy import Economy
+
 class WaterboardCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -73,8 +75,20 @@ class WaterboardCog(commands.Cog):
         current_time = time.time()
         last_waterboarded_time = self.get_last_waterboarded_time(user.id)
         if last_waterboarded_time and current_time - last_waterboarded_time < 60:
-            await interaction.response.send_message(f"{user.mention} has been waterboarded recently. Please wait before trying again.")
-            return
+            # User is on cooldown, check if they want to purchase usage
+            cost = self.waterboard_cost * self.cooldown_multiplier
+            balance = self.economy_cog.get_balance(interaction.user.id)
+            if balance < cost:
+                await interaction.response.send_message(f"{user.mention} has been waterboarded recently. You need {cost} coins to bypass the cooldown.")
+                return
+
+            # Deduct the cost and double the cost for the next usage
+            self.economy_cog.update_balance(interaction.user.id, -cost)
+            self.waterboard_cost *= self.cooldown_multiplier
+            await interaction.response.send_message(f"You have purchased a waterboard usage for {cost} coins. The next usage will cost {self.waterboard_cost} coins.")
+        else:
+            # Reset the cost if the user is not on cooldown
+            self.waterboard_cost = 100
 
         self.update_last_waterboarded_time(user.id, current_time)
         await interaction.response.defer(ephemeral=False)

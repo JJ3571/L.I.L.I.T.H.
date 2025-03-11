@@ -1,0 +1,105 @@
+import nextcord
+from nextcord.ext import commands
+from mtgsdk import Card
+import requests
+import re
+
+class TCG(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @nextcord.slash_command(name="mtg", description="Magic: The Gathering card lookup")
+    async def mtg_cardlookup(self, interaction: nextcord.Interaction, card_name: str):
+        await interaction.response.defer()
+        cards = Card.where(name=card_name).all()
+        if not cards:
+            await interaction.followup.send(f"No cards found with the name '{card_name}'.")
+            return
+
+        unique_cards = {card.name: card for card in cards}.values()
+        if len(unique_cards) == 1:
+            await self.send_card_embed(interaction, list(unique_cards)[0])
+        else:
+            options = [nextcord.SelectOption(label=card.name, value=card.name) for card in unique_cards]
+            select = nextcord.ui.Select(placeholder="Select a card", options=options)
+            select.callback = self.create_name_select_callback(interaction, cards)
+            view = nextcord.ui.View()
+            view.add_item(select)
+            await interaction.followup.send("Multiple cards found. Please select one:", view=view)
+
+    def create_name_select_callback(self, interaction, cards):
+        async def callback(select_interaction):
+            selected_name = select_interaction.data['values'][0]
+            filtered_cards = [card for card in cards if card.name == selected_name]
+            await self.send_card_embed(interaction, filtered_cards[0])
+        return callback
+
+    async def send_card_embed(self, interaction, card):
+        embed = nextcord.Embed(title=card.name, description=card.text, color=0x1F8B4C)
+        image_url = self.get_card_image_url(card.name)
+        if image_url:
+            embed.set_image(url=image_url)
+        embed.add_field(name="Set", value=card.set_name, inline=True)
+        embed.add_field(name="Type", value=card.type, inline=True)
+        embed.add_field(name="Mana Cost", value=self.format_mana_cost(card.mana_cost), inline=True)
+        embed.add_field(name="Power/Toughness", value=f"{card.power}/{card.toughness}", inline=True)
+
+        await interaction.followup.send(embed=embed)
+
+    def format_mana_cost(self, mana_cost):
+        if not mana_cost:
+            return "None"
+        mana_symbols = {
+            "W": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=W&type=symbol",
+            "U": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=U&type=symbol",
+            "B": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=B&type=symbol",
+            "R": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=R&type=symbol",
+            "G": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=G&type=symbol",
+            "C": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=C&type=symbol",
+            "X": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=X&type=symbol",
+            "Y": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=Y&type=symbol",
+            "Z": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=Z&type=symbol",
+            "S": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=S&type=symbol",
+            "0": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=0&type=symbol",
+            "1": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=1&type=symbol",
+            "2": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=2&type=symbol",
+            "3": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=3&type=symbol",
+            "4": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=4&type=symbol",
+            "5": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=5&type=symbol",
+            "6": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=6&type=symbol",
+            "7": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=7&type=symbol",
+            "8": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=8&type=symbol",
+            "9": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=9&type=symbol",
+            "10": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=10&type=symbol",
+            "11": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=11&type=symbol",
+            "12": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=12&type=symbol",
+            "13": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=13&type=symbol",
+            "14": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=14&type=symbol",
+            "15": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=15&type=symbol",
+            "16": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=16&type=symbol",
+            "17": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=17&type=symbol",
+            "18": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=18&type=symbol",
+            "19": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=19&type=symbol",
+            "20": "https://gatherer.wizards.com/Handlers/Image.ashx?size=small&name=20&type=symbol",
+        }
+        formatted_cost = ""
+        for symbol in re.findall(r'\{(.*?)\}', mana_cost):
+            if symbol in mana_symbols:
+                formatted_cost += f"[![{symbol}]({mana_symbols[symbol]})]({mana_symbols[symbol]}) "
+            else:
+                formatted_cost += f"{symbol} "
+        return formatted_cost.strip()
+
+    def get_card_image_url(self, card_name):
+        headers = {
+            "User-Agent": "DiscordBot (https://your-bot-url.com, v0.1)",
+            "Accept": "application/json"
+        }
+        response = requests.get(f"https://api.scryfall.com/cards/named?exact={card_name}", headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("image_uris", {}).get("normal")
+        return None
+
+def setup(bot):
+    bot.add_cog(TCG(bot))

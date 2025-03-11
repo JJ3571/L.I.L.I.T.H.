@@ -1,5 +1,5 @@
 import nextcord
-from nextcord.ext import commands, tasks
+from nextcord.ext import commands, tasks, menus
 import sqlite3
 import time, datetime
 import random
@@ -59,7 +59,7 @@ class Economy(commands.Cog):
         result = cursor.fetchall()
         conn.close()
         return result
-    
+
     @tasks.loop(minutes=1)
     async def backup_task(self):
         now = datetime.now(pytz.timezone('US/Pacific'))
@@ -131,7 +131,6 @@ class Economy(commands.Cog):
                         await member.send("You were rewarded 1000 coins for attending movie night!")
                     except nextcord.HTTPException:
                         print(f"Failed to send DM to {member.name}")
-
 
     @tasks.loop(seconds=60)
     async def reward_users(self):
@@ -207,21 +206,37 @@ class Economy(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    class LeaderboardSource(menus.ListPageSource):
+        def __init__(self, data):
+            super().__init__(data, per_page=10)
+
+        async def format_page(self, menu, entries):
+            embed = nextcord.Embed(title="Leaderboard", color=nextcord.Color.gold())
+            description = "\n".join(entries)
+            embed.description = description
+            return embed
+
     @nextcord.slash_command(name="leaderboard", description="Display the leaderboard of user balances")
     async def leaderboard_command(self, interaction: nextcord.Interaction):
-        balances = self.get_all_balances()
-        if not balances:
-            await interaction.response.send_message("No users found in the leaderboard.")
-            return
+        try:
+            balances = self.get_all_balances()
+            if not balances:
+                await interaction.response.send_message("No users found in the leaderboard.")
+                return
 
-        leaderboard = []
-        for rank, (user_id, balance) in enumerate(balances, start=1):
-            user = await self.bot.fetch_user(user_id)
-            leaderboard.append(f"{rank}. {user.display_name}: {balance} coins")
+            leaderboard = []
+            for rank, (user_id, balance) in enumerate(balances, start=1):
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    leaderboard.append(f"{rank}. {user.display_name}: {balance} coins")
+                except Exception as e:
+                    print(f"Error fetching user {user_id}: {e}")
 
-        embed = nextcord.Embed(title="Leaderboard", description="\n".join(leaderboard[:10]), color=nextcord.Color.gold())
-        await interaction.response.send_message(embed=embed)
-
+            pages = menus.MenuPages(source=self.LeaderboardSource(leaderboard), clear_reactions_after=True)
+            await pages.start(interaction)
+        except Exception as e:
+            print(f"Error in leaderboard_command: {e}")
+            await interaction.response.send_message("An error occurred while fetching the leaderboard.", ephemeral=True)
 
     @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
     async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
@@ -309,10 +324,6 @@ class BlackjackView(nextcord.ui.View):
 
         self.stop()
 
-
-    async def setup_hook(self) -> None:
-        await self.bot.sync_all_application_commands()
-
 class AdminGiveView(nextcord.ui.View):
     def __init__(self, cog, member, amount):
         super().__init__()
@@ -339,6 +350,5 @@ class AdminGiveView(nextcord.ui.View):
         self.stop()
 
 async def setup(bot):
-    bot.add_cog(Economy(bot))
+    await bot.add_cog(Economy(bot))
     print("EconomyCog has been added to the bot.")
-
