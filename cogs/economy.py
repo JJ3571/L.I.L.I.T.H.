@@ -1,11 +1,11 @@
 import nextcord
-from nextcord.ext import commands, tasks, menus
+from nextcord.ext import commands, tasks
 import sqlite3
 import time, datetime
 import random
+import pytz
 
 from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id
-
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -58,7 +58,9 @@ class Economy(commands.Cog):
         cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
         result = cursor.fetchall()
         conn.close()
-        return result
+        
+        balances = {user_id: balance for user_id, balance in result} # Convert list into tuples for slash leaderboard
+        return balances
 
     @tasks.loop(minutes=1)
     async def backup_task(self):
@@ -206,15 +208,43 @@ class Economy(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
-    class LeaderboardSource(menus.ListPageSource):
-        def __init__(self, data):
-            super().__init__(data, per_page=10)
+    class LeaderboardPageButton(nextcord.ui.Button):
+        def __init__(self, label, view, direction):
+            super().__init__(label=label, style=nextcord.ButtonStyle.primary)
+            self.view = view
+            self.direction = direction
 
-        async def format_page(self, menu, entries):
-            embed = nextcord.Embed(title="Leaderboard", color=nextcord.Color.gold())
-            description = "\n".join(entries)
-            embed.description = description
-            return embed
+        async def callback(self, interaction: nextcord.Interaction):
+            self.view.current_page += self.direction
+            self.view.update_buttons()
+            await self.view.send_page(interaction)
+
+    class LeaderboardView(nextcord.ui.View):
+        def __init__(self, bot, leaderboard):
+            super().__init__()
+            self.bot = bot
+            self.leaderboard = leaderboard
+            self.current_page = 0
+            self.max_page = (len(leaderboard) - 1) // 5
+            self.update_buttons()
+
+        def update_buttons(self):
+            self.clear_items()
+            if self.current_page > 0:
+                self.add_item(Economy.LeaderboardPageButton(label="Previous", view=self, direction=-1))
+            if self.current_page < self.max_page:
+                self.add_item(Economy.LeaderboardPageButton(label="Next", view=self, direction=1))
+
+        async def send_page(self, interaction):
+            start = self.current_page * 5
+            end = start + 5
+            page = self.leaderboard[start:end]
+            description = "\n".join([f"{user}: {points} points" for user, points in page])
+            embed = nextcord.Embed(title="Leaderboard", description=description,color=nextcord.Color.blue())
+            if interaction.response.is_done():
+                await interaction.edit_original_message(embed=embed, view=self)
+            else:
+                await interaction.response.send_message(embed=embed, view=self)
 
     @nextcord.slash_command(name="leaderboard", description="Display the leaderboard of user balances")
     async def leaderboard_command(self, interaction: nextcord.Interaction):
@@ -225,18 +255,20 @@ class Economy(commands.Cog):
                 return
 
             leaderboard = []
-            for rank, (user_id, balance) in enumerate(balances, start=1):
+            for user_id, balance in balances.items():
                 try:
                     user = await self.bot.fetch_user(user_id)
-                    leaderboard.append(f"{rank}. {user.display_name}: {balance} coins")
+                    leaderboard.append((user.display_name, balance))
                 except Exception as e:
                     print(f"Error fetching user {user_id}: {e}")
 
-            pages = menus.MenuPages(source=self.LeaderboardSource(leaderboard), clear_reactions_after=True)
-            await pages.start(interaction)
+            leaderboard.sort(key=lambda x: x[1], reverse=True)
+            view = self.LeaderboardView(self.bot, leaderboard)
+            await view.send_page(interaction)
         except Exception as e:
             print(f"Error in leaderboard_command: {e}")
             await interaction.response.send_message("An error occurred while fetching the leaderboard.", ephemeral=True)
+
 
     @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
     async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
@@ -350,5 +382,5 @@ class AdminGiveView(nextcord.ui.View):
         self.stop()
 
 async def setup(bot):
-    await bot.add_cog(Economy(bot))
+    bot.add_cog(Economy(bot))
     print("EconomyCog has been added to the bot.")

@@ -5,6 +5,7 @@ cogs_config.py
 economy.db
 waterboard.db
 pokemon.db
+birthday.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
