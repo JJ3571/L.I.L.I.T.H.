@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import pytz
 
-from server_configs.cogs_config import admin_user_ids, birthday_channel_id, birthday_role_id
+from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id
 
 class Birthday(commands.Cog):
     def __init__(self, bot):
@@ -30,83 +30,98 @@ class Birthday(commands.Cog):
         conn.commit()
         conn.close()
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=10)
     async def check_birthdays(self):
         now = datetime.now(pytz.timezone('US/Eastern'))
-        if now.hour >= 8:
+        print(f"--------------------------------")
+        print(f"[DEBUG] Current time: {now}")
+        if now.hour >= 4:
+            print("[DEBUG] Hour is past 4 AM, checking birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             today = now.strftime("%m-%d")
+            print(f"[DEBUG] Today's date: {today}")
             c.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (today,))
             users = c.fetchall()
+            print(f"[DEBUG] Users with birthdays today: {users}")
+
+            channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
+            if channel is None:
+                print("[ERROR] Birthday channel not found.")
+                return
 
             for user in users:
                 user_id = user[0]
                 c.execute("SELECT message_id FROM birthday_messages WHERE user_id = ? AND strftime('%m-%d', birthday) = ?", (user_id, today))
                 message_exists = c.fetchone()
+                print(f"[DEBUG] Message exists for user {user_id}: {message_exists}")
                 if not message_exists:
                     member = channel.guild.get_member(int(user_id))
                     if member:
+                        print(f"[DEBUG] Member found: {member}")
                         embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=0x00ff00)
-                        view = BirthdayButtonView()
-                        channel = self.bot.get_channel(birthday_channel_id)
+                        view = BirthdayButtonView(self.bot)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
                         await member.add_roles(role)
                         # Store the message ID and user ID for cleanup
                         self.store_birthday_message(message.id, user_id)
+                        print(f"[DEBUG] Birthday message sent for user {user_id}")
+                    else:
+                        print(f"[ERROR] Member not found for user ID {user_id}")
             conn.close()
-
-    # Debugging function to check birthdays at a specific time
-    # @tasks.loop(minutes=1)
-    # async def check_birthdays_debug(self):
-    #     now = datetime.now(pytz.timezone('US/Eastern'))
-    #     # Specific hr:m for debug testing!
-    #     debug_hour = 2
-    #     debug_minute = 50
-    #     if now.hour >= debug_hour and now.minute >= debug_minute:
-    #         conn = sqlite3.connect(self.db_path)
-    #         c = conn.cursor()
-    #         today = now.strftime("%m-%d")
-    #         c.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (today,))
-    #         users = c.fetchall()
-    #         conn.close()
-
-    #         if users:
-    #             channel = self.bot.get_channel(birthday_channel_id)
-    #             for user in users:
-    #                 member = channel.guild.get_member(int(user[0]))
-    #                 if member:
-    #                     embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=0x00ff00)
-    #                     message = await channel.send(embed=embed)
-    #                     role = channel.guild.get_role(birthday_role_id)
-    #                     await member.add_roles(role)
-    #                     # Store the message ID and user ID for cleanup
-    #                     self.store_birthday_message(message.id, user[0])
+        else:
+            print("[DEBUG] Hour is before 4 AM, skipping birthday check.")
+        print(f"--------------------------------")
 
 
-    @tasks.loop(minutes=15)
+    @tasks.loop(seconds=10)
     async def cleanup_birthdays(self):
-        now = datetime.now(pytz.timezone('US/Pacific'))
-        if now.hour == 0 and now.minute < 15:
+        await self.bot.wait_until_ready()  # Wait until the bot is fully ready
+        now = datetime.now(pytz.timezone('US/Eastern'))
+        print(f"--------------------------------")
+        print(f"[DEBUG] Current time: {now}")
+        if now.hour >= 4:
+            print("[DEBUG] Hour is past 4 AM, cleaning up birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
-            yesterday = (now - timedelta(days=1)).strftime("%m-%d")
-            c.execute("SELECT user_id, message_id FROM birthday_messages WHERE strftime('%m-%d', birthday) = ?", (yesterday,))
+            today = now.strftime("%m-%d")
+            print(f"[DEBUG] Today's date: {today}")
+            c.execute("SELECT user_id, message_id FROM birthday_messages WHERE strftime('%m-%d', birthday) < ?", (today,))
             messages = c.fetchall()
-            conn.close()
+            print(f"[DEBUG] Messages to clean up: {messages}")
 
-            if messages:
-                channel = self.bot.get_channel(birthday_channel_id)
-                for user_id, message_id in messages:
-                    member = channel.guild.get_member(int(user_id))
-                    if member:
-                        role = channel.guild.get_role(birthday_role_id)
-                        await member.remove_roles(role)
-                    message = await channel.fetch_message(int(message_id))
-                    await message.delete()
-                # Remove the entries from the database
-                self.remove_birthday_messages(yesterday)
+            channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
+            if channel is None:
+                print("[ERROR] Birthday channel not found.")
+                return
+
+            for message in messages:
+                user_id, message_id = message
+                try:
+                    msg = await channel.fetch_message(message_id)
+                    await msg.delete()
+                    print(f"[DEBUG] Deleted message ID {message_id} for user ID {user_id}")
+                except nextcord.NotFound:
+                    print(f"[ERROR] Message ID {message_id} not found in channel.")
+
+                member = channel.guild.get_member(int(user_id))
+                if member:
+                    role = channel.guild.get_role(birthday_role_id)
+                    await member.remove_roles(role)
+                    print(f"[DEBUG] Removed birthday role from user ID {user_id}")
+                else:
+                    print(f"[ERROR] Member not found for user ID {user_id}")
+
+                c.execute("DELETE FROM birthday_messages WHERE message_id = ?", (message_id,))
+                print(f"[DEBUG] Deleted entry from database for message ID {message_id}")
+
+            conn.commit()
+            conn.close()
+        else:
+            print("[DEBUG] Hour is before 4 AM, skipping birthday cleanup.")
+        print(f"--------------------------------")
+        
 
     def store_birthday_message(self, message_id, user_id):
         conn = sqlite3.connect(self.db_path)
@@ -179,12 +194,18 @@ class Birthday(commands.Cog):
                 await interaction.response.send_message("No upcoming birthdays found.", ephemeral=True)
 
 class BirthdayButtonView(nextcord.ui.View):
-    def __init__(self):
+    def __init__(self, bot):
         super().__init__(timeout=None)
+        self.bot = bot
 
     @nextcord.ui.button(label="Send Emoji", style=nextcord.ButtonStyle.primary)
     async def send_emoji(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        await interaction.response.send_message("🎉", ephemeral=False)
+        reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)
+        if reaction_channel:
+            await reaction_channel.send("🎉")
+            await interaction.response.send_message("Emoji sent!", ephemeral=True)
+        else:
+            await interaction.response.send_message("Reaction channel not found.", ephemeral=True)
 
 class AddBirthdayModal(nextcord.ui.Modal):
     def __init__(self, db_path, username, user_id):

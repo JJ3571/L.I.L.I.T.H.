@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import re
 import requests
 
+from server_configs.cogs_config import MANA_SYMBOLS
 class TCG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -58,12 +59,10 @@ class TCG(commands.Cog):
 
         embed = self.create_card_embed(card)
         if interaction.response.is_done():
-            original_message = await interaction.original_response()
-            await original_message.edit(embed=embed, view=None)
+            original_message = await interaction.followup.send(embed=embed)
         else:
-            await interaction.response.send_message(embed=embed) # Removed view=None
-
-            original_message = await interaction.original_response()
+            await interaction.response.send_message(embed=embed)
+            original_message = await interaction.followup.send(embed=embed)
 
         sets = self.get_card_sets(card)
         if sets:
@@ -127,11 +126,11 @@ class TCG(commands.Cog):
         image_url = card.get("image_uris", {}).get("border_crop")
         if image_url:
             embed.set_image(url=image_url)
-        embed.add_field(name="Set", value=card['set_name'], inline=True)
-        embed.add_field(name="Type", value=card['type_line'], inline=True)
         embed.add_field(name="Mana Cost", value=self.format_mana(card.get('mana_cost')), inline=True)
+        embed.add_field(name="Type", value=card['type_line'], inline=True)
         if 'power' in card and 'toughness' in card:
             embed.add_field(name="Power/Toughness", value=f"{card['power']}/{card['toughness']}", inline=True)
+        embed.set_footer(text=f"Set: {card['set_name']}")
         return embed
 
 
@@ -154,58 +153,27 @@ class TCG(commands.Cog):
         image_url = card.get("image_uris", {}).get("border_crop")
         if image_url:
             embed.set_image(url=image_url)
-        embed.add_field(name="Set", value=card['set_name'], inline=True)
-        embed.add_field(name="Type", value=card['type_line'], inline=True)
         embed.add_field(name="Mana Cost", value=self.format_mana(card.get('mana_cost')), inline=True)
+        embed.add_field(name="Type", value=card['type_line'], inline=True)
         if 'power' in card and 'toughness' in card:
             embed.add_field(name="Power/Toughness", value=f"{card['power']}/{card['toughness']}", inline=True)
-
+        embed.set_footer(text=f"Set: {card['set_name']}")
+        
         await interaction.followup.send(embed=embed)
 
     def format_mana(self, text):
         if not text:
             return "None"
-        mana_symbols = {
-            "W": 1349143103499669534,  # Replace with the actual emoji ID for W
-            "U": 1348522558865145938,  # Replace with the actual emoji ID for U
-            "B": 1349141485421072534,  # Replace with the actual emoji ID for B
-            "R": 1349142442179559467,  # Replace with the actual emoji ID for R
-            "G": 1349142116856496289,  # Replace with the actual emoji ID for G
-            "C": 1349140792358338731,  # Replace with the actual emoji ID for C
-            "X": 1349144292677128314,  # Replace with the actual emoji ID for X
-            "Y": 1349144384272207974,  # Replace with the actual emoji ID for Y
-            "Z": 1349144404870303785,  # Replace with the actual emoji ID for Z
-            "S": 1349142680109580368,  # Replace with the actual emoji ID for S
-            "0": 1349140870581981244,  # Replace with the actual emoji ID for 0
-            "1": 1349140885790654594,  # Replace with the actual emoji ID for 1
-            "2": 1349140901406052372,  # Replace with the actual emoji ID for 2
-            "3": 1349141008767516785,  # Replace with the actual emoji ID for 3
-            "4": 1349141024055889920,  # Replace with the actual emoji ID for 4
-            "5": 1349141037469270026,  # Replace with the actual emoji ID for 5
-            "6": 1349141052690530455,  # Replace with the actual emoji ID for 6
-            "7": 1349141067093512274,  # Replace with the actual emoji ID for 7
-            "8": 1349141082734071909,  # Replace with the actual emoji ID for 8
-            "9": 1349141096059502653,  # Replace with the actual emoji ID for 9
-            "10": 12365,  # Replace with the actual emoji ID for 10
-            "11": 12366,  # Replace with the actual emoji ID for 11
-            "12": 12367,  # Replace with the actual emoji ID for 12
-            "13": 12368,  # Replace with the actual emoji ID for 13
-            "14": 12369,  # Replace with the actual emoji ID for 14
-            "15": 12370,  # Replace with the actual emoji ID for 15
-            "16": 12371,  # Replace with the actual emoji ID for 16
-            "17": 12372,  # Replace with the actual emoji ID for 17
-            "18": 12373,  # Replace with the actual emoji ID for 18
-            "19": 12374,  # Replace with the actual emoji ID for 19
-            "20": 12375,  # Replace with the actual emoji ID for 20
-            "q": 1349142403814133894,
-            "t": 1349142699688857684,
-        }
+
         def replace_symbol(match):
             symbol = match.group(1)
-            if symbol in mana_symbols:
-                emoji = self.bot.get_emoji(mana_symbols[symbol])
-                return str(emoji)
+            if symbol in MANA_SYMBOLS:
+                return MANA_SYMBOLS[symbol]
             return match.group(0)
+
+        if text is None:
+            print("Warning: Mana cost text is None")
+            return "None"
 
         return re.sub(r'\{(.*?)\}', replace_symbol, text)
 
