@@ -6,7 +6,6 @@ import sqlite3
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import seen_category_id, bot_spam_id
-
 from cogs.economy import Economy
 
 class WaterboardCog(commands.Cog):
@@ -81,28 +80,36 @@ class WaterboardCog(commands.Cog):
             cost = self.waterboard_cost * self.cooldown_multiplier
             economy_cog = self.bot.get_cog('Economy')
             if not economy_cog:
-                await interaction.response.send_message("Economy cog is not available.", ephemeral=True)
+                embed = nextcord.Embed(title="Error", description="Economy cog is not available.", color=nextcord.Color.red())
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             balance = economy_cog.get_user_balance(interaction.user.id)
             if balance < cost:
-                await interaction.response.send_message(f"{user.mention} has been waterboarded recently. You need {cost} coins to bypass the cooldown.")
+                embed = nextcord.Embed(title="Cooldown", description=f"{user.mention} has been waterboarded recently. You need {cost} coins to bypass the cooldown.", color=nextcord.Color.orange())
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
 
             # Deduct the cost and double the cost for the next usage
-            economy_cog.update_balance(interaction.user.id, -cost)
+            economy_cog.deduct_user_balance(interaction.user.id, cost)
             self.waterboard_cost *= self.cooldown_multiplier
-            await interaction.response.send_message(f"You have purchased a waterboard usage for {cost} coins. The next usage will cost {self.waterboard_cost} coins.")
+            embed = nextcord.Embed(title="Waterboard Purchased", description=f"You have purchased a waterboard for {cost} coins. The next usage will cost {self.waterboard_cost * 2} coins.", color=nextcord.Color.green())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             # Reset the cost if the user is not on cooldown
             self.waterboard_cost = 100
 
         self.update_last_waterboarded_time(user.id, current_time)
-        await interaction.response.defer(ephemeral=False)
+        
+        # Defer the response only if no response has been sent yet
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=False)
+        
         guild = interaction.guild
         seen_category = nextcord.utils.get(guild.categories, id=seen_category_id)
         if not seen_category:
-            await interaction.followup.send("Seen category not found.", ephemeral=False)
+            embed = nextcord.Embed(title="Error", description="Seen category not found.", color=nextcord.Color.red())
+            await interaction.followup.send(embed=embed, ephemeral=False)
             return
 
         # Start the waterboarding process in a separate task
@@ -176,10 +183,14 @@ class WaterboardCog(commands.Cog):
 
             # Ensure the follow-up message is sent even if an error occurs
             try:
-                await interaction.followup.send(f"{user.name} was waterboarded by {interaction.user.name}.")
-                await bot_spam_channel.send(f"{user.name} was waterboarded by {interaction.user.name}.")
+                embed = nextcord.Embed(
+                    description=f"{user.mention} was waterboarded by {interaction.user.mention}.",
+                    color=nextcord.Color.blue()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                await bot_spam_channel.send(embed=embed)
             except nextcord.errors.NotFound:
-                print(f"Interaction not found for follow-up message for {user.name}.")
+                print(f"Error: Interaction not found for follow-up message for {user.name}.")
 
             asyncio.create_task(self.delete_temp_channels())
 

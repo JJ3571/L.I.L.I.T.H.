@@ -60,7 +60,7 @@ class Birthday(commands.Cog):
                     member = channel.guild.get_member(int(user_id))
                     if member:
                         print(f"[DEBUG] Member found: {member}")
-                        embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=0x00ff00)
+                        embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=nextcord.Color.blue)
                         view = BirthdayButtonView(self.bot)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
@@ -203,7 +203,7 @@ class BirthdayButtonView(nextcord.ui.View):
     async def send_emoji(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await self.handle_reaction(interaction, "emoji", 50)
 
-    @nextcord.ui.button(label="100 Dabloons", style=nextcord.ButtonStyle.primary)
+    @nextcord.ui.button(label="200 Dabloons", style=nextcord.ButtonStyle.primary)
     async def send_sticker(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await self.handle_reaction(interaction, "sticker", 100)
 
