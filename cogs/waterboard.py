@@ -15,6 +15,8 @@ class WaterboardCog(commands.Cog):
         self.db_path = "waterboard.db"
         self.create_tables()
         self.channel_creation_lock = asyncio.Lock()
+        self.cooldown_multiplier = 2
+        self.waterboard_cost = 100
 
     def create_tables(self):
         conn = sqlite3.connect(self.db_path)
@@ -77,13 +79,18 @@ class WaterboardCog(commands.Cog):
         if last_waterboarded_time and current_time - last_waterboarded_time < 60:
             # User is on cooldown, check if they want to purchase usage
             cost = self.waterboard_cost * self.cooldown_multiplier
-            balance = self.economy_cog.get_balance(interaction.user.id)
+            economy_cog = self.bot.get_cog('Economy')
+            if not economy_cog:
+                await interaction.response.send_message("Economy cog is not available.", ephemeral=True)
+                return
+
+            balance = economy_cog.get_user_balance(interaction.user.id)
             if balance < cost:
                 await interaction.response.send_message(f"{user.mention} has been waterboarded recently. You need {cost} coins to bypass the cooldown.")
                 return
 
             # Deduct the cost and double the cost for the next usage
-            self.economy_cog.update_balance(interaction.user.id, -cost)
+            economy_cog.update_balance(interaction.user.id, -cost)
             self.waterboard_cost *= self.cooldown_multiplier
             await interaction.response.send_message(f"You have purchased a waterboard usage for {cost} coins. The next usage will cost {self.waterboard_cost} coins.")
         else:

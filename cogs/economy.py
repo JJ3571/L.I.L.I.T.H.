@@ -36,13 +36,20 @@ class Economy(commands.Cog):
         conn.commit()
         conn.close()
 
-    def get_balance(self, user_id):
+    def get_user_balance(self, user_id):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
         conn.close()
         return result[0] if result else 0
+
+    def deduct_user_balance(self, user_id: int, amount: int):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+        conn.commit()
+        conn.close()
 
     def update_balance(self, user_id, amount):
         conn = sqlite3.connect(self.db_path)
@@ -143,7 +150,7 @@ class Economy(commands.Cog):
     @nextcord.slash_command(name="balance", description="Check your balance or someone else's")
     async def balance_command(self, interaction: nextcord.Interaction, member: nextcord.Member = nextcord.SlashOption(required=False, description='The member to check the balance of.')):
         member = member or interaction.user
-        balance = self.get_balance(member.id)
+        balance = self.get_user_balance(member.id)
         await interaction.response.send_message(f"{member.display_name}'s balance: {balance}")
 
     @nextcord.slash_command(name="give", description="Give currency to another user")
@@ -159,7 +166,7 @@ class Economy(commands.Cog):
             await interaction.response.send_message("Give from your balance or the treasury?", view=view, ephemeral=True)
             return
 
-        sender_balance = self.get_balance(sender_id)
+        sender_balance = self.get_user_balance(sender_id)
         if sender_balance < amount:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
             return
@@ -171,7 +178,7 @@ class Economy(commands.Cog):
     @nextcord.slash_command(name="cointoss", description="Toss a coin and bet your balance.")
     async def cointoss_command(self, interaction: nextcord.Interaction, choice: str = nextcord.SlashOption(choices=["heads", "tails"], description="Heads or tails?"), amount: int = nextcord.SlashOption(description="Amount to bet.")):
         user_id = interaction.user.id
-        balance = self.get_balance(user_id)
+        balance = self.get_user_balance(user_id)
 
         if amount <= 0:
             await interaction.response.send_message("Amount must be positive.", ephemeral=True)
@@ -273,7 +280,7 @@ class Economy(commands.Cog):
     @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
     async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
         user_id = interaction.user.id
-        balance = self.get_balance(user_id)
+        balance = self.get_user_balance(user_id)
 
         if amount <= 0:
             await interaction.response.send_message("Amount must be positive.", ephemeral=True)
@@ -366,7 +373,7 @@ class AdminGiveView(nextcord.ui.View):
     @nextcord.ui.button(label="From Balance", style=nextcord.ButtonStyle.green)
     async def from_balance(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         sender_id = interaction.user.id
-        sender_balance = self.cog.get_balance(sender_id)
+        sender_balance = self.cog.get_user_balance(sender_id)
         if sender_balance < self.amount:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
             return

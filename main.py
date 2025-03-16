@@ -5,6 +5,15 @@ import asyncio
 
 from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
+# Logging setup
+import logging
+# logging.basicConfig(level=logging.INFO) # Terminal output log
+logger = logging.getLogger('nextcord')
+logger.setLevel(logging.DEBUG)
+handler = logging.FileHandler(filename='nextcord.log', encoding='utf-8', mode='w')
+handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
+logger.addHandler(handler)
+
 # Bot & Intent config
 bot = commands.Bot(
     command_prefix='.',

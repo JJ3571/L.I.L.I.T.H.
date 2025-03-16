@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import pytz
 
-from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id
+from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
 
 class Birthday(commands.Cog):
     def __init__(self, bot):
@@ -32,6 +32,7 @@ class Birthday(commands.Cog):
 
     @tasks.loop(seconds=10)
     async def check_birthdays(self):
+        await self.bot.wait_until_ready()
         now = datetime.now(pytz.timezone('US/Eastern'))
         print(f"--------------------------------")
         print(f"[DEBUG] Current time: {now}")
@@ -77,7 +78,7 @@ class Birthday(commands.Cog):
 
     @tasks.loop(seconds=10)
     async def cleanup_birthdays(self):
-        await self.bot.wait_until_ready()  # Wait until the bot is fully ready
+        await self.bot.wait_until_ready() 
         now = datetime.now(pytz.timezone('US/Eastern'))
         print(f"--------------------------------")
         print(f"[DEBUG] Current time: {now}")
@@ -198,12 +199,53 @@ class BirthdayButtonView(nextcord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    @nextcord.ui.button(label="Send Emoji", style=nextcord.ButtonStyle.primary)
+    @nextcord.ui.button(label="50 Dabloons", style=nextcord.ButtonStyle.primary)
     async def send_emoji(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await self.handle_reaction(interaction, "emoji", 50)
+
+    @nextcord.ui.button(label="100 Dabloons", style=nextcord.ButtonStyle.primary)
+    async def send_sticker(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await self.handle_reaction(interaction, "sticker", 100)
+
+    @nextcord.ui.button(label="500 Dabloons", style=nextcord.ButtonStyle.primary)
+    async def send_embed(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await self.handle_reaction(interaction, "embed", 200)
+
+    async def handle_reaction(self, interaction: nextcord.Interaction, reaction_type: str, cost: int):
+        user_id = interaction.user.id
+        economy_cog = self.bot.get_cog('Economy')
+        if not economy_cog:
+            await interaction.response.send_message("Economy system is not available.", ephemeral=True)
+            return
+
+        # Check user's balance
+        balance = economy_cog.get_user_balance(user_id)
+        if balance < cost:
+            await interaction.response.send_message(f"You do not have enough currency. You need {cost} currency.", ephemeral=True)
+            return
+
+        # Deduct the currency
+        economy_cog.deduct_user_balance(user_id, cost)
+
         reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)
         if reaction_channel:
-            await reaction_channel.send("🎉")
-            await interaction.response.send_message("Emoji sent!", ephemeral=True)
+            emoji = self.bot.get_emoji(birthday_emoji_id)
+            print(f"[DEBUG] Emoji: {emoji}")
+            if reaction_type == "emoji":
+                embed = nextcord.Embed(description=f"{emoji}{emoji}{emoji}", color=0x574BCD)
+                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                await reaction_channel.send(embed=embed)
+            elif reaction_type == "sticker":
+                embed = nextcord.Embed(color=0x2999AD)
+                embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67d80929&is=67d6b7a9&hm=af7b8e0cb66592d2e76a4ce860f22dff672d613b46f784f4af5649ece0da01cb&")
+                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                await reaction_channel.send(embed=embed)
+            elif reaction_type == "embed":
+                embed = nextcord.Embed(color=0x41E975)
+                embed.set_image(url="https://cdn.discordapp.com/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67d80929&is=67d6b7a9&hm=af7b8e0cb66592d2e76a4ce860f22dff672d613b46f784f4af5649ece0da01cb&")  # Replace with actual image URL
+                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                await reaction_channel.send(embed=embed)
+            await interaction.response.send_message(f"{reaction_type.capitalize()} sent!", ephemeral=True)
         else:
             await interaction.response.send_message("Reaction channel not found.", ephemeral=True)
 
