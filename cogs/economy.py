@@ -216,12 +216,12 @@ class Economy(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     class LeaderboardPageButton(nextcord.ui.Button):
-        def __init__(self, label, view, direction):
+        def __init__(self, label, direction):
             super().__init__(label=label, style=nextcord.ButtonStyle.primary)
-            self.view = view
             self.direction = direction
 
         async def callback(self, interaction: nextcord.Interaction):
+            await interaction.response.defer()  # Defer the interaction response
             self.view.current_page += self.direction
             self.view.update_buttons()
             await self.view.send_page(interaction)
@@ -238,34 +238,39 @@ class Economy(commands.Cog):
         def update_buttons(self):
             self.clear_items()
             if self.current_page > 0:
-                self.add_item(Economy.LeaderboardPageButton(label="Previous", view=self, direction=-1))
+                self.add_item(Economy.LeaderboardPageButton(label="Previous", direction=-1))
             if self.current_page < self.max_page:
-                self.add_item(Economy.LeaderboardPageButton(label="Next", view=self, direction=1))
+                self.add_item(Economy.LeaderboardPageButton(label="Next", direction=1))
 
         async def send_page(self, interaction):
             start = self.current_page * 5
             end = start + 5
             page = self.leaderboard[start:end]
-            description = "\n".join([f"{user}: {points} points" for user, points in page])
-            embed = nextcord.Embed(title="Leaderboard", description=description,color=nextcord.Color.blue())
-            if interaction.response.is_done():
-                await interaction.edit_original_message(embed=embed, view=self)
-            else:
-                await interaction.response.send_message(embed=embed, view=self)
+            description = "\n".join([f"{user.mention}: `{points}` dabloons" for user, points in page])
+            embed = nextcord.Embed(title="Leaderboard", description=description, color=nextcord.Color.blue())
+            try:
+                if interaction.response.is_done():
+                    await interaction.edit_original_message(embed=embed, view=self)
+                else:
+                    await interaction.followup.send(embed=embed, view=self)
+            except nextcord.errors.NotFound:
+                print("Interaction not found or already responded to.")
 
     @nextcord.slash_command(name="leaderboard", description="Display the leaderboard of user balances")
     async def leaderboard_command(self, interaction: nextcord.Interaction):
         try:
+            await interaction.response.defer()  # Defer the response to avoid timing out
+
             balances = self.get_all_balances()
             if not balances:
-                await interaction.response.send_message("No users found in the leaderboard.")
+                await interaction.followup.send("No users found in the leaderboard.", ephemeral=True)
                 return
 
             leaderboard = []
             for user_id, balance in balances.items():
                 try:
                     user = await self.bot.fetch_user(user_id)
-                    leaderboard.append((user.display_name, balance))
+                    leaderboard.append((user, balance))
                 except Exception as e:
                     print(f"Error fetching user {user_id}: {e}")
 
@@ -274,9 +279,8 @@ class Economy(commands.Cog):
             await view.send_page(interaction)
         except Exception as e:
             print(f"Error in leaderboard_command: {e}")
-            await interaction.response.send_message("An error occurred while fetching the leaderboard.", ephemeral=True)
-
-
+            await interaction.followup.send("An error occurred while fetching the leaderboard.", ephemeral=True)
+            
     @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
     async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
         user_id = interaction.user.id

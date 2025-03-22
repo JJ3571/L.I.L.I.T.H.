@@ -36,8 +36,8 @@ class Birthday(commands.Cog):
         now = datetime.now(pytz.timezone('US/Eastern'))
         print(f"--------------------------------")
         print(f"[DEBUG] Current time: {now}")
-        if now.hour >= 4:
-            print("[DEBUG] Hour is past 4 AM, checking birthdays.")
+        if now.hour >= 8:
+            print("[DEBUG] Hour is past 8 AM, checking birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             today = now.strftime("%m-%d")
@@ -58,9 +58,13 @@ class Birthday(commands.Cog):
                 print(f"[DEBUG] Message exists for user {user_id}: {message_exists}")
                 if not message_exists:
                     member = channel.guild.get_member(int(user_id))
+                    print(f"[DEBUG] Member object for user {user_id}: {member}")
+                    print(f"[DEBUG] Member mention: {member.mention}")
                     if member:
                         print(f"[DEBUG] Member found: {member}")
-                        embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=nextcord.Color.blue)
+                        embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
+                        print(f"[DEBUG] Embed created for user {user_id}")
+                        # embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
                         view = BirthdayButtonView(self.bot)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
@@ -88,7 +92,7 @@ class Birthday(commands.Cog):
             c = conn.cursor()
             today = now.strftime("%m-%d")
             print(f"[DEBUG] Today's date: {today}")
-            c.execute("SELECT user_id, message_id FROM birthday_messages WHERE strftime('%m-%d', birthday) < ?", (today,))
+            c.execute("SELECT user_id, message_id FROM birthday_messages WHERE strftime('%m-%d', birthday) < ? AND strftime('%m-%d', birthday) != ?", (today, today))
             messages = c.fetchall()
             print(f"[DEBUG] Messages to clean up: {messages}")
 
@@ -237,12 +241,12 @@ class BirthdayButtonView(nextcord.ui.View):
                 await reaction_channel.send(embed=embed)
             elif reaction_type == "sticker":
                 embed = nextcord.Embed(color=0x2999AD)
-                embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67d80929&is=67d6b7a9&hm=af7b8e0cb66592d2e76a4ce860f22dff672d613b46f784f4af5649ece0da01cb&")
+                embed.set_thumbnail(url="https://media.discordapp.net/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67daac29&is=67d95aa9&hm=96b6c0e9927970df5fb9a64a256f58d8235c7c1ff5ca9f8222e602071e53d3b5&=&format=webp&width=836&height=836")
                 embed.set_footer(text="Sent by " + interaction.user.display_name)
                 await reaction_channel.send(embed=embed)
             elif reaction_type == "embed":
                 embed = nextcord.Embed(color=0x41E975)
-                embed.set_image(url="https://cdn.discordapp.com/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67d80929&is=67d6b7a9&hm=af7b8e0cb66592d2e76a4ce860f22dff672d613b46f784f4af5649ece0da01cb&")  # Replace with actual image URL
+                embed.set_image(url="https://media.discordapp.net/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67daac29&is=67d95aa9&hm=96b6c0e9927970df5fb9a64a256f58d8235c7c1ff5ca9f8222e602071e53d3b5&=&format=webp&width=836&height=836")  # Replace with actual image URL
                 embed.set_footer(text="Sent by " + interaction.user.display_name)
                 await reaction_channel.send(embed=embed)
             await interaction.response.send_message(f"{reaction_type.capitalize()} sent!", ephemeral=True)

@@ -1,11 +1,11 @@
 import nextcord
-from nextcord.ext import commands
+from nextcord.ext import commands, tasks
 import asyncio
 import time
 import sqlite3
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import seen_category_id, bot_spam_id
+from server_configs.cogs_config import seen_category_id, bot_spam_id, admin_user_ids
 from cogs.economy import Economy
 
 class WaterboardCog(commands.Cog):
@@ -16,6 +16,7 @@ class WaterboardCog(commands.Cog):
         self.channel_creation_lock = asyncio.Lock()
         self.cooldown_multiplier = 2
         self.waterboard_cost = 100
+        self.cleanup_exempt_users.start()
 
     def create_tables(self):
         conn = sqlite3.connect(self.db_path)
@@ -29,6 +30,12 @@ class WaterboardCog(commands.Cog):
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS temp_channels (
                 channel_id INTEGER PRIMARY KEY
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exempt_users (
+                user_id INTEGER PRIMARY KEY,
+                exempt_until REAL
             )
         ''')
         conn.commit()
@@ -71,8 +78,62 @@ class WaterboardCog(commands.Cog):
         conn.commit()
         conn.close()
 
+
+    @nextcord.slash_command(name="executivepardon", description="Grant a user an exemption from waterboarding.")
+    async def executivepardon(self, interaction: nextcord.Interaction, user: nextcord.Member, duration: int):
+        if interaction.user.id not in admin_user_ids:
+            embed = nextcord.Embed(
+                title="Permission Denied",
+                description="You do not have permission to use this command.",
+                color=nextcord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        exempt_until = time.time() + (duration * 3600)  # Convert hours to seconds
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO exempt_users (user_id, exempt_until) VALUES (?, ?)", (user.id, exempt_until))
+        conn.commit()
+        conn.close()
+
+        embed = nextcord.Embed(
+            title="Executive Pardon",
+            description=f"{user.mention} has been pardoned for {duration} hours.",
+            color=nextcord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+    @tasks.loop(minutes=10)
+    async def cleanup_exempt_users(self):
+        await self.bot.wait_until_ready()
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        current_time = time.time()
+        cursor.execute("DELETE FROM exempt_users WHERE exempt_until < ?", (current_time,))
+        conn.commit()
+        conn.close()
+
+
     @nextcord.slash_command(name="waterboard", description="Waterboard a user")
     async def waterboard(self, interaction: nextcord.Interaction, user: nextcord.Member):
+        print(f"User id: {interaction.user.id} used the waterboard command on {user.name}.")
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT exempt_until FROM exempt_users WHERE user_id = ?", (user.id,))
+        result = cursor.fetchone()
+        conn.close()
+
+        if result:
+            exempt_until = result[0]
+            if time.time() < exempt_until:
+                embed = nextcord.Embed(
+                    title="Exempt User",
+                    description=f"{user.mention} is exempt from waterboarding until <t:{int(exempt_until)}:F>.",
+                    color=nextcord.Color.red()
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
         current_time = time.time()
         last_waterboarded_time = self.get_last_waterboarded_time(user.id)
         if last_waterboarded_time and current_time - last_waterboarded_time < 60:
@@ -115,6 +176,7 @@ class WaterboardCog(commands.Cog):
         # Start the waterboarding process in a separate task
         asyncio.create_task(self.waterboard_user(interaction, user, seen_category))
 
+
     async def create_temp_channels(self, guild, seen_category):
         async with self.channel_creation_lock:
             temp_channel_ids = self.get_temp_channels()
@@ -126,6 +188,7 @@ class WaterboardCog(commands.Cog):
                 for name in water_names:
                     channel = await guild.create_voice_channel(name, category=seen_category)
                     self.add_temp_channel(channel.id)
+
 
     async def delete_temp_channels(self):
         await asyncio.sleep(1)
@@ -141,6 +204,7 @@ class WaterboardCog(commands.Cog):
                     print("Channel not found for deletion.")
                 except Exception as e:
                     print(f"Unexpected error while deleting channel: {e}")
+
 
     async def waterboard_user(self, interaction: nextcord.Interaction, user: nextcord.Member, seen_category):
         guild = interaction.guild
@@ -193,6 +257,7 @@ class WaterboardCog(commands.Cog):
                 print(f"Error: Interaction not found for follow-up message for {user.name}.")
 
             asyncio.create_task(self.delete_temp_channels())
+
 
 async def setup(bot):
     bot.add_cog(WaterboardCog(bot))
