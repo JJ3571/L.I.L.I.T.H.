@@ -26,12 +26,12 @@ class Magic8Ball(commands.Cog):
             "Very doubtful."
         ]
 
-    @nextcord.slash_command(name="8ball", description="Ask the magic 8-ball a question")
+    @nextcord.slash_command(name="8ball", description="Ask the magic 8-ball")
     async def eight_ball(self, interaction: nextcord.Interaction, question: str):
         response = random.choice(self.responses)
         embed = nextcord.Embed(color=0x3749CE)
-        embed.add_field(name="Q: ", value=question, inline=False)
-        embed.add_field(name="🎱: ", value=response, inline=False)
+        embed.add_field(name="Question: ", value=question, inline=False)
+        embed.add_field(name="🎱 Answer: ", value=response, inline=False)
         await interaction.response.send_message(embed=embed)
 
 

@@ -30,10 +30,10 @@ class Birthday(commands.Cog):
         conn.commit()
         conn.close()
 
-    @tasks.loop(seconds=10)
+    @tasks.loop(seconds=30)
     async def check_birthdays(self):
         await self.bot.wait_until_ready()
-        now = datetime.now(pytz.timezone('US/Eastern'))
+        now = datetime.now(pytz.timezone('US/Pacific'))
         print(f"--------------------------------")
         print(f"[DEBUG] Current time: {now}")
         if now.hour >= 8:
@@ -62,10 +62,11 @@ class Birthday(commands.Cog):
                     print(f"[DEBUG] Member mention: {member.mention}")
                     if member:
                         print(f"[DEBUG] Member found: {member}")
-                        embed = nextcord.Embed(title="BIRTH!", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
+                        embed = nextcord.Embed(title="🎂 **BIRTH!**", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
+                        embed.add_field(name='\u200B', value=f"Send {member.mention} some dabloons:", inline=False)
                         print(f"[DEBUG] Embed created for user {user_id}")
                         # embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-                        view = BirthdayButtonView(self.bot)
+                        view = BirthdayButtonView(self.bot, birthday_user_id=member.id)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
                         await member.add_roles(role)
@@ -80,29 +81,38 @@ class Birthday(commands.Cog):
         print(f"--------------------------------")
 
 
-    @tasks.loop(seconds=10)
+    @tasks.loop(seconds=30)
     async def cleanup_birthdays(self):
-        await self.bot.wait_until_ready() 
-        now = datetime.now(pytz.timezone('US/Eastern'))
+        await self.bot.wait_until_ready()
+        now = datetime.now(pytz.timezone('US/Pacific'))  # Use US/Pacific timezone
+        today = now.date()  # Get only the date part
         print(f"--------------------------------")
-        print(f"[DEBUG] Current time: {now}")
-        if now.hour >= 4:
-            print("[DEBUG] Hour is past 4 AM, cleaning up birthdays.")
-            conn = sqlite3.connect(self.db_path)
-            c = conn.cursor()
-            today = now.strftime("%m-%d")
-            print(f"[DEBUG] Today's date: {today}")
-            c.execute("SELECT user_id, message_id FROM birthday_messages WHERE strftime('%m-%d', birthday) < ? AND strftime('%m-%d', birthday) != ?", (today, today))
-            messages = c.fetchall()
-            print(f"[DEBUG] Messages to clean up: {messages}")
+        print(f"[DEBUG] Current date: {today}")
 
-            channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
-            if channel is None:
-                print("[ERROR] Birthday channel not found.")
-                return
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
 
-            for message in messages:
-                user_id, message_id = message
+        # Fetch all birthday messages
+        c.execute("SELECT user_id, message_id, birthday FROM birthday_messages")
+        messages = c.fetchall()
+        print(f"[DEBUG] Messages to check for cleanup: {messages}")
+
+        channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
+        if channel is None:
+            print("[ERROR] Birthday channel not found.")
+            conn.close()
+            return
+
+        for message in messages:
+            user_id, message_id, birthday = message
+            # Parse the birthday date
+            birthday_date = datetime.strptime(birthday, "%Y-%m-%d").date()  # Get only the date part
+
+            print(f"[DEBUG] Checking message ID {message_id} for user ID {user_id}")
+            print(f"[DEBUG] Birthday date: {birthday_date}, Current date: {today}")
+
+            # Check if the current date is past the birthday
+            if today > birthday_date:  # If today is after the birthday
                 try:
                     msg = await channel.fetch_message(message_id)
                     await msg.delete()
@@ -118,13 +128,12 @@ class Birthday(commands.Cog):
                 else:
                     print(f"[ERROR] Member not found for user ID {user_id}")
 
+                # Remove the message entry from the database
                 c.execute("DELETE FROM birthday_messages WHERE message_id = ?", (message_id,))
                 print(f"[DEBUG] Deleted entry from database for message ID {message_id}")
 
-            conn.commit()
-            conn.close()
-        else:
-            print("[DEBUG] Hour is before 4 AM, skipping birthday cleanup.")
+        conn.commit()
+        conn.close()
         print(f"--------------------------------")
         
 
@@ -142,8 +151,9 @@ class Birthday(commands.Cog):
         conn.commit()
         conn.close()
 
-    @nextcord.slash_command(name="bday", description="Show birthdays or add a birthday")
-    async def bday(self, interaction: nextcord.Interaction, username: str = None):
+    @nextcord.slash_command(name="bday", description="Shows upcoming birthdays")
+    async def bday(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):
+
         now = datetime.now()
         next_month = (now.month % 12) + 1
         conn = sqlite3.connect(self.db_path)
@@ -199,21 +209,22 @@ class Birthday(commands.Cog):
                 await interaction.response.send_message("No upcoming birthdays found.", ephemeral=True)
 
 class BirthdayButtonView(nextcord.ui.View):
-    def __init__(self, bot):
+    def __init__(self, bot, birthday_user_id):
         super().__init__(timeout=None)
         self.bot = bot
+        self.birthday_user_id = birthday_user_id
 
-    @nextcord.ui.button(label="50 Dabloons", style=nextcord.ButtonStyle.primary)
+    @nextcord.ui.button(label="🪙 100", style=nextcord.ButtonStyle.primary)
     async def send_emoji(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        await self.handle_reaction(interaction, "emoji", 50)
+        await self.handle_reaction(interaction, "emoji", 100)
 
-    @nextcord.ui.button(label="200 Dabloons", style=nextcord.ButtonStyle.primary)
+    @nextcord.ui.button(label="🪙 200", style=nextcord.ButtonStyle.primary)
     async def send_sticker(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        await self.handle_reaction(interaction, "sticker", 100)
+        await self.handle_reaction(interaction, "sticker", 200)
 
-    @nextcord.ui.button(label="500 Dabloons", style=nextcord.ButtonStyle.primary)
+    @nextcord.ui.button(label="🪙 500", style=nextcord.ButtonStyle.primary)
     async def send_embed(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        await self.handle_reaction(interaction, "embed", 200)
+        await self.handle_reaction(interaction, "embed", 500)
 
     async def handle_reaction(self, interaction: nextcord.Interaction, reaction_type: str, cost: int):
         user_id = interaction.user.id
@@ -230,6 +241,8 @@ class BirthdayButtonView(nextcord.ui.View):
 
         # Deduct the currency
         economy_cog.deduct_user_balance(user_id, cost)
+        economy_cog.update_balance(self.birthday_user_id, cost)
+
 
         reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)
         if reaction_channel:
@@ -237,19 +250,22 @@ class BirthdayButtonView(nextcord.ui.View):
             print(f"[DEBUG] Emoji: {emoji}")
             if reaction_type == "emoji":
                 embed = nextcord.Embed(description=f"{emoji}{emoji}{emoji}", color=0x574BCD)
-                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+                embed.set_footer(text=f"{interaction.user.display_name} gifted {cost} 🪙")
                 await reaction_channel.send(embed=embed)
             elif reaction_type == "sticker":
                 embed = nextcord.Embed(color=0x2999AD)
+                embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
                 embed.set_thumbnail(url="https://media.discordapp.net/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67daac29&is=67d95aa9&hm=96b6c0e9927970df5fb9a64a256f58d8235c7c1ff5ca9f8222e602071e53d3b5&=&format=webp&width=836&height=836")
-                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                embed.set_footer(text=f"({interaction.user.display_name} gifted {cost}🪙)")
                 await reaction_channel.send(embed=embed)
             elif reaction_type == "embed":
                 embed = nextcord.Embed(color=0x41E975)
+                embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
                 embed.set_image(url="https://media.discordapp.net/attachments/1350599554818375811/1350794770842390528/tumblr_ncy1ybsF0f1qbye1fo2_1280-299919097.jpg?ex=67daac29&is=67d95aa9&hm=96b6c0e9927970df5fb9a64a256f58d8235c7c1ff5ca9f8222e602071e53d3b5&=&format=webp&width=836&height=836")  # Replace with actual image URL
-                embed.set_footer(text="Sent by " + interaction.user.display_name)
+                embed.set_footer(text=f"{interaction.user.display_name} gifted {cost} 🪙")
                 await reaction_channel.send(embed=embed)
-            await interaction.response.send_message(f"{reaction_type.capitalize()} sent!", ephemeral=True)
+            await interaction.response.send_message(f"You gifted {cost} 🪙!", ephemeral=True)
         else:
             await interaction.response.send_message("Reaction channel not found.", ephemeral=True)
 

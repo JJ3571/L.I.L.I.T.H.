@@ -21,24 +21,25 @@ bot = commands.Bot(
     application_id=APPLICATION_ID
 )
 
-# Slash command to ensure bot is functional
-# @bot.slash_command(name="hewwo", description="Hello command", guild_ids=[GUILD_ID])
-# async def hello(interaction: nextcord.Interaction):
-#     await interaction.response.send_message(
-#         f"Hello {interaction.user.mention}!",
-#         ephemeral=True
-#     )
 
-# - - - - - - - - Load Cogs - - - - - - - -
-def load_extensions():
-    for filename in os.listdir('./cogs'):
+# - - - - - - - - Load Cogs (Generic from Cogs folder)- - - - - - - -
+# def load_extensions():
+#     for filename in os.listdir('./cogs'):
+#         if filename.endswith('.py') and filename != '__init__.py':
+#             bot.load_extension(f'cogs.{filename[:-3]}')
+#             print(f"Loaded extension: cogs.{filename[:-3]}")
+
+# - - - - - - - - Load Cogs (based on env folder name) - - - - - - - -
+def load_extensions(directory: str):
+    path = f'./cogs/{directory}'
+    for filename in os.listdir(path):
         if filename.endswith('.py') and filename != '__init__.py':
-            bot.load_extension(f'cogs.{filename[:-3]}')
-            print(f"Loaded extension: cogs.{filename[:-3]}")
+            bot.load_extension(f'cogs.{directory}.{filename[:-3]}')
+            print(f"Loaded extension: cogs.{directory}.{filename[:-3]}")
 
 # - - - - - - - - Bot Start - - - - - - - -
 async def main():
-    load_extensions()
+    load_extensions('production')
 
     async def close_bot():
         await bot.close()

@@ -6,6 +6,7 @@ import random
 import pytz
 
 from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id
+
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -66,7 +67,7 @@ class Economy(commands.Cog):
         result = cursor.fetchall()
         conn.close()
         
-        balances = {user_id: balance for user_id, balance in result} # Convert list into tuples for slash leaderboard
+        balances = {user_id: balance for user_id, balance in result} 
         return balances
 
     @tasks.loop(minutes=1)
@@ -84,26 +85,6 @@ class Economy(commands.Cog):
         await self.bot.wait_until_ready()
         print("Backup task is ready to start.")
 
-    def deal_card(self, deck):
-        card = random.choice(deck)
-        deck.remove(card)
-        return card
-
-    def calculate_hand_value(self, hand):
-        value = 0
-        aces = 0
-        for card in hand:
-            if card[:-1].isdigit():
-                value += int(card[:-1])
-            elif card[0] in ['J', 'Q', 'K']:
-                value += 10
-            elif card[0] == 'A':
-                aces += 1
-                value += 11
-        while value > 21 and aces:
-            value -= 10
-            aces -= 1
-        return value
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -151,7 +132,12 @@ class Economy(commands.Cog):
     async def balance_command(self, interaction: nextcord.Interaction, member: nextcord.Member = nextcord.SlashOption(required=False, description='The member to check the balance of.')):
         member = member or interaction.user
         balance = self.get_user_balance(member.id)
-        await interaction.response.send_message(f"{member.display_name}'s balance: {balance}")
+        
+        embed = nextcord.Embed(title=f"🪙  {balance}", color=nextcord.Color.blue())
+        embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
+        
+        await interaction.response.send_message(embed=embed)
+
 
     @nextcord.slash_command(name="give", description="Give currency to another user")
     async def give_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int):
@@ -173,47 +159,18 @@ class Economy(commands.Cog):
 
         self.update_balance(sender_id, -amount)
         self.update_balance(member.id, amount)
-        await interaction.response.send_message(f"{interaction.user.display_name} gave {member.display_name} {amount} coins.")
-
-    @nextcord.slash_command(name="cointoss", description="Toss a coin and bet your balance.")
-    async def cointoss_command(self, interaction: nextcord.Interaction, choice: str = nextcord.SlashOption(choices=["heads", "tails"], description="Heads or tails?"), amount: int = nextcord.SlashOption(description="Amount to bet.")):
-        user_id = interaction.user.id
-        balance = self.get_user_balance(user_id)
-
-        if amount <= 0:
-            await interaction.response.send_message("Amount must be positive.", ephemeral=True)
-            return
-
-        if balance < amount:
-            await interaction.response.send_message("Insufficient funds.", ephemeral=True)
-            return
-
-        coin_flip = random.choice(["heads", "tails"])
-
-        heads_emoji = self.bot.get_emoji(heads_emoji_id)
-        tails_emoji = self.bot.get_emoji(tails_emoji_id)
-
-        if heads_emoji is None or tails_emoji is None:
-            await interaction.response.send_message("Heads or tails emoji not found. Please configure them correctly.", ephemeral=True)
-            return
-
-        embed = nextcord.Embed(title="Coin Toss Result")
-
-        if coin_flip == "heads":
-            embed.set_image(url="https://cdn.discordapp.com/attachments/807342895656730685/1346364014648623116/61tOhQIcfES.png?ex=67c7eab3&is=67c69933&hm=165402180db8b6b8cfb8f8c983c959f62d83ca6469cb534afdb370ddafbbf593&")
-        else:
-            embed.set_image(url="https://cdn.discordapp.com/attachments/807342895656730685/1346363550926508083/c5uy98beouv41.png?ex=67c7ea44&is=67c698c4&hm=b0ac51853969fb12c4b0a66306cb3537a78e14484aa1d45535218253e2bfdb62&")
-
-        if choice == coin_flip:
-            self.update_balance(user_id, amount)
-            embed.description = f"You won! The coin landed on {str(heads_emoji) if coin_flip == 'heads' else str(tails_emoji)}. You won {amount} coins."
-            embed.color = nextcord.Color.green()
-        else:
-            self.update_balance(user_id, -amount)
-            embed.description = f"You lost! The coin landed on {str(heads_emoji) if coin_flip == 'heads' else str(tails_emoji)}. You lost {amount} coins."
-            embed.color = nextcord.Color.red()
+        embed = nextcord.Embed(
+                title="Transaction Successful",
+                description=f"{interaction.user.mention} gave {member.mention} {amount} coins.",
+                color=nextcord.Color.green()
+            )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
+        embed.add_field(name="Recipient", value=member.display_name, inline=True)
+        embed.add_field(name="Amount", value=f"{amount} coins", inline=True)
 
         await interaction.response.send_message(embed=embed)
+
 
     class LeaderboardPageButton(nextcord.ui.Button):
         def __init__(self, label, direction):
@@ -281,92 +238,7 @@ class Economy(commands.Cog):
             print(f"Error in leaderboard_command: {e}")
             await interaction.followup.send("An error occurred while fetching the leaderboard.", ephemeral=True)
             
-    @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
-    async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
-        user_id = interaction.user.id
-        balance = self.get_user_balance(user_id)
-
-        if amount <= 0:
-            await interaction.response.send_message("Amount must be positive.", ephemeral=True)
-            return
-
-        if balance < amount:
-            await interaction.response.send_message("Insufficient funds.", ephemeral=True)
-            return
-
-        deck = [f"{rank}{suit}" for suit in ['♠', '♥', '♦', '♣'] for rank in ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']]
-        random.shuffle(deck)
-
-        player_hand = [self.deal_card(deck), self.deal_card(deck)]
-        dealer_hand = [self.deal_card(deck), self.deal_card(deck)]
-
-        player_value = self.calculate_hand_value(player_hand)
-        dealer_value = self.calculate_hand_value(dealer_hand)
-
-        embed = nextcord.Embed(title="Blackjack", description=f"Your hand: {', '.join(player_hand)} ({player_value})\nDealer's hand: {dealer_hand[0]}, ?")
-        await interaction.response.send_message(embed=embed, view=BlackjackView(self, interaction, deck, player_hand, dealer_hand, amount))
-
-class BlackjackView(nextcord.ui.View):
-    def __init__(self, cog, interaction, deck, player_hand, dealer_hand, amount):
-        super().__init__()
-        self.cog = cog
-        self.interaction = interaction
-        self.deck = deck
-        self.player_hand = player_hand
-        self.dealer_hand = dealer_hand
-        self.amount = amount
-
-    @nextcord.ui.button(label="Hit", style=nextcord.ButtonStyle.green)
-    async def hit(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        if interaction.user.id != self.interaction.user.id:
-            await interaction.response.send_message("This is not your game.", ephemeral=True)
-            return
-        self.player_hand.append(self.cog.deal_card(self.deck))
-        player_value = self.cog.calculate_hand_value(self.player_hand)
-        dealer_value = self.cog.calculate_hand_value(self.dealer_hand)
-
-        if player_value > 21:
-            await self.end_game(interaction, "You busted!")
-            return
-
-        embed = nextcord.Embed(title="Blackjack", description=f"Your hand: {', '.join(self.player_hand)} ({player_value})\nDealer's hand: {self.dealer_hand[0]}, ?")
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @nextcord.ui.button(label="Stand", style=nextcord.ButtonStyle.blurple)
-    async def stand(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        if interaction.user.id != self.interaction.user.id:
-            await interaction.response.send_message("This is not your game.", ephemeral=True)
-            return
-        await self.dealer_turn(interaction)
-
-    async def dealer_turn(self, interaction):
-        dealer_value = self.cog.calculate_hand_value(self.dealer_hand)
-        while dealer_value < 17:
-            self.dealer_hand.append(self.cog.deal_card(self.deck))
-            dealer_value = self.cog.calculate_hand_value(self.dealer_hand)
-
-        player_value = self.cog.calculate_hand_value(self.player_hand)
-
-        if dealer_value > 21 or player_value > dealer_value:
-            await self.end_game(interaction, "You win!")
-        elif player_value == dealer_value:
-            await self.end_game(interaction, "Push!")
-        else:
-            await self.end_game(interaction, "You lose!")
-
-    async def end_game(self, interaction, result):
-        player_value = self.cog.calculate_hand_value(self.player_hand)
-        dealer_value = self.cog.calculate_hand_value(self.dealer_hand)
-        embed = nextcord.Embed(title="Blackjack", description=f"Your hand: {', '.join(self.player_hand)} ({player_value})\nDealer's hand: {', '.join(self.dealer_hand)} ({dealer_value})\n{result}")
-        await interaction.response.edit_message(embed=embed, view=None)
-
-        if result == "You win!":
-            self.cog.update_balance(self.interaction.user.id, self.amount)
-        elif result == "You lose!":
-            self.cog.update_balance(self.interaction.user.id, -self.amount)
-
-        self.stop()
-
+        
 class AdminGiveView(nextcord.ui.View):
     def __init__(self, cog, member, amount):
         super().__init__()
@@ -383,13 +255,33 @@ class AdminGiveView(nextcord.ui.View):
             return
         self.cog.update_balance(sender_id, -self.amount)
         self.cog.update_balance(self.member.id, self.amount)
-        await interaction.response.send_message(f"{interaction.user.display_name} gave {self.member.display_name} {self.amount} coins from their balance.")
+
+        embed = nextcord.Embed(
+            title="Transaction Successful",
+            description=f"{interaction.user.mention} gave {self.member.mention} {self.amount} coins from their balance.",
+            color=nextcord.Color.green()
+        )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
+        embed.add_field(name="Recipient", value=self.member.display_name, inline=True)
+        embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+
+        await interaction.response.send_message(embed=embed)
         self.stop()
 
     @nextcord.ui.button(label="From Treasury", style=nextcord.ButtonStyle.blurple)
     async def from_treasury(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         self.cog.update_balance(self.member.id, self.amount)
-        await interaction.response.send_message(f"{interaction.user.display_name} added {self.amount} coins to {self.member.display_name} from the treasury.")
+        embed = nextcord.Embed(
+            title="Treasury Transaction Successful",
+            description=f"{interaction.user.mention} added {self.amount} coins to {self.member.mention} from the treasury.",
+            color=nextcord.Color.blue()
+        )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed.add_field(name="Recipient", value=self.member.display_name, inline=True)
+        embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+
+        await interaction.response.send_message(embed=embed)
         self.stop()
 
 async def setup(bot):
