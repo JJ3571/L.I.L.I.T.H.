@@ -160,11 +160,14 @@ class Birthday(commands.Cog):
         c = conn.cursor()
 
         if username:
-            # Strip the @ symbol and extract the user ID
-            user_id = int(username.strip('<@!>'))
-            member = interaction.guild.get_member(user_id)
+            # Directly use the id attribute of the Member object
+            user_id = username.id
+            member = interaction.guild.get_member(user_id) # This line is somewhat redundant if username is already a Member object from the current guild
+            if member is None: # It's good practice to ensure the member object is valid
+                member = username # Use the passed username object
+
             if member:
-                c.execute("SELECT birthday FROM birthdays WHERE user_id = ?", (user_id,))
+                c.execute("SELECT birthday FROM birthdays WHERE user_id = ?", (str(user_id),)) # Ensure user_id is string for DB
                 result = c.fetchone()
                 conn.close()
 
@@ -174,11 +177,12 @@ class Birthday(commands.Cog):
                     await interaction.response.send_message(f"{display_name}'s birthday is on {formatted_birthday}.", ephemeral=True)
                 else:
                     if interaction.user.id in admin_user_ids:
-                        modal = AddBirthdayModal(self.db_path, member.display_name, user_id)
+                        modal = AddBirthdayModal(self.db_path, member.display_name, str(user_id)) # Ensure user_id is string for modal
                         await interaction.response.send_modal(modal)
                     else:
-                        await interaction.response.send_message(f"I don't know {username}'s birthday.", ephemeral=True)
+                        await interaction.response.send_message(f"I don't know {member.display_name}'s birthday.", ephemeral=True)
             else:
+                # This case should ideally not be reached if 'username' is a valid Member object from the interaction
                 await interaction.response.send_message(f"User {username} not found.", ephemeral=True)
         else:
             c.execute("SELECT user_id, username, birthday FROM birthdays WHERE strftime('%m', birthday) = ?", (f"{now.month:02}",))
