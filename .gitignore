@@ -6,6 +6,9 @@ economy.db
 waterboard.db
 pokemon.db
 birthday.db
+request.db
+wager.db
+*.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

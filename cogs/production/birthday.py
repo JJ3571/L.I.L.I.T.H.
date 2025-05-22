@@ -33,121 +33,125 @@ class Birthday(commands.Cog):
     @tasks.loop(seconds=30)
     async def check_birthdays(self):
         await self.bot.wait_until_ready()
-        now = datetime.now(pytz.timezone('US/Pacific'))
+        now_pacific = datetime.now(pytz.timezone('US/Pacific'))
         print(f"--------------------------------")
-        print(f"[DEBUG] Current time: {now}")
-        if now.hour >= 8:
-            print("[DEBUG] Hour is past 8 AM, checking birthdays.")
+        print(f"[DEBUG] Current time (US/Pacific): {now_pacific}")
+        # Consider adjusting the hour check if it's meant to be US/Pacific hour
+        if now_pacific.hour >= 8: # Assuming this is 8 AM US/Pacific
+            print("[DEBUG] Hour is past 8 AM (US/Pacific), checking birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
-            today = now.strftime("%m-%d")
-            print(f"[DEBUG] Today's date: {today}")
-            c.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (today,))
-            users = c.fetchall()
-            print(f"[DEBUG] Users with birthdays today: {users}")
+            
+            # Date for which we are checking birthdays, in US/Pacific
+            pacific_date_to_check_str = now_pacific.strftime("%Y-%m-%d")
+            pacific_mm_dd_to_check = now_pacific.strftime("%m-%d")
 
-            channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
+            print(f"[DEBUG] Today's date (US/Pacific YYYY-MM-DD): {pacific_date_to_check_str}")
+            print(f"[DEBUG] Today's date (US/Pacific MM-DD): {pacific_mm_dd_to_check}")
+
+            # Find users whose birthday (MM-DD) matches the current US/Pacific MM-DD
+            c.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (pacific_mm_dd_to_check,))
+            users = c.fetchall()
+            print(f"[DEBUG] Users with birthdays today (US/Pacific MM-DD {pacific_mm_dd_to_check}): {users}")
+
+            channel = self.bot.get_channel(birthday_announcement_channel_id)
             if channel is None:
                 print("[ERROR] Birthday channel not found.")
+                conn.close() # Close connection if returning early
                 return
 
-            for user in users:
-                user_id = user[0]
-                c.execute("SELECT message_id FROM birthday_messages WHERE user_id = ? AND strftime('%m-%d', birthday) = ?", (user_id, today))
+            for user_tuple in users: # Renamed 'user' to 'user_tuple' to avoid conflict
+                user_id = user_tuple[0]
+                # Check if a message was already sent for this user for this specific US/Pacific date
+                c.execute("SELECT message_id FROM birthday_messages WHERE user_id = ? AND birthday = ?", 
+                          (user_id, pacific_date_to_check_str))
                 message_exists = c.fetchone()
-                print(f"[DEBUG] Message exists for user {user_id}: {message_exists}")
+                print(f"[DEBUG] Message exists for user {user_id} on {pacific_date_to_check_str}: {message_exists}")
                 if not message_exists:
                     member = channel.guild.get_member(int(user_id))
                     print(f"[DEBUG] Member object for user {user_id}: {member}")
-                    print(f"[DEBUG] Member mention: {member.mention}")
-                    if member:
+                    if member: # Check if member is not None
+                        print(f"[DEBUG] Member mention: {member.mention}")
                         print(f"[DEBUG] Member found: {member}")
                         embed = nextcord.Embed(title="🎂 **BIRTH!**", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
                         embed.add_field(name='\u200B', value=f"Send {member.mention} some dabloons:", inline=False)
                         print(f"[DEBUG] Embed created for user {user_id}")
-                        # embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
                         view = BirthdayButtonView(self.bot, birthday_user_id=member.id)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
-                        await member.add_roles(role)
-                        # Store the message ID and user ID for cleanup
-                        self.store_birthday_message(message.id, user_id)
-                        print(f"[DEBUG] Birthday message sent for user {user_id}")
+                        if role: # Check if role is not None
+                            await member.add_roles(role)
+                        else:
+                            print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
+                        # Store the message ID and user ID, using the US/Pacific date for which the message was sent
+                        self.store_birthday_message(message.id, user_id, pacific_date_to_check_str)
+                        print(f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
                     else:
                         print(f"[ERROR] Member not found for user ID {user_id}")
             conn.close()
         else:
-            print("[DEBUG] Hour is before 4 AM, skipping birthday check.")
+            # Corrected the hour check message for clarity
+            print(f"[DEBUG] Hour ({now_pacific.hour} US/Pacific) is before 8 AM, skipping birthday check.")
         print(f"--------------------------------")
-
 
     @tasks.loop(seconds=30)
     async def cleanup_birthdays(self):
         await self.bot.wait_until_ready()
-        now = datetime.now(pytz.timezone('US/Pacific'))  # Use US/Pacific timezone
-        today = now.date()  # Get only the date part
+        now_pacific = datetime.now(pytz.timezone('US/Pacific'))  # Use US/Pacific timezone
+        today_pacific_date = now_pacific.date()  # Get only the date part (this is a date object)
         print(f"--------------------------------")
-        print(f"[DEBUG] Current date: {today}")
+        print(f"[DEBUG] Current date (US/Pacific for cleanup): {today_pacific_date}")
 
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
-        # Fetch all birthday messages
         c.execute("SELECT user_id, message_id, birthday FROM birthday_messages")
         messages = c.fetchall()
         print(f"[DEBUG] Messages to check for cleanup: {messages}")
 
-        channel = self.bot.get_channel(birthday_announcement_channel_id)  # Define the channel here
+        channel = self.bot.get_channel(birthday_announcement_channel_id)
         if channel is None:
-            print("[ERROR] Birthday channel not found.")
+            print("[ERROR] Birthday channel not found for cleanup.")
             conn.close()
             return
 
-        for message in messages:
-            user_id, message_id, birthday = message
-            # Parse the birthday date
-            birthday_date = datetime.strptime(birthday, "%Y-%m-%d").date()  # Get only the date part
+        for message_tuple in messages: # Renamed 'message' to 'message_tuple'
+            user_id, message_id, birthday_str = message_tuple # 'birthday_str' is now a YYYY-MM-DD string for US/Pacific
+            
+            # Parse the stored US/Pacific birthday date string
+            birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
 
             print(f"[DEBUG] Checking message ID {message_id} for user ID {user_id}")
-            print(f"[DEBUG] Birthday date: {birthday_date}, Current date: {today}")
+            print(f"[DEBUG] Stored Message Date (US/Pacific): {birthday_date_obj}, Current Date (US/Pacific): {today_pacific_date}")
 
-            # Check if the current date is past the birthday
-            if today > birthday_date:  # If today is after the birthday
+            # Check if the current US/Pacific date is past the US/Pacific date of the message
+            if today_pacific_date > birthday_date_obj:
                 try:
                     msg = await channel.fetch_message(message_id)
                     await msg.delete()
                     print(f"[DEBUG] Deleted message ID {message_id} for user ID {user_id}")
                 except nextcord.NotFound:
-                    print(f"[ERROR] Message ID {message_id} not found in channel.")
-
-                member = channel.guild.get_member(int(user_id))
-                if member:
-                    role = channel.guild.get_role(birthday_role_id)
-                    await member.remove_roles(role)
-                    print(f"[DEBUG] Removed birthday role from user ID {user_id}")
-                else:
-                    print(f"[ERROR] Member not found for user ID {user_id}")
-
-                # Remove the message entry from the database
-                c.execute("DELETE FROM birthday_messages WHERE message_id = ?", (message_id,))
-                print(f"[DEBUG] Deleted entry from database for message ID {message_id}")
+                    print(f"[ERROR] Message ID {message_id} not found in channel for deletion.")
 
         conn.commit()
         conn.close()
         print(f"--------------------------------")
         
 
-    def store_birthday_message(self, message_id, user_id):
+    def store_birthday_message(self, message_id, user_id, pacific_date_str): # Changed last parameter
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        c.execute("INSERT INTO birthday_messages (message_id, user_id, birthday) VALUES (?, ?, ?)", (message_id, user_id, datetime.now().strftime("%Y-%m-%d")))
+        # Store the US/Pacific date string (YYYY-MM-DD) for which the message was sent
+        c.execute("INSERT INTO birthday_messages (message_id, user_id, birthday) VALUES (?, ?, ?)", 
+                  (message_id, user_id, pacific_date_str))
         conn.commit()
         conn.close()
 
-    def remove_birthday_messages(self, birthday):
+    def remove_birthday_messages(self, birthday_mm_dd): # Parameter is MM-DD
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        c.execute("DELETE FROM birthday_messages WHERE strftime('%m-%d', birthday) = ?", (birthday,))
+        # This will remove messages if their stored US/Pacific YYYY-MM-DD matches the given MM-DD
+        c.execute("DELETE FROM birthday_messages WHERE strftime('%m-%d', birthday) = ?", (birthday_mm_dd,))
         conn.commit()
         conn.close()
 

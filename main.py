@@ -5,7 +5,7 @@ import asyncio
 
 from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
-# Logging setup
+# - - - - - - - - Logging - - - - - - - -
 import logging
 # logging.basicConfig(level=logging.INFO) # Terminal output log
 logger = logging.getLogger('nextcord')
@@ -15,9 +15,12 @@ handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(me
 logger.addHandler(handler)
 
 # Bot & Intent config
+intents=nextcord.Intents.default()
+intents.message_content=True
+
 bot = commands.Bot(
     command_prefix='.',
-    intents=nextcord.Intents.all(),
+    intents=intents,
     application_id=APPLICATION_ID
 )
 
@@ -29,37 +32,34 @@ bot = commands.Bot(
 #             bot.load_extension(f'cogs.{filename[:-3]}')
 #             print(f"Loaded extension: cogs.{filename[:-3]}")
 
+
 # - - - - - - - - Load Cogs (based on env folder name) - - - - - - - -
-def load_extensions(directory: str):
+async def load_extensions(directory: str):
     path = f'./cogs/{directory}'
     for filename in os.listdir(path):
         if filename.endswith('.py') and filename != '__init__.py':
             bot.load_extension(f'cogs.{directory}.{filename[:-3]}')
             print(f"Loaded extension: cogs.{directory}.{filename[:-3]}")
 
+
 # - - - - - - - - Bot Start - - - - - - - -
 async def main():
-    load_extensions('production')
-
-    async def close_bot():
-        await bot.close()
-
-    try:
-        await bot.start(DISCORD_BOT_TOKEN)
-    except KeyboardInterrupt:
-        await close_bot()
+    await load_extensions('production')
 
 @bot.event
 async def on_ready():
-    print('Bot is ready and running.')
     try:
-        synced = await bot.sync_application_commands(guild_id=GUILD_ID)
-        print(f"Synced commands to the guild.")
+        await bot.sync_application_commands(guild_id=GUILD_ID)
+        print('Bot is ready and running.')
     except nextcord.HTTPException as e:
         print(f"An error occurred while syncing commands: {e}")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
+    try: 
+        bot.run(DISCORD_BOT_TOKEN)
+        main()
     except KeyboardInterrupt:
+        bot.close()
         print("Bot has been stopped.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
