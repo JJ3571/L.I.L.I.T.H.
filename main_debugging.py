@@ -1,3 +1,5 @@
+# Bare bones startup script for debugging bot.
+
 import asyncio
 import os
 import nextcord
