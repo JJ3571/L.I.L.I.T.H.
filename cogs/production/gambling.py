@@ -63,14 +63,14 @@ class Gambling(commands.Cog):
             await interaction.response.send_message("Amount must be positive.", ephemeral=True)
             return
 
-        balance = economy_cog.get_user_balance(user_id)
+        balance = await economy_cog.get_user_balance(user_id)
         if balance < amount:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
             return
 
         # --- Corrected Coin Toss Balance Logic ---
         # Deduct the wager upfront
-        economy_cog.update_balance(user_id, -amount)
+        await economy_cog.update_balance(user_id, -amount)
         # -----------------------------------------
 
         coin_flip = random.choice(["heads", "tails"])
@@ -94,7 +94,7 @@ class Gambling(commands.Cog):
             # --- Corrected Coin Toss Win ---
             payout = amount * 2 # Return wager + winnings
             profit = amount
-            economy_cog.update_balance(user_id, payout) # Add back the winnings + original wager
+            await economy_cog.update_balance(user_id, payout) # Add back the winnings + original wager
             # -------------------------------
             embed.add_field(name=f"You won {profit} 🪙!", value="")
             embed.color = nextcord.Color.green()
@@ -123,14 +123,14 @@ class Gambling(commands.Cog):
             await interaction.response.send_message("Amount must be positive.", ephemeral=True)
             return
 
-        balance = economy_cog.get_user_balance(user_id)
+        balance = await economy_cog.get_user_balance(user_id)
         if balance < amount:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
             return
 
         # --- FIX: Deduct the initial wager upfront ---
-        economy_cog.update_balance(user_id, -amount)
-        current_balance = economy_cog.get_user_balance(user_id) # Get updated balance for double down check later
+        await economy_cog.update_balance(user_id, -amount)
+        current_balance = await economy_cog.get_user_balance(user_id) # Get updated balance for double down check later
         # ---------------------------------------------
 
         # Create the deck and deal cards
@@ -144,7 +144,7 @@ class Gambling(commands.Cog):
              dealer_hand = [self.deal_card(deck), self.deal_card(deck)]
         except ValueError:
              await interaction.response.send_message("Error dealing cards. The deck might be empty (this shouldn't happen with a single deck).", ephemeral=True)
-             economy_cog.update_balance(user_id, amount) # Refund wager if deal fails
+             await economy_cog.update_balance(user_id, amount) # Refund wager if deal fails
              return
 
         player_value = self.calculate_hand_value(player_hand)
@@ -276,7 +276,7 @@ class BlackjackView(nextcord.ui.View):
 
         # --- FIX: Correct Balance Check ---
         # Check if the user has enough for the *additional* wager
-        current_balance = self.economy_cog.get_user_balance(self.interaction.user.id)
+        current_balance = await self.economy_cog.get_user_balance(self.interaction.user.id)
         if current_balance < self.original_wager:
             await interaction.response.send_message(
                 f"Insufficient funds to double down. You need {self.original_wager} more coins.",
@@ -286,7 +286,7 @@ class BlackjackView(nextcord.ui.View):
         # -----------------------------------
 
         # --- FIX: Deduct additional wager and update state ---
-        self.economy_cog.update_balance(self.interaction.user.id, -self.original_wager)
+        await self.economy_cog.update_balance(self.interaction.user.id, -self.original_wager)
         self.current_wager += self.original_wager # Or self.current_wager *= 2
         self.doubled_down = True
         button.disabled = True # Disable button after use
@@ -463,7 +463,7 @@ class BlackjackView(nextcord.ui.View):
 
         # Update the player's balance
         if payout > 0:
-            self.economy_cog.update_balance(self.interaction.user.id, payout)
+            await self.economy_cog.update_balance(self.interaction.user.id, payout)
         # ---------------------------------------------------------------
 
         # Create the final embed
@@ -480,7 +480,7 @@ class BlackjackView(nextcord.ui.View):
              value=f"Wager: {self.current_wager} 🪙\nProfit: {profit:+} 🪙", # Show sign for profit
              inline=False
         )
-        new_balance = self.economy_cog.get_user_balance(self.interaction.user.id)
+        new_balance = await self.economy_cog.get_user_balance(self.interaction.user.id)
         embed.set_footer(text=f"Game over. Your new balance: {new_balance} 🪙")
 
         # Edit the original message, remove the view
@@ -530,7 +530,7 @@ class BlackjackView(nextcord.ui.View):
              value=f"Wager: {self.current_wager} 🪙\nProfit: {profit:+} 🪙",
              inline=False
         )
-        new_balance = self.economy_cog.get_user_balance(self.interaction.user.id)
+        new_balance = await self.economy_cog.get_user_balance(self.interaction.user.id)
         embed.set_footer(text=f"Your new balance: {new_balance} 🪙")
 
         try:

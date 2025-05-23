@@ -243,14 +243,14 @@ class BirthdayButtonView(nextcord.ui.View):
             return
 
         # Check user's balance
-        balance = economy_cog.get_user_balance(user_id)
+        balance = await economy_cog.get_user_balance(user_id)
         if balance < cost:
             await interaction.response.send_message(f"You do not have enough currency. You need {cost} currency.", ephemeral=True)
             return
 
         # Deduct the currency
-        economy_cog.deduct_user_balance(user_id, cost)
-        economy_cog.update_balance(self.birthday_user_id, cost)
+        await economy_cog.deduct_user_balance(user_id, cost)
+        await economy_cog.update_balance(self.birthday_user_id, cost)
 
 
         reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)

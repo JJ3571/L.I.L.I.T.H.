@@ -172,7 +172,7 @@ class WaterboardCog(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        balance = economy_cog.get_user_balance(interaction.user.id)
+        balance = await economy_cog.get_user_balance(interaction.user.id)
         if balance < cost:
             conn.close()
             embed = nextcord.Embed(
@@ -184,7 +184,7 @@ class WaterboardCog(commands.Cog):
             return
 
         # Deduct the cost and update usage count, total waterboarded, and total coins spent
-        economy_cog.deduct_user_balance(interaction.user.id, cost)
+        await economy_cog.deduct_user_balance(interaction.user.id, cost)
         usage_count += 1
         total_waterboarded += 1
         total_coins_spent += cost

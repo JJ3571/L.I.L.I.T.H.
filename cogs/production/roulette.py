@@ -239,7 +239,7 @@ class Roulette(commands.Cog):
             return
 
         # --- Balance Check Again (important before deduction) ---
-        balance = economy_cog.get_user_balance(user_id)
+        balance = await economy_cog.get_user_balance(user_id)
         if balance < amount:
              error_embed = nextcord.Embed(title="Roulette Error", description="Insufficient funds found just before spin. Bet canceled.", color=nextcord.Color.red())
              await interaction.followup.edit_message('@original', embed=error_embed, view=None)
@@ -247,7 +247,7 @@ class Roulette(commands.Cog):
         # --- End Balance Check ---
 
         # --- Deduct Wager ---
-        economy_cog.update_balance(user_id, -amount)
+        await economy_cog.update_balance(user_id, -amount)
         # --------------------
 
         # --- Visual Delay ---
@@ -273,7 +273,7 @@ class Roulette(commands.Cog):
         elif bet_type == "Parity" and bet_value == winning_parity: is_win = True; payout = amount * 2
         if is_win:
             profit = payout - amount
-            economy_cog.update_balance(user_id, payout)
+            await economy_cog.update_balance(user_id, payout)
         # -------------------------------------------
 
         # --- Create Final Result Embed ---
@@ -290,7 +290,7 @@ class Roulette(commands.Cog):
         )
         final_embed.add_field(name="Your Bet", value=f"{bet_description}\nWager: {amount} 🪙", inline=True)
         final_embed.add_field(name="Result", value=f"**{result_text}**\nProfit: {profit:+} 🪙", inline=True)
-        new_balance = economy_cog.get_user_balance(user_id)
+        new_balance = await economy_cog.get_user_balance(user_id)
         final_embed.set_footer(text=f"Spin finished. Your new balance: {new_balance} 🪙")
         # ---------------------------
 
@@ -325,7 +325,7 @@ class Roulette(commands.Cog):
         if amount <= 0:
             await interaction.response.send_message("Wager amount must be positive.", ephemeral=True)
             return
-        balance = economy_cog.get_user_balance(user_id)
+        balance = await economy_cog.get_user_balance(user_id)
         if balance < amount:
             await interaction.response.send_message(f"Insufficient funds. Your balance is {balance} coins.", ephemeral=True)
             return

@@ -48,7 +48,7 @@ class BetAmountModal(Modal):
             return
 
         user_id = interaction.user.id
-        user_balance = economy_cog.get_user_balance(user_id)
+        user_balance = await economy_cog.get_user_balance(user_id)
 
         if amount > user_balance:
             await interaction.send(f"You do not have enough funds. Your balance: {user_balance}", ephemeral=True)
@@ -56,7 +56,7 @@ class BetAmountModal(Modal):
 
         # Process the bet
         # 1. Deduct funds
-        economy_cog.update_balance(user_id, -amount)
+        await economy_cog.update_balance(user_id, -amount)
         
         # 2. Record bet in DB
         conn = get_db_connection()
@@ -71,7 +71,7 @@ class BetAmountModal(Modal):
             # Optionally, update the main event message to show new totals or odds
             await self.betting_cog.update_event_message(self.event_id) # You'll need this method
         except sqlite3.Error as e:
-            economy_cog.update_balance(user_id, amount) # Refund on DB error
+            await economy_cog.update_balance(user_id, amount) # Refund on DB error
             await interaction.send(f"An error occurred while placing your bet: {e}", ephemeral=True)
         finally:
             conn.close()
@@ -883,7 +883,7 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
                 payout = (winner_bet['amount'] / total_bet_on_winning_outcome) * total_pot
                 payout = round(payout) # Or use decimal for precision
 
-                economy_cog.update_balance(winner_bet['user_id'], payout)
+                await economy_cog.update_balance(winner_bet['user_id'], payout)
                 payout_summary.append(f"<@{winner_bet['user_id']}> won {payout} (staked {winner_bet['amount']})")
             
             conn.commit()

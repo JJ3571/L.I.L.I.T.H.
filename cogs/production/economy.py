@@ -1,12 +1,13 @@
 import nextcord
 from nextcord.ext import commands, tasks
-import sqlite3
+import aiosqlite
 import time, datetime
 import random
 import pytz
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
+
 
 class Economy(commands.Cog):
     def __init__(self, bot):
@@ -19,69 +20,55 @@ class Economy(commands.Cog):
         self.movie_night_reward = 1000
         self.movie_night_time_threshold = 90 * 60  # 1.5 hours in seconds
 
-        # Define the number of items per page for the leaderboard
         self.leaderboard_items_per_page = 12
 
         self.db_path = "economy.db"
-        self.create_tables()
-        # Ensure tasks are started after bot is ready or handle errors
-        # reward_users and backup_task are started in __init__, they should use before_loop to wait
         self.reward_users.start()
         self.backup_task.start()
 
-    def create_tables(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                balance INTEGER DEFAULT 0
-            )
-        ''')
+    async def create_tables(self):
+        async with aiosqlite.connect(self.db_path) as conn: # Use async with
+            async with conn.cursor() as cursor: # Use async with
+                await cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        balance INTEGER DEFAULT 0
+                    )
+                ''')
+            await conn.commit()
 
-        conn.commit()
-        conn.close()
+    async def get_user_balance(self, user_id): # Made async
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+                result = await cursor.fetchone() # await fetchone
+            return result[0] if result else 0
 
-    def get_user_balance(self, user_id):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-        result = cursor.fetchone()
-        conn.close()
-        return result[0] if result else 0
+    async def deduct_user_balance(self, user_id: int, amount: int): # Made async
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+            await conn.commit()
 
-    def deduct_user_balance(self, user_id: int, amount: int):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
-        conn.close()
+    async def update_balance(self, user_id, amount): # Made async
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+                await cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            await conn.commit()
 
-    def update_balance(self, user_id, amount):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-        cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        conn.commit()
-        conn.close()
-
-    def get_all_balances(self):
-        # This method is efficient as it only queries the database
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        # Select user_id and balance, ordered by balance DESC
-        cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
-        result = cursor.fetchall() # Returns a list of (user_id, balance) tuples
-        conn.close()
-
-        # Return the list of tuples directly, no need to convert to dict here for the leaderboard
-        return result
-
+    async def get_all_balances(self): # Made async
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
+                result = await cursor.fetchall() # await fetchall
+            return result
 
     @tasks.loop(minutes=1)
     async def backup_task(self):
         # Make sure datetime is used correctly if it wasn't before
+        await self.create_tables()
         now = datetime.datetime.now(pytz.timezone('US/Pacific'))
         if now.hour in [0, 12] and now.minute == 0:
             await self.bot.wait_until_ready()
@@ -98,6 +85,7 @@ class Economy(commands.Cog):
     @backup_task.before_loop
     async def before_backup_task(self):
         await self.bot.wait_until_ready()
+        await self.create_tables()
         print("Backup task is ready to start.")
 
 
@@ -182,13 +170,14 @@ class Economy(commands.Cog):
 
     @tasks.loop(seconds=60)
     async def reward_users(self):
+        await self.create_tables()
         # Process message rewards
         if self.message_counts:
             print(f"Processing message rewards for {len(self.message_counts)} users...")
         for user_id, count in list(self.message_counts.items()):
             if count > 0:
                 reward_amount = count * self.message_reward_amount
-                self.update_balance(user_id, reward_amount)
+                await self.update_balance(user_id, reward_amount)
                 # print(f"Rewarded {reward_amount} coins to {user_id} for messages.") # Optional: make this debug print
         self.message_counts.clear()
         if self.message_counts:
@@ -205,7 +194,7 @@ class Economy(commands.Cog):
     @econ.subcommand(name="balance", description="Check your balance or someone else's")
     async def balance_command(self, interaction: nextcord.Interaction, member: nextcord.Member = nextcord.SlashOption(required=False, description='The member to check the balance of.')):
         member = member or interaction.user
-        balance = self.get_user_balance(member.id)
+        balance = await self.get_user_balance(member.id)
 
         embed = nextcord.Embed(title=f"🪙  {balance}", color=nextcord.Color.blue())
         embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
@@ -228,13 +217,13 @@ class Economy(commands.Cog):
             await interaction.response.send_message("Give from your balance or the treasury?", view=view, ephemeral=True)
             return
 
-        sender_balance = self.get_user_balance(sender_id)
+        sender_balance = await self.get_user_balance(sender_id)
         if sender_balance < amount:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
             return
 
-        self.update_balance(sender_id, -amount)
-        self.update_balance(member.id, amount)
+        await self.update_balance(sender_id, -amount)
+        await self.update_balance(member.id, amount)
         embed = nextcord.Embed(
                     title="Transaction Successful",
                     description=f"{interaction.user.mention} gave {member.mention} {amount} coins."+(f"\n\n**Reason:** {reason}" if reason else ""),
@@ -307,8 +296,6 @@ class Economy(commands.Cog):
                 print(f"Failed to send 'receive' request notification to bot_spam channel: {e}")
        
 
-       
-        
 
     class LeaderboardPageButton(nextcord.ui.Button):
         def __init__(self, label, direction):
@@ -439,7 +426,7 @@ class Economy(commands.Cog):
 
             # Get all balances from the database (efficient)
             # This returns a list of (user_id, balance) tuples, already sorted
-            all_user_balances = self.get_all_balances()
+            all_user_balances = await self.get_all_balances()
             print(f"Fetched {len(all_user_balances)} balances from the database.")
 
             if not all_user_balances:
@@ -484,13 +471,13 @@ class AdminGiveView(nextcord.ui.View):
     async def from_balance(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await interaction.response.defer() # Defer interaction
         sender_id = interaction.user.id
-        sender_balance = self.cog.get_user_balance(sender_id)
+        sender_balance = await self.cog.get_user_balance(sender_id)
         if sender_balance < self.amount:
             await interaction.followup.send("Insufficient funds.", ephemeral=True)
             self.stop() # Stop the view
             return
-        self.cog.update_balance(sender_id, -self.amount)
-        self.cog.update_balance(self.member.id, self.amount)
+        await self.cog.update_balance(sender_id, -self.amount)
+        await self.cog.update_balance(self.member.id, self.amount)
 
         embed = nextcord.Embed(
             title="Transaction Successful",
@@ -508,7 +495,7 @@ class AdminGiveView(nextcord.ui.View):
     @nextcord.ui.button(label="From Treasury", style=nextcord.ButtonStyle.blurple)
     async def from_treasury(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await interaction.response.defer() # Defer interaction
-        self.cog.update_balance(self.member.id, self.amount)
+        await self.cog.update_balance(self.member.id, self.amount)
         embed = nextcord.Embed(
             title="Treasury Transaction Successful",
             description=f"{interaction.user.mention} added {self.amount} coins to {self.member.mention} from the treasury.",
@@ -576,8 +563,8 @@ class ReceiveRequestView(nextcord.ui.View):
             return # Keep the request active
 
         # Process payment
-        self.cog.update_balance(self.requestee.id, -self.amount)
-        self.cog.update_balance(self.requester.id, self.amount)
+        await self.cog.update_balance(self.requestee.id, -self.amount)
+        await self.cog.update_balance(self.requester.id, self.amount)
 
         success_embed = nextcord.Embed(
             title="Payment Successful",
@@ -644,5 +631,7 @@ class ReceiveRequestView(nextcord.ui.View):
 
 
 async def setup(bot):
+    cog = Economy(bot)
+    await cog.create_tables()
     bot.add_cog(Economy(bot))
     print("EconomyCog has been added to the bot.")
