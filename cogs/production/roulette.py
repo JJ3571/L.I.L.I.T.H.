@@ -5,8 +5,8 @@ from nextcord.ext import commands
 import random
 import asyncio # Needed for sleep
 
+from server_configs.config import GUILD_ID
 # --- Roulette Wheel Configuration (European Style) ---
-# (Keep these definitions as before)
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
 ZERO = 0
@@ -20,7 +20,6 @@ NUM_EMOJIS = {
 SPIN_EMOJI = '🎰' # Or '💫'
 # ----------------------------------------------------
 
-# --- UI Components ---
 
 # Modal for Number Input
 class NumberBetModal(nextcord.ui.Modal):
@@ -305,7 +304,7 @@ class Roulette(commands.Cog):
             print(f"Error editing final roulette result: {e}")
 
 
-    @nextcord.slash_command(name="roulette", description="Play an interactive game of European roulette.")
+    @nextcord.slash_command(name="roulette", description="Play an interactive game of European roulette.",guild_ids=[GUILD_ID])
     async def roulette_command(
         self,
         interaction: nextcord.Interaction,

@@ -2,6 +2,7 @@ import nextcord
 from nextcord.ext import commands
 import random
 
+from server_configs.config import GUILD_ID
 class Magic8Ball(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -26,7 +27,7 @@ class Magic8Ball(commands.Cog):
             "Very doubtful."
         ]
 
-    @nextcord.slash_command(name="8ball", description="Ask the magic 8-ball")
+    @nextcord.slash_command(name="8ball", description="Ask the magic 8-ball", guild_ids=[GUILD_ID])
     async def eight_ball(self, interaction: nextcord.Interaction, question: str):
         response = random.choice(self.responses)
         embed = nextcord.Embed(color=0x3749CE)

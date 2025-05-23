@@ -109,7 +109,7 @@ class ViewBetsButton(Button):
             if bet['outcome_id'] in bets_by_outcome:
                 # Try to fetch member to display name, fallback to ID
                 member = interaction.guild.get_member(bet['user_id'])
-                user_display = member.display_name if member else f"User ID: {bet['user_id']}"
+                user_display = member.mention if member else f"User ID: {bet['user_id']}"
                 bets_by_outcome[bet['outcome_id']].append(f"{user_display}: {bet['amount']}")
 
         if not all_bets:

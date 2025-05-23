@@ -77,7 +77,7 @@ class VoiceCog(commands.Cog):
         await channel.edit(category=hidden_category, overwrites=overwrites)
         print(f"Moved '{channel.name}' to hidden category and updated permissions.")
 
-    @nextcord.slash_command(name="voice", description="Voice channel management commands.")
+    @nextcord.slash_command(name="voice", description="Voice channel management commands.",guild_ids=[GUILD_ID])
     async def voice(self, interaction: nextcord.Interaction):
         pass
 
@@ -214,7 +214,8 @@ class VoiceCog(commands.Cog):
         await interaction.followup.send("League channel has been moved to the seen category.", ephemeral=True)
         print(f"League channel '{league_channel.name}' moved to seen category.")
 
-    @voice.subcommand(name="select_channel", description="Select a channel to receive from the hidden category.")
+
+    @voice.subcommand(name="select_channel", description="Select a channel to retrieve from the hidden category.")
     async def select_channel(self, interaction: nextcord.Interaction):
         await interaction.response.defer(ephemeral=True)
 

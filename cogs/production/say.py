@@ -2,7 +2,9 @@ import nextcord
 from nextcord.ext import commands
 from discord_webhook import DiscordWebhook
 
+from server_configs.config import GUILD_ID
 from server_configs.cogs_config import master_chief
+
 
 character_avatars = {
     "Master Chief": "https://cdn.discordapp.com/attachments/1350599554818375811/1350738324247154742/master_chief_icon.png?ex=67d7d498&is=67d68318&hm=f795842687e7212baae6402a58dde8e16305f7f6907f934629e46b23bd1bf6b0&",
@@ -15,7 +17,7 @@ class Say(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @nextcord.slash_command(name='say', description="Send a message as a character")
+    @nextcord.slash_command(name='say', description="Send a message as a character", guild_ids=[GUILD_ID])
     async def say(self, interaction: nextcord.Interaction, character: str = nextcord.SlashOption(choices={"Master Chief": "Master Chief", "Cortana": "Cortana","Madame Zeroni":"Madame Zeroni", "Zuko":"Zuko"}), *, message: str):
         webhook_url = master_chief
         avatar_url = character_avatars.get(character, None)  # Get the avatar URL for the character

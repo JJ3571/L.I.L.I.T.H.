@@ -31,7 +31,7 @@ class BotStatusCog(commands.Cog):
         await self.bot.wait_until_ready()
         print("Bot is ready. Starting status_cycle loop.")
 
-    @nextcord.slash_command(name="status", description="Manage the bot's status.")
+    @nextcord.slash_command(name="status", description="Manage the bot's status.", guild_ids=[GUILD_ID])
     async def status(self, interaction: nextcord.Interaction):
         pass
 

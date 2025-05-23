@@ -17,6 +17,8 @@ logger.addHandler(handler)
 # Bot & Intent config
 intents=nextcord.Intents.default()
 intents.message_content=True
+intents.members=True
+intents.guilds=True
 
 bot = commands.Bot(
     command_prefix='.',
@@ -43,21 +45,19 @@ async def load_extensions(directory: str):
 
 
 # - - - - - - - - Bot Start - - - - - - - -
-async def main():
-    await load_extensions('production')
-
 @bot.event
 async def on_ready():
     try:
+        await load_extensions('production')
         await bot.sync_application_commands(guild_id=GUILD_ID)
+        await bot.register_application_commands(guild_id=GUILD_ID)
         print('Bot is ready and running.')
     except nextcord.HTTPException as e:
         print(f"An error occurred while syncing commands: {e}")
 
 if __name__ == "__main__":
-    try: 
+    try:
         bot.run(DISCORD_BOT_TOKEN)
-        main()
     except KeyboardInterrupt:
         bot.close()
         print("Bot has been stopped.")

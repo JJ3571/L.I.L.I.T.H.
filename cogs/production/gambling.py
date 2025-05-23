@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import random
 import asyncio
 
+from server_configs.config import GUILD_ID
 from server_configs.cogs_config import heads_emoji_id, tails_emoji_id
 
 class Gambling(commands.Cog):
@@ -47,7 +48,7 @@ class Gambling(commands.Cog):
             aces -= 1
         return value
 
-    @nextcord.slash_command(name="cointoss", description="Toss a coin and potentially double your wager")
+    @nextcord.slash_command(name="cointoss", description="Toss a coin and potentially double your wager", guild_ids=[GUILD_ID])
     async def cointoss_command(self, interaction: nextcord.Interaction, choice: str = nextcord.SlashOption(choices=["heads", "tails"], description="Heads or tails?"), amount: int = nextcord.SlashOption(description="Amount to bet.")):
         """Handles the coin toss game."""
         try:
@@ -107,7 +108,7 @@ class Gambling(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
-    @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.")
+    @nextcord.slash_command(name="blackjack", description="Play blackjack with a wager.",guild_ids=[GUILD_ID])
     async def blackjack_command(self, interaction: nextcord.Interaction, amount: int = nextcord.SlashOption(description="Amount to wager.")):
         """Starts a game of Blackjack."""
         try:

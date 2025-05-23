@@ -4,6 +4,7 @@ from nextcord.ext import commands
 import sqlite3
 import asyncio
 
+from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids
 
 
@@ -55,7 +56,7 @@ class Pokemon(commands.Cog):
         conn.close()
         return users
 
-    @nextcord.slash_command(name="pkgo", description="Parent command for Pokemon Go related commands")
+    @nextcord.slash_command(name="pkgo", description="Parent command for Pokemon Go related commands", guild_ids=[GUILD_ID])
     async def pkgo(self, interaction: nextcord.Interaction):
         pass  # This is the parent command, it won't do anything by itself
 

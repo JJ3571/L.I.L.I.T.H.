@@ -5,8 +5,8 @@ import time, datetime
 import random
 import pytz
 
-# Assuming server_configs.cogs_config exists and contains necessary IDs
-from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id
+from server_configs.config import GUILD_ID
+from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
 
 class Economy(commands.Cog):
     def __init__(self, bot):
@@ -198,7 +198,11 @@ class Economy(commands.Cog):
         # If you wanted rewards for *staying* in voice, you'd need a different timer/tracking approach here.
 
 
-    @nextcord.slash_command(name="balance", description="Check your balance or someone else's")
+    @nextcord.slash_command(name="econ", description="Economy commands", guild_ids=[GUILD_ID])
+    async def econ(self, interaction: nextcord.Interaction):
+        pass
+
+    @econ.subcommand(name="balance", description="Check your balance or someone else's")
     async def balance_command(self, interaction: nextcord.Interaction, member: nextcord.Member = nextcord.SlashOption(required=False, description='The member to check the balance of.')):
         member = member or interaction.user
         balance = self.get_user_balance(member.id)
@@ -209,8 +213,8 @@ class Economy(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
-    @nextcord.slash_command(name="give", description="Give currency to another user")
-    async def give_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int):
+    @econ.subcommand(name="give", description="Give currency to another user")
+    async def give_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int, reason: str = nextcord.SlashOption(required=False, description='Reason for the transaction')):
         if amount <= 0:
             await interaction.response.send_message("Amount must be positive.", ephemeral=True)
             return
@@ -220,7 +224,7 @@ class Economy(commands.Cog):
         if sender_id in admin_user_ids:
             # Use AdminGiveView as defined below (assuming it's outside the Cog or defined later)
             # If AdminGiveView is defined inside the Cog, access it as Economy.AdminGiveView
-            view = AdminGiveView(self, member, amount)
+            view = AdminGiveView(self, member, amount, reason)
             await interaction.response.send_message("Give from your balance or the treasury?", view=view, ephemeral=True)
             return
 
@@ -233,7 +237,7 @@ class Economy(commands.Cog):
         self.update_balance(member.id, amount)
         embed = nextcord.Embed(
                     title="Transaction Successful",
-                    description=f"{interaction.user.mention} gave {member.mention} {amount} coins.",
+                    description=f"{interaction.user.mention} gave {member.mention} {amount} coins."+(f"\n\n**Reason:** {reason}" if reason else ""),
                     color=nextcord.Color.green()
                 )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
@@ -243,7 +247,68 @@ class Economy(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
-    # --- START OF REWRITTEN LEADERBOARD COMPONENTS ---
+    @econ.subcommand(name="request", description="Request currency from another user")
+    async def receive_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int, reason: str = nextcord.SlashOption(required=False, description='Reason for the request')):
+        if amount <= 0:
+            await interaction.response.send_message("Amount must be positive.", ephemeral=True)
+            return
+        
+        if member == interaction.user:
+            await interaction.response.send_message("You cannot request money from yourself.", ephemeral=True)
+            return
+
+        if member.bot:
+            await interaction.response.send_message("You cannot request money from a bot.", ephemeral=True)
+            return
+
+        # Create the view instance
+        # Pass self.bot (the bot instance) and bot_spam_id
+        view = ReceiveRequestView(self, interaction.user, member, amount, reason, self.bot, bot_spam_id)
+
+        # Create the initial request embed
+        embed = nextcord.Embed(
+            title="Incoming Payment Request",
+            description=f"{interaction.user.mention} is requesting {amount} coins from you, {member.mention}.",
+            color=nextcord.Color.orange() 
+        )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed.add_field(name="Requester", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Target", value=member.mention, inline=True)
+        embed.add_field(name="Amount", value=f"{amount} coins", inline=True)
+        
+        cleaned_reason = reason.strip() if reason and reason.strip() else None
+        if cleaned_reason:
+            embed.add_field(name="Reason", value=cleaned_reason, inline=False)
+        embed.set_footer(text="Please respond using the buttons below.")
+
+        # Send the interactive message to the current channel
+        await interaction.response.send_message(embed=embed, view=view)
+        # Set the message object on the view for timeout handling
+        view.message = await interaction.original_message()
+
+
+        # Send a notification to bot_spam_id channel
+        bot_spam_channel = self.bot.get_channel(bot_spam_id)
+        if bot_spam_channel:
+            spam_embed = nextcord.Embed(
+                title="Payment Request Initiated",
+                description=f"{interaction.user.mention} requested {amount} coins from {member.mention} in {interaction.channel.mention}.",
+                color=nextcord.Color.dark_orange()
+            )
+            spam_embed.add_field(name="Requester", value=f"{interaction.user.mention}", inline=True)
+            spam_embed.add_field(name="Requestee", value=f"{member.mention}", inline=True)
+            spam_embed.add_field(name="Amount", value=str(amount), inline=True)
+            if cleaned_reason:
+                spam_embed.add_field(name="Reason", value=cleaned_reason, inline=False)
+            spam_embed.set_footer(text=f"Channel: #{interaction.channel.name}")
+            try:
+                await bot_spam_channel.send(embed=spam_embed)
+            except Exception as e:
+                print(f"Failed to send 'receive' request notification to bot_spam channel: {e}")
+       
+
+       
+        
 
     class LeaderboardPageButton(nextcord.ui.Button):
         def __init__(self, label, direction):
@@ -364,12 +429,11 @@ class Economy(commands.Cog):
                       print(f"Error disabling leaderboard buttons on timeout: {e}")
 
 
-    @nextcord.slash_command(name="leaderboard", description="Display the leaderboard of user balances")
+    @econ.subcommand(name="leaderboard", description="Display the leaderboard of user balances")
     async def leaderboard_command(self, interaction: nextcord.Interaction):
         """Displays the economy leaderboard with pagination."""
         print(f"'/leaderboard' command triggered by {interaction.user.display_name}")
         try:
-            # Defer the initial response immediately
             await interaction.response.defer()
             print("Leaderboard interaction deferred.")
 
@@ -407,20 +471,14 @@ class Economy(commands.Cog):
                 print("Sent error message to user.")
             except Exception as send_error:
                 print(f"Failed to send error message to user: {send_error}")
-
-
-    # --- END OF REWRITTEN LEADERBOARD COMPONENTS ---
-
-
-# Keep AdminGiveView outside the Cog class definition if it's a standalone view,
-# or ensure it's correctly referenced if defined inside (like Economy.AdminGiveView)
-# Assuming AdminGiveView is defined elsewhere or here after the Economy class
+    
 class AdminGiveView(nextcord.ui.View):
-    def __init__(self, cog, member, amount):
+    def __init__(self, cog, member, amount,reason):
         super().__init__(timeout=60) # Add a timeout
         self.cog = cog
         self.member = member
         self.amount = amount
+        self.reason = reason if reason else None
 
     @nextcord.ui.button(label="From Balance", style=nextcord.ButtonStyle.green)
     async def from_balance(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
@@ -436,7 +494,7 @@ class AdminGiveView(nextcord.ui.View):
 
         embed = nextcord.Embed(
             title="Transaction Successful",
-            description=f"{interaction.user.mention} gave {self.member.mention} {self.amount} coins from their balance.",
+            description=f"{interaction.user.mention} gave {self.member.mention} {self.amount} coins."+(f"\n\n**Reason:**\n{self.reason}" if self.reason else ""),
             color=nextcord.Color.green()
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
@@ -469,6 +527,120 @@ class AdminGiveView(nextcord.ui.View):
             item.disabled = True
         # For ephemeral views, no need to edit the message as it disappears for the user anyway.
         pass
+
+class ReceiveRequestView(nextcord.ui.View):
+    def __init__(self, cog: Economy, requester: nextcord.Member, requestee: nextcord.Member, amount: int, reason: str, bot: nextcord.Client, bot_spam_channel_id: int):
+        super().__init__(timeout=300) # 5-minute timeout
+        self.cog = cog
+        self.requester = requester
+        self.requestee = requestee
+        self.amount = amount
+        self.reason_text = reason.strip() if reason and reason.strip() else None
+        self.bot = bot
+        self.bot_spam_channel_id = bot_spam_channel_id
+        self.message: nextcord.Message = None # Will be set after the initial message is sent
+
+    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        """Checks if the user interacting is the requestee, or the requester trying to cancel."""
+        if interaction.user.id == self.requestee.id:
+            return True
+        if interaction.user.id == self.requester.id and interaction.data.get('custom_id') == 'deny_request':
+            return True # Requester can only press "Deny" to cancel
+        
+        await interaction.response.send_message("This request is not for you, or you cannot perform this action.", ephemeral=True)
+        return False
+
+    def disable_all_buttons(self):
+        for item in self.children:
+            if isinstance(item, nextcord.ui.Button):
+                item.disabled = True
+
+    async def send_bot_spam_update(self, title: str, description: str, color: nextcord.Color):
+        bot_spam_channel = self.bot.get_channel(self.bot_spam_channel_id)
+        if bot_spam_channel:
+            embed = nextcord.Embed(title=title, description=description, color=color)
+            embed.set_footer(text=f"Original request by: {self.requester.display_name} to {self.requestee.display_name} for {self.amount} coins.")
+            try:
+                await bot_spam_channel.send(embed=embed)
+            except Exception as e:
+                print(f"Failed to send receive update to bot_spam: {e}")
+
+    @nextcord.ui.button(label="Pay", style=nextcord.ButtonStyle.green, custom_id="pay_request")
+    async def pay_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        # interaction_check ensures this is the requestee
+        await interaction.response.defer()
+
+        requestee_balance = self.cog.get_user_balance(self.requestee.id)
+        if requestee_balance < self.amount:
+            await interaction.followup.send(f"You do not have sufficient funds ({requestee_balance} coins) to pay {self.amount} coins.", ephemeral=True)
+            return # Keep the request active
+
+        # Process payment
+        self.cog.update_balance(self.requestee.id, -self.amount)
+        self.cog.update_balance(self.requester.id, self.amount)
+
+        success_embed = nextcord.Embed(
+            title="Payment Successful",
+            description=f"{self.requestee.mention} paid {self.requester.mention} {self.amount} coins.",
+            color=nextcord.Color.green()
+        )
+        success_embed.set_author(name=self.requestee.display_name, icon_url=self.requestee.avatar.url if self.requestee.avatar else self.requestee.default_avatar.url)
+        if self.reason_text:
+            success_embed.add_field(name="Reason", value=self.reason_text, inline=False)
+        success_embed.add_field(name="Payer", value=self.requestee.mention, inline=True)
+        success_embed.add_field(name="Recipient", value=self.requester.mention, inline=True)
+        success_embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+        
+        self.disable_all_buttons()
+        await interaction.message.edit(embed=success_embed, view=self)
+        await self.send_bot_spam_update("Payment Request Paid", f"{self.requestee.mention} paid {self.amount} coins to {self.requester.mention}.", nextcord.Color.green())
+        self.stop()
+
+    @nextcord.ui.button(label="Deny", style=nextcord.ButtonStyle.red, custom_id="deny_request")
+    async def deny_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await interaction.response.defer()
+        
+        denial_description = ""
+        if interaction.user.id == self.requester.id:
+            denial_description = f"{self.requester.mention} cancelled the request for {self.amount} coins from {self.requestee.mention}."
+            await interaction.followup.send("You have cancelled the request.", ephemeral=True) # Confirmation for requester
+        else: # Denied by requestee
+            denial_description = f"{self.requestee.mention} denied the request for {self.amount} coins from {self.requester.mention}."
+            # No ephemeral message needed for requestee, main message will update.
+
+        denied_embed = nextcord.Embed(
+            title="Payment Request Denied",
+            description=denial_description,
+            color=nextcord.Color.red()
+        )
+        denied_embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        if self.reason_text:
+            denied_embed.add_field(name="Original Reason", value=self.reason_text, inline=False)
+        
+        self.disable_all_buttons()
+        await interaction.message.edit(embed=denied_embed, view=self)
+        await self.send_bot_spam_update("Payment Request Denied/Cancelled", denial_description, nextcord.Color.red())
+        self.stop()
+
+    async def on_timeout(self):
+        if self.message:
+            timeout_embed = nextcord.Embed(
+                title="Payment Request Timed Out",
+                description=f"The request from {self.requester.mention} to {self.requestee.mention} for {self.amount} coins has timed out.",
+                color=nextcord.Color.greyple()
+            )
+            if self.reason_text:
+                timeout_embed.add_field(name="Original Reason", value=self.reason_text, inline=False)
+            
+            self.disable_all_buttons()
+            try:
+                await self.message.edit(embed=timeout_embed, view=self)
+                await self.send_bot_spam_update("Payment Request Timed Out", f"Request from {self.requester.mention} to {self.requestee.mention} for {self.amount} coins timed out.", nextcord.Color.greyple())
+            except nextcord.errors.NotFound:
+                print(f"ReceiveRequest: Original message (ID: {self.message.id}) not found on timeout.")
+            except Exception as e:
+                print(f"ReceiveRequest: Error updating message on timeout: {e}")
+        self.stop()
 
 
 async def setup(bot):

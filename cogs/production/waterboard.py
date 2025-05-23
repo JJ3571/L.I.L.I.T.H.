@@ -82,7 +82,7 @@ class WaterboardCog(commands.Cog):
         conn.close()
 
 
-    @nextcord.slash_command(name="executivepardon", description="Grant exemption from waterboarding for a set time.")
+    @nextcord.slash_command(name="executivepardon", description="Grant exemption from waterboarding for a set time.",guild_ids=[GUILD_ID])
     async def executivepardon(self, 
                               interaction: nextcord.Interaction, 
                               user: nextcord.Member, 
@@ -124,7 +124,7 @@ class WaterboardCog(commands.Cog):
         conn.close()
 
 
-    @nextcord.slash_command(name="waterboard", description="Waterboard a user")
+    @nextcord.slash_command(name="waterboard", description="Waterboard a user",guild_ids=[GUILD_ID])
     async def waterboard(self, interaction: nextcord.Interaction, user: nextcord.Member):
         print(f"User id: {interaction.user.id} used the waterboard command on {user.name}.")
         conn = sqlite3.connect(self.db_path)
@@ -215,7 +215,7 @@ class WaterboardCog(commands.Cog):
         asyncio.create_task(self.waterboard_user(interaction, user, seen_category))
         
 
-    @nextcord.slash_command(name="waterboard-ranks", description="All time waterboard rankings.")
+    @nextcord.slash_command(name="waterboard-ranks", description="All time waterboard rankings.",guild_ids=[GUILD_ID])
     async def leaderboard(self, interaction: nextcord.Interaction):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()

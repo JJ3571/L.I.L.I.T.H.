@@ -171,3 +171,5 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+server_configs/config_template.py
+server_configs/cogs_config_template.py

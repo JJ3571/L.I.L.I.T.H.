@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta
 import pytz
 
+from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
 
 class Birthday(commands.Cog):
@@ -38,7 +39,7 @@ class Birthday(commands.Cog):
         print(f"[DEBUG] Current time (US/Pacific): {now_pacific}")
         # Consider adjusting the hour check if it's meant to be US/Pacific hour
         if now_pacific.hour >= 8: # Assuming this is 8 AM US/Pacific
-            print("[DEBUG] Hour is past 8 AM (US/Pacific), checking birthdays.")
+            # print("[DEBUG] Hour is past 8 AM (US/Pacific), checking birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             
@@ -46,13 +47,13 @@ class Birthday(commands.Cog):
             pacific_date_to_check_str = now_pacific.strftime("%Y-%m-%d")
             pacific_mm_dd_to_check = now_pacific.strftime("%m-%d")
 
-            print(f"[DEBUG] Today's date (US/Pacific YYYY-MM-DD): {pacific_date_to_check_str}")
-            print(f"[DEBUG] Today's date (US/Pacific MM-DD): {pacific_mm_dd_to_check}")
+            # print(f"[DEBUG] Today's date (US/Pacific YYYY-MM-DD): {pacific_date_to_check_str}")
+            # print(f"[DEBUG] Today's date (US/Pacific MM-DD): {pacific_mm_dd_to_check}")
 
             # Find users whose birthday (MM-DD) matches the current US/Pacific MM-DD
             c.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (pacific_mm_dd_to_check,))
             users = c.fetchall()
-            print(f"[DEBUG] Users with birthdays today (US/Pacific MM-DD {pacific_mm_dd_to_check}): {users}")
+            # print(f"[DEBUG] Users with birthdays today (US/Pacific MM-DD {pacific_mm_dd_to_check}): {users}")
 
             channel = self.bot.get_channel(birthday_announcement_channel_id)
             if channel is None:
@@ -99,15 +100,15 @@ class Birthday(commands.Cog):
         await self.bot.wait_until_ready()
         now_pacific = datetime.now(pytz.timezone('US/Pacific'))  # Use US/Pacific timezone
         today_pacific_date = now_pacific.date()  # Get only the date part (this is a date object)
-        print(f"--------------------------------")
-        print(f"[DEBUG] Current date (US/Pacific for cleanup): {today_pacific_date}")
+        # print(f"--------------------------------")
+        # print(f"[DEBUG] Current date (US/Pacific for cleanup): {today_pacific_date}")
 
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
         c.execute("SELECT user_id, message_id, birthday FROM birthday_messages")
         messages = c.fetchall()
-        print(f"[DEBUG] Messages to check for cleanup: {messages}")
+        # print(f"[DEBUG] Messages to check for cleanup: {messages}")
 
         channel = self.bot.get_channel(birthday_announcement_channel_id)
         if channel is None:
@@ -155,7 +156,7 @@ class Birthday(commands.Cog):
         conn.commit()
         conn.close()
 
-    @nextcord.slash_command(name="bday", description="Shows upcoming birthdays")
+    @nextcord.slash_command(name="bday", description="Shows upcoming birthdays", guild_ids=[GUILD_ID])
     async def bday(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):
 
         now = datetime.now()
