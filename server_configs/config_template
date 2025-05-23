@@ -1,0 +1,5 @@
+# Rename this file to config.py. Populate below IDs and tokens.
+
+DISCORD_BOT_TOKEN = "12345"
+GUILD_ID = 12345
+APPLICATION_ID = 12345
