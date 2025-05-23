@@ -4,15 +4,8 @@ from discord_webhook import DiscordWebhook
 import asyncio
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import master_chief
+from server_configs.cogs_config import webhook_url, character_avatars
 
-
-character_avatars = {
-    "Master Chief": "https://cdn.discordapp.com/attachments/1350599554818375811/1350738324247154742/master_chief_icon.png?ex=67d7d498&is=67d68318&hm=f795842687e7212baae6402a58dde8e16305f7f6907f934629e46b23bd1bf6b0&",
-    "Cortana": "https://cdn.discordapp.com/attachments/1350599554818375811/1350744045428805672/cortana_icon.png?ex=67d7d9ec&is=67d6886c&hm=1c4b9fdb1a88d3e2f75d2eb01d6e7215c30f201fe99ea067fdc25dbebf9985c7&",
-    "Madame Zeroni": "https://cdn.discordapp.com/attachments/758472892828090409/1351412712462221352/Madame_Zeroni.png?ex=67da48aa&is=67d8f72a&hm=a524ba5870a5e147cb3e6b5276cc351cc6380d7ca67f01cf2af291468f3be83c&",
-    "Zuko": "https://cdn.discordapp.com/attachments/758472892828090409/1351412701665955880/Zuko.png?ex=67da48a8&is=67d8f728&hm=665e31242512db220c2ff64af371df588000ab2743a056d4d3dc8ef41bfef857&"
-}
 
 COST_TO_SAY = 200
 
@@ -26,7 +19,7 @@ class Say(commands.Cog):
                   character: str = nextcord.SlashOption(
                       name="character",
                       description="The character to speak as",
-                      choices={"Master Chief": "Master Chief", "Cortana": "Cortana", "Madame Zeroni": "Madame Zeroni", "Zuko": "Zuko"}
+                      choices={"Master Chief": "Master Chief", "Cortana": "Cortana", "Madame Zeroni": "Madame Zeroni", "Zuko": "Zuko", "Babu Frik": "Babu Frik"}    
                   ), 
                   message: str = nextcord.SlashOption(
                       name="message",
@@ -84,7 +77,7 @@ class Say(commands.Cog):
                     await interaction.followup.send("An error occurred while trying to create a webhook for the specified channel.", ephemeral=True)
                     return
             else:
-                webhook_to_use_url = master_chief 
+                webhook_to_use_url = webhook_url
                 # If you need to mention the default channel, you'll need its ID to fetch the channel object.
                 # For example:
                 # default_channel_id = YOUR_DEFAULT_WEBHOOK_CHANNEL_ID_HERE 

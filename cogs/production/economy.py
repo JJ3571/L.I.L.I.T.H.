@@ -226,15 +226,83 @@ class Economy(commands.Cog):
         await self.update_balance(member.id, amount)
         embed = nextcord.Embed(
                     title="Transaction Successful",
-                    description=f"{interaction.user.mention} gave {member.mention} {amount} coins."+(f"\n\n**Reason:** {reason}" if reason else ""),
+                    description=f"{interaction.user.mention} gave {member.mention} {amount} 🪙."+(f"\n\n**Reason:** {reason}" if reason else ""),
                     color=nextcord.Color.green()
                 )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
         embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
         embed.add_field(name="Recipient", value=member.display_name, inline=True)
-        embed.add_field(name="Amount", value=f"{amount} coins", inline=True)
+        embed.add_field(name="Amount", value=f"{amount} 🪙", inline=True)
 
         await interaction.response.send_message(embed=embed)
+
+    @econ.subcommand(name="tax", description="[Admin] Tax a user, removing currency from their balance.")
+    async def tax_command(self, 
+                          interaction: nextcord.Interaction, 
+                          member: nextcord.Member, 
+                          amount: int, 
+                          reason: str = nextcord.SlashOption(required=True, description='Reason for the tax.')):
+        
+        # Check if the command issuer is an admin
+        if interaction.user.id not in admin_user_ids:
+            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+            return
+
+        # Amount must be positive
+        if amount <= 0:
+            await interaction.response.send_message("Amount to tax must be positive.", ephemeral=True)
+            return
+
+        # Cannot tax bots
+        if member.bot:
+            await interaction.response.send_message("You cannot tax a bot.", ephemeral=True)
+            return
+        
+        # Cannot tax oneself
+        if member == interaction.user:
+            await interaction.response.send_message("You cannot tax yourself.", ephemeral=True)
+            return
+
+        # Perform the deduction using update_balance with a negative amount
+        await self.update_balance(member.id, -amount)
+        
+        taxed_user_new_balance = await self.get_user_balance(member.id)
+
+        # Create confirmation embed
+        embed = nextcord.Embed(
+            title="EXECUTIVE TARIFF!🧑‍⚖️",
+            description=f"{member.mention} has been taxed {amount} 🪙 by {interaction.user.mention}.",
+            color=nextcord.Color.orange() 
+        )
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
+        embed.add_field(name="Taxed User", value=member.mention, inline=True)
+        embed.add_field(name="Amount Taxed", value=f"{amount} 🪙", inline=True)
+        embed.add_field(name="New Balance", value=f"{taxed_user_new_balance} 🪙", inline=True)
+        
+        cleaned_reason = reason.strip() if reason and reason.strip() else None
+        if cleaned_reason:
+            embed.add_field(name="Reason", value=cleaned_reason, inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+
+        # Send notification to bot_spam channel
+        bot_spam_channel = self.bot.get_channel(bot_spam_id)
+        if bot_spam_channel:
+            spam_embed = nextcord.Embed(
+                title="EXECUTIVE TARIFF!🧑‍⚖️",
+                description=f"{interaction.user.mention} taxed {member.mention} for {amount} 🪙 in {interaction.channel.mention}.",
+                color=nextcord.Color.dark_red()
+            )
+            spam_embed.add_field(name="Admin", value=f"{interaction.user.mention}", inline=True)
+            spam_embed.add_field(name="Taxed User", value=f"{member.mention}", inline=True)
+            spam_embed.add_field(name="Amount", value=str(amount), inline=True)
+            if cleaned_reason:
+                spam_embed.add_field(name="Reason", value=cleaned_reason, inline=False)
+            spam_embed.set_footer(text=f"Channel: #{interaction.channel.name} | Taxed User New Balance: {taxed_user_new_balance}")
+            try:
+                await bot_spam_channel.send(embed=spam_embed)
+            except Exception as e:
+                print(f"Failed to send 'tax' notification to bot_spam channel: {e}")
 
     @econ.subcommand(name="request", description="Request currency from another user")
     async def receive_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int, reason: str = nextcord.SlashOption(required=False, description='Reason for the request')):
@@ -257,13 +325,13 @@ class Economy(commands.Cog):
         # Create the initial request embed
         embed = nextcord.Embed(
             title="Incoming Payment Request",
-            description=f"{interaction.user.mention} is requesting {amount} coins from you, {member.mention}.",
+            description=f"{interaction.user.mention} is requesting {amount} 🪙 from you, {member.mention}.",
             color=nextcord.Color.orange() 
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
         embed.add_field(name="Requester", value=interaction.user.mention, inline=True)
         embed.add_field(name="Target", value=member.mention, inline=True)
-        embed.add_field(name="Amount", value=f"{amount} coins", inline=True)
+        embed.add_field(name="Amount", value=f"{amount} 🪙", inline=True)
         
         cleaned_reason = reason.strip() if reason and reason.strip() else None
         if cleaned_reason:
@@ -281,7 +349,7 @@ class Economy(commands.Cog):
         if bot_spam_channel:
             spam_embed = nextcord.Embed(
                 title="Payment Request Initiated",
-                description=f"{interaction.user.mention} requested {amount} coins from {member.mention} in {interaction.channel.mention}.",
+                description=f"{interaction.user.mention} requested {amount} 🪙 from {member.mention} in {interaction.channel.mention}.",
                 color=nextcord.Color.dark_orange()
             )
             spam_embed.add_field(name="Requester", value=f"{interaction.user.mention}", inline=True)
@@ -356,9 +424,9 @@ class Economy(commands.Cog):
                         user = None
 
                 if user:
-                    description_lines.append(f"{rank}. {user.mention}: `{balance}` coins")
+                    description_lines.append(f"{rank}. {user.mention}: `{balance}` 🪙")
                 else:
-                    description_lines.append(f"{rank}. Unknown User (ID: {user_id}): `{balance}` coins")
+                    description_lines.append(f"{rank}. Unknown User (ID: {user_id}): `{balance}` 🪙")
 
             description = "\n".join(description_lines) or "No users on this page."
 
@@ -481,13 +549,13 @@ class AdminGiveView(nextcord.ui.View):
 
         embed = nextcord.Embed(
             title="Transaction Successful",
-            description=f"{interaction.user.mention} gave {self.member.mention} {self.amount} coins."+(f"\n\n**Reason:**\n{self.reason}" if self.reason else ""),
+            description=f"{interaction.user.mention} gave {self.member.mention} {self.amount} 🪙."+(f"\n\n**Reason:**\n{self.reason}" if self.reason else ""),
             color=nextcord.Color.green()
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
         embed.add_field(name="Sender", value=interaction.user.display_name, inline=True)
         embed.add_field(name="Recipient", value=self.member.display_name, inline=True)
-        embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+        embed.add_field(name="Amount", value=f"{self.amount} 🪙", inline=True)
 
         await interaction.followup.send(embed=embed) # Use followup after defer
         self.stop()
@@ -498,12 +566,12 @@ class AdminGiveView(nextcord.ui.View):
         await self.cog.update_balance(self.member.id, self.amount)
         embed = nextcord.Embed(
             title="Treasury Transaction Successful",
-            description=f"{interaction.user.mention} added {self.amount} coins to {self.member.mention} from the treasury.",
+            description=f"{interaction.user.mention} added {self.amount} 🪙 to {self.member.mention} from the treasury.",
             color=nextcord.Color.blue()
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)
         embed.add_field(name="Recipient", value=self.member.display_name, inline=True)
-        embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+        embed.add_field(name="Amount", value=f"{self.amount} 🪙", inline=True)
 
         await interaction.followup.send(embed=embed) # Use followup after defer
         self.stop()
@@ -546,7 +614,7 @@ class ReceiveRequestView(nextcord.ui.View):
         bot_spam_channel = self.bot.get_channel(self.bot_spam_channel_id)
         if bot_spam_channel:
             embed = nextcord.Embed(title=title, description=description, color=color)
-            embed.set_footer(text=f"Original request by: {self.requester.display_name} to {self.requestee.display_name} for {self.amount} coins.")
+            embed.set_footer(text=f"Original request by: {self.requester.display_name} to {self.requestee.display_name} for {self.amount} 🪙.")
             try:
                 await bot_spam_channel.send(embed=embed)
             except Exception as e:
@@ -559,7 +627,7 @@ class ReceiveRequestView(nextcord.ui.View):
 
         requestee_balance = self.cog.get_user_balance(self.requestee.id)
         if requestee_balance < self.amount:
-            await interaction.followup.send(f"You do not have sufficient funds ({requestee_balance} coins) to pay {self.amount} coins.", ephemeral=True)
+            await interaction.followup.send(f"You do not have sufficient funds ({requestee_balance} 🪙) to pay {self.amount} 🪙.", ephemeral=True)
             return # Keep the request active
 
         # Process payment
@@ -568,7 +636,7 @@ class ReceiveRequestView(nextcord.ui.View):
 
         success_embed = nextcord.Embed(
             title="Payment Successful",
-            description=f"{self.requestee.mention} paid {self.requester.mention} {self.amount} coins.",
+            description=f"{self.requestee.mention} paid {self.requester.mention} {self.amount} 🪙.",
             color=nextcord.Color.green()
         )
         success_embed.set_author(name=self.requestee.display_name, icon_url=self.requestee.avatar.url if self.requestee.avatar else self.requestee.default_avatar.url)
@@ -576,11 +644,11 @@ class ReceiveRequestView(nextcord.ui.View):
             success_embed.add_field(name="Reason", value=self.reason_text, inline=False)
         success_embed.add_field(name="Payer", value=self.requestee.mention, inline=True)
         success_embed.add_field(name="Recipient", value=self.requester.mention, inline=True)
-        success_embed.add_field(name="Amount", value=f"{self.amount} coins", inline=True)
+        success_embed.add_field(name="Amount", value=f"{self.amount} 🪙", inline=True)
         
         self.disable_all_buttons()
         await interaction.message.edit(embed=success_embed, view=self)
-        await self.send_bot_spam_update("Payment Request Paid", f"{self.requestee.mention} paid {self.amount} coins to {self.requester.mention}.", nextcord.Color.green())
+        await self.send_bot_spam_update("Payment Request Paid", f"{self.requestee.mention} paid {self.amount} 🪙 to {self.requester.mention}.", nextcord.Color.green())
         self.stop()
 
     @nextcord.ui.button(label="Deny", style=nextcord.ButtonStyle.red, custom_id="deny_request")
@@ -589,10 +657,10 @@ class ReceiveRequestView(nextcord.ui.View):
         
         denial_description = ""
         if interaction.user.id == self.requester.id:
-            denial_description = f"{self.requester.mention} cancelled the request for {self.amount} coins from {self.requestee.mention}."
+            denial_description = f"{self.requester.mention} cancelled the request for {self.amount} 🪙 from {self.requestee.mention}."
             await interaction.followup.send("You have cancelled the request.", ephemeral=True) # Confirmation for requester
         else: # Denied by requestee
-            denial_description = f"{self.requestee.mention} denied the request for {self.amount} coins from {self.requester.mention}."
+            denial_description = f"{self.requestee.mention} denied the request for {self.amount} 🪙 from {self.requester.mention}."
             # No ephemeral message needed for requestee, main message will update.
 
         denied_embed = nextcord.Embed(

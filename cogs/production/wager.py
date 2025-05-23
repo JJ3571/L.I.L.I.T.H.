@@ -5,6 +5,7 @@ from nextcord import Interaction, SlashOption, ChannelType
 from nextcord.ui import Button, View, Modal, TextInput
 from datetime import datetime
 
+from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids
 DB_PATH = "wager.db"
 
@@ -485,7 +486,7 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
         conn.commit()
         conn.close()
 
-    @nextcord.slash_command(name="wager", description="Manage betting events.")
+    @nextcord.slash_command(name="wager", description="Manage betting events.",guild_ids=[GUILD_ID]) 
     async def event_parent_cmd(self, interaction: Interaction):
         pass # This will just group subcommands
 

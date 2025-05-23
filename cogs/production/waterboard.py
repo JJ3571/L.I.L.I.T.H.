@@ -82,7 +82,7 @@ class WaterboardCog(commands.Cog):
         conn.close()
 
 
-    @nextcord.slash_command(name="executivepardon", description="Grant exemption from waterboarding for a set time.",guild_ids=[GUILD_ID])
+    @nextcord.slash_command(name="executivepardon", description="[Admin] Grant exemption from waterboarding for a set time.",guild_ids=[GUILD_ID])
     async def executivepardon(self, 
                               interaction: nextcord.Interaction, 
                               user: nextcord.Member, 

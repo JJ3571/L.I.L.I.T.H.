@@ -219,7 +219,7 @@ class RequestsCog(commands.Cog, name="Requests"):
         
         await self._create_paginated_embeds(interaction, active_features, "Active Feature Requests", "Feature Requests")
 
-    @feature_group.subcommand(name="resolve", description="Mark a feature request as resolved.")
+    @feature_group.subcommand(name="resolve", description="[Admin] Mark a feature request as resolved.")
     async def feature_resolve(
         self,
         interaction: Interaction,

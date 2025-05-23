@@ -156,7 +156,7 @@ class Birthday(commands.Cog):
         conn.commit()
         conn.close()
 
-    @nextcord.slash_command(name="bday", description="Shows upcoming birthdays", guild_ids=[GUILD_ID])
+    @nextcord.slash_command(name="bday", description="Shows upcoming birthdays, or can be used with an @ to see specific birthdays.", guild_ids=[GUILD_ID])
     async def bday(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):
 
         now = datetime.now()

@@ -50,7 +50,6 @@ async def on_ready():
     try:
         await load_extensions('production')
         await bot.sync_application_commands(guild_id=GUILD_ID)
-        await bot.register_application_commands(guild_id=GUILD_ID)
         print('Bot is ready and running.')
     except nextcord.HTTPException as e:
         print(f"An error occurred while syncing commands: {e}")
