@@ -1,0 +1,40 @@
+import nextcord
+from nextcord.ext import commands, tasks
+import aiosqlite
+import datetime
+
+from server_configs.config import GUILD_ID
+
+class PowerupCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db_path = 'powerups.db'
+        economy_cog = self.bot.get_cog('Economy')
+        
+    async def create_tables(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS powerups (
+                    user_id INTEGER PRIMARY KEY,
+                    powerup_type TEXT NOT NULL,
+                    start_time INTEGER NOT NULL,
+                    duration INTEGER NOT NULL
+                )
+            ''')
+            await db.commit()
+
+    async def economy_function(self, user_id: int, powerup_type: str):
+        economy_cog = self.bot.get_cog('Economy')
+        if not economy_cog:
+            print("Economy system is currently unavailable.")
+            return
+            #  Functions from the Economy cog include: get_user_balance, deduct_user_balance, update_balance. All async with aiosqlite. 
+        waterboard_cog = self.bot.get_cog('WaterboardCog') 
+        if not waterboard_cog:
+            print("Waterboard system is currently unavailable.")
+            return
+        # Example of using the Economy cog to deduct balance
+
+def setup(bot: commands.Bot):
+    bot.add_cog(PowerupCog(bot))
+    print("PowerupCog has been loaded.")

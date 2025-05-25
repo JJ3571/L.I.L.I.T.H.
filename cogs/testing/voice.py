@@ -134,7 +134,8 @@ class VoiceCog(commands.Cog):
                     for wb_channel_id in list(temp_wb_channel_ids):  # Iterate over a copy
                         channel_to_delete = guild.get_channel(wb_channel_id) # Use guild.get_channel
                         if channel_to_delete and isinstance(channel_to_delete, nextcord.VoiceChannel):
-                            print(f"Tidy_up: Attempting to delete Discord waterboard channel: {channel_to_delete.name} ({wb_channel_id})")
+                            channel_name_safe = channel_to_delete.name.encode('ascii', 'replace').decode('ascii')
+                            print(f"Tidy_up: Attempting to delete Discord waterboard channel: {channel_name_safe} ({wb_channel_id})")
                             try:
                                 await channel_to_delete.delete(reason="Tidy Up command (Waterboard DB)")
                                 deleted_wb_discord_channels += 1
@@ -158,7 +159,7 @@ class VoiceCog(commands.Cog):
                 else:
                     print("Tidy_up: No waterboard channels found in WaterboardCog's database.")
             except Exception as e:
-                print(f"Tidy_up: An error occurred during WaterboardCog channel cleanup: {e}")
+                print(f"Tidy_up: An error occurred during WaterboardCog channel cleanup: {str(e).encode('ascii', 'replace').decode('ascii')}")
                 tidied_messages.append("An error occurred during waterboard channel cleanup.")
         else:
             print("Tidy_up: WaterboardCog not found. Skipping its specific channel cleanup.")

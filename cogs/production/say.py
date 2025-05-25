@@ -2,12 +2,92 @@ import nextcord
 from nextcord.ext import commands
 from discord_webhook import DiscordWebhook
 import asyncio
+import os
+from google import genai
+from google.genai import types
 
-from server_configs.config import GUILD_ID
-from server_configs.cogs_config import webhook_url, character_avatars
+from server_configs.config import GUILD_ID, GEMINI_API_KEY
+from server_configs.cogs_config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
 
 COST_TO_SAY = 200
+COMMUNITY_NOTES_REACTION_EMOJI
+
+
+def generate_zeroni(input_text: str):
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+    )
+
+    model = "gemini-2.5-flash-preview-05-20"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=input_text),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        response_mime_type="text/plain",
+        system_instruction=[
+            types.Part.from_text(text="""You are Madame Zeroni from the story Holes. You are an old, wise, one-legged woman, possibly of Egyptian or Romani descent. You are known for giving advice, making bargains, and understanding the weight of promises. You gave Elya Yelnats a piglet and a song in exchange for a promise he broke, leading to a curse on his family. Speak with worldly wisdom, a touch of cynicism, and directness. Do not suffer fools gladly. Your concerns revolve around fate, promises, and consequences."""),
+        ],
+    )
+
+    response_text_parts = []
+    try:
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            response_text_parts.append(chunk.text)
+        return "".join(response_text_parts)
+    except Exception as e:
+        print(f"Error during Gemini API call: {e}")
+        return None
+    
+def generate_notes(input_text: str):
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+    )
+
+    model = "gemini-2.5-flash-preview-05-20"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=input_text),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        response_mime_type="text/plain",
+        system_instruction=[
+            types.Part.from_text(text="""
+                                Generate a helpful and neutral Community Note for the following content. The note should:
+                                1. Evaluate the accuracy of the claim. Keep it neutral and cite high-quality sources to support the information provided. Do not include direct links as they may change over time. 
+                                2. Provide factual clarification or necessary context.
+                                3. Be concise and easy to understand.
+                                4. If the content is a question, provide a thoughtful and informative answer. Elaborate on specifics where beneficial.
+                                5. Maintain a neutral, non-argumentative tone.
+            """),
+        ],
+    )
+
+    response_text_parts = []
+    try:
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            response_text_parts.append(chunk.text)
+        return "".join(response_text_parts)
+    except Exception as e:
+        print(f"Error during Gemini API call: {e}")
+        return None
 
 class Say(commands.Cog):
     def __init__(self, bot):
@@ -19,7 +99,7 @@ class Say(commands.Cog):
                   character: str = nextcord.SlashOption(
                       name="character",
                       description="The character to speak as",
-                      choices={"Master Chief": "Master Chief", "Cortana": "Cortana", "Madame Zeroni": "Madame Zeroni", "Zuko": "Zuko", "Babu Frik": "Babu Frik"}    
+                      choices={"Master Chief": "Master Chief", "Cortana": "Cortana", "Madame Zeroni": "Madame Zeroni", "Zuko": "Zuko", "Babu Frik": "Babu Frik", "Dr. Pepper": "Dr. Pepper"}    
                   ), 
                   message: str = nextcord.SlashOption(
                       name="message",
@@ -120,7 +200,105 @@ class Say(commands.Cog):
                 except Exception as e:
                     webhook_id_for_log = temp_webhook_obj.id if temp_webhook_obj else "Unknown ID"
                     print(f"Error deleting temporary webhook {webhook_id_for_log}: {e}")
+
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: nextcord.RawReactionActionEvent):
+        # Ignore reactions from bots
+        if payload.user_id == self.bot.user.id:
+            return
         
+        # Fetch the user who reacted
+        user = self.bot.get_user(payload.user_id)
+        if user is None: # Fallback if user not in cache
+            try:
+                user = await self.bot.fetch_user(payload.user_id)
+            except nextcord.NotFound:
+                print(f"[REACTION DEBUG] User {payload.user_id} not found.")
+                return
+        
+        if user.bot: # Check again after fetching, just in case
+            return
+
+        # Fetch the channel and message
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            if channel is None:
+                channel = await self.bot.fetch_channel(payload.channel_id)
+            
+            if not isinstance(channel, nextcord.TextChannel): # Ensure it's a text channel
+                return
+
+            message = await channel.fetch_message(payload.message_id)
+        except nextcord.NotFound:
+            print(f"[REACTION DEBUG] Message or Channel not found for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
+            return
+        except nextcord.Forbidden:
+            print(f"[REACTION DEBUG] Bot lacks permissions to fetch message/channel for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
+            return
+        except Exception as e:
+            print(f"[REACTION DEBUG] Error fetching message/channel: {e}")
+            return
+
+        generator_function = None
+        character_name = None
+        response_prefix = None
+
+        if str(payload.emoji) == ZERONI_REACTION_EMOJI and message.content:
+            print(f"'{ZERONI_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+            generator_function = generate_zeroni
+            character_name = "Madame Zeroni"
+            response_prefix = "Madame Zeroni (via raw reaction)"
+
+        elif str(payload.emoji) == COMMUNITY_NOTES_REACTION_EMOJI and message.content:
+            print(f"'{COMMUNITY_NOTES_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+            generator_function = generate_notes
+            character_name = "Community Note"
+            response_prefix = "Community Note (via raw reaction)"
+        else:
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            api_response_content = await loop.run_in_executor(None, generator_function, message.content)
+
+            if not api_response_content:
+                print(f"{response_prefix} had no response for: \"{message.content[:50]}...\"")
+                return
+
+            embed_description = f"{api_response_content}\n\n[Jump to original message]({message.jump_url})"
+
+            embed = nextcord.Embed(
+                description=embed_description,
+                color=nextcord.Color.blue() # You can choose a color
+            )
+
+            if character_name == "Community Note":
+                # Set the bot as the author for Community Notes
+                bot_user = self.bot.user
+                embed.set_author(name=f"{bot_user.display_name} [Community Note]", icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty)
+            elif character_name:
+                # For other characters, use the character_avatars
+                avatar_url = character_avatars.get(character_name)
+                author_icon_url = avatar_url if avatar_url and isinstance(avatar_url, str) and avatar_url.startswith(('http://', 'https://')) else nextcord.Embed.Empty
+                embed.set_author(name=character_name, icon_url=author_icon_url)
+            
+            # Add a footer to indicate it was triggered by a reaction
+            user_display_avatar_url = user.display_avatar.url if user.display_avatar else nextcord.Embed.Empty
+            embed.set_footer(text=f"Triggered by {user.display_name}'s reaction", icon_url=user_display_avatar_url)
+            embed.timestamp = nextcord.utils.utcnow()
+
+            # Send the embed to the channel where the reaction occurred
+            await channel.send(embed=embed)
+            print(f"Sent {character_name} embed response to #{channel.name} for message ID {message.id}")
+
+        except nextcord.Forbidden:
+            print(f"Bot lacks 'Send Messages' or 'Embed Links' permission in {channel.name} for {character_name} reaction response.")
+            # You might want to notify the user or log this more formally
+            # await message.reply(f"I can't post {character_name}'s response here. I might be missing 'Send Messages' or 'Embed Links' permissions in {channel.mention}.", delete_after=30)
+        except Exception as e:
+            print(f"An error occurred in on_raw_reaction_add for {character_name}: {e}")
+
 
 def setup(bot):
     bot.add_cog(Say(bot))

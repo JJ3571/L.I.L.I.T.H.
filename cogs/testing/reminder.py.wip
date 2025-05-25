@@ -1,0 +1,241 @@
+import nextcord
+from nextcord.ext import commands, tasks
+from nextcord.ui import Modal, TextInput, Select
+from nextcord import TextInputStyle, SelectOption
+import aiosqlite
+from datetime import datetime, timedelta
+import pytz
+from server_configs.config import GUILD_ID
+
+class ReminderModal(Modal):
+    def __init__(self, reminder_cog_instance):
+        super().__init__("Set a New Reminder")
+        self.reminder_cog = reminder_cog_instance
+
+        # Date Input
+        self.date_input = TextInput(
+            label="Date (Your Local Time: YYYY-MM-DD)",
+            placeholder="e.g., 2025-12-31",
+            min_length=10,
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.date_input)
+
+        # Hour Input
+        self.hour_input = TextInput(
+            label="Hour (Your Local Time: 0-23)",
+            placeholder="e.g., 14 (for 2 PM)",
+            min_length=1,
+            max_length=2,
+            required=True
+        )
+        self.add_item(self.hour_input)
+
+        # Minute Input
+        self.minute_input = TextInput(
+            label="Minute (Your Local Time: 0-59)",
+            placeholder="e.g., 30",
+            min_length=1,
+            max_length=2,
+            required=True
+        )
+        self.add_item(self.minute_input)
+        
+        # Timezone Input (Changed from Select to TextInput)
+        self.timezone_input = TextInput( # <<<< CHANGED HERE
+            label="Timezone (e.g., EST, PST, America/New_York)",
+            placeholder="EST, PST, US/Central, America/Phoenix",
+            min_length=3,  # Accommodate short codes like "EST"
+            max_length=40, # Accommodate longer Olson names
+            required=True
+        )
+        self.add_item(self.timezone_input)
+
+        # Message Input
+        self.message_input = TextInput(
+            label="Reminder Message",
+            style=TextInputStyle.paragraph,
+            placeholder="What do you want to be reminded about?",
+            required=True,
+            max_length=500
+        )
+        self.add_item(self.message_input)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        date_str = self.date_input.value
+        hour_str = self.hour_input.value
+        minute_str = self.minute_input.value
+        message = self.message_input.value
+        user_typed_timezone = self.timezone_input.value # <<<< CHANGED HERE
+
+        # Map common abbreviations to pytz timezone database names
+        # Users can also try to input Olson names directly.
+        tz_map = {
+            "EST": "US/Eastern", "US/EASTERN": "US/Eastern",
+            "EDT": "US/Eastern", # pytz handles if it's currently EDT or EST for US/Eastern
+            "CST": "US/Central", "US/CENTRAL": "US/Central",
+            "CDT": "US/Central",
+            "MST": "US/Mountain", "US/MOUNTAIN": "US/Mountain", # General Mountain Time
+            "MDT": "US/Mountain",
+            "PST": "US/Pacific", "US/PACIFIC": "US/Pacific",
+            "PDT": "US/Pacific",
+            # For specific cases like Arizona which doesn't observe DST with the rest of Mountain:
+            "ARIZONA": "America/Phoenix", 
+        }
+        
+        pytz_timezone_name = tz_map.get(user_typed_timezone.upper())
+        if not pytz_timezone_name:
+            # If not in our common map, assume the user might have typed a valid pytz name
+            pytz_timezone_name = user_typed_timezone
+
+        try:
+            hour = int(hour_str)
+            minute = int(minute_str)
+
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                await interaction.response.send_message(
+                    "Invalid time: Hour must be 0-23 and Minute must be 0-59.",
+                    ephemeral=True
+                )
+                return
+
+            naive_dt_str = f"{date_str} {hour:02d}:{minute:02d}"
+            naive_dt = datetime.strptime(naive_dt_str, "%Y-%m-%d %H:%M")
+            
+            user_local_tz = pytz.timezone(pytz_timezone_name) # This can raise UnknownTimeZoneError
+            
+            try:
+                local_dt = user_local_tz.localize(naive_dt, is_dst=None)
+            except pytz.exceptions.AmbiguousTimeError:
+                await interaction.response.send_message(
+                    f"The time {hour:02d}:{minute:02d} in {user_typed_timezone} is ambiguous due to DST. Please clarify or pick a different time.",
+                    ephemeral=True
+                )
+                return
+            except pytz.exceptions.NonExistentTimeError:
+                await interaction.response.send_message(
+                    f"The time {hour:02d}:{minute:02d} in {user_typed_timezone} does not exist due to DST. Please pick a valid time.",
+                    ephemeral=True
+                )
+                return
+
+            utc_dt = local_dt.astimezone(pytz.utc)
+            trigger_time = int(utc_dt.timestamp())
+
+            if utc_dt < datetime.now(pytz.utc):
+                await interaction.response.send_message(
+                    "You cannot set a reminder for a past date or time (after timezone conversion).",
+                    ephemeral=True
+                )
+                return
+
+        except ValueError:
+            await interaction.response.send_message(
+                "Invalid date or time format. Please use YYYY-MM-DD and ensure hour/minute are numbers.",
+                ephemeral=True
+            )
+            return
+        except pytz.exceptions.UnknownTimeZoneError:
+            await interaction.response.send_message(
+                f"Unknown timezone: '{user_typed_timezone}'. Please use common US abbreviations (EST, PST, CST, MST) or standard Olson names (e.g., America/New_York, US/Central).",
+                ephemeral=True
+            )
+            return
+        except Exception as e: # Generic fallback
+            print(f"An unexpected error occurred in modal callback: {e}")
+            await interaction.response.send_message(
+                "An unexpected error occurred. Please try again.",
+                ephemeral=True
+            )
+            return
+
+        await self.reminder_cog.add_reminder(interaction.user.id, trigger_time, message)
+        
+        await interaction.response.send_message(
+            f"Reminder set for {date_str} at {hour:02d}:{minute:02d} ({user_typed_timezone}). Message: \"{message}\"",
+            ephemeral=True
+        )
+
+class Reminder(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.db_path = 'reminders.db'
+        self.initial_db_setup.start()
+        self.check_reminders_loop.start()
+
+    @tasks.loop(count=1) # Run once on startup
+    async def initial_db_setup(self):
+        # await self.bot.wait_until_ready() # Good practice, moved to before_loop
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    trigger_time INTEGER NOT NULL,
+                    message TEXT NOT NULL
+                )
+            ''')
+            await db.commit()
+        print("Reminder database tables ensured.")
+
+    @initial_db_setup.before_loop
+    async def before_initial_db_setup(self):
+        await self.bot.wait_until_ready() # Wait for the bot to be fully operational
+
+    @nextcord.slash_command(name='remind', description="Set a reminder via a pop-up form", guild_ids=[GUILD_ID])
+    async def remind(self, interaction: nextcord.Interaction):
+        # No more date/time/message args here; they are in the modal
+        modal = ReminderModal(self) # Pass the cog instance to the modal
+        await interaction.response.send_modal(modal)
+
+    async def add_reminder(self, user_id, trigger_time, message):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('INSERT INTO reminders (user_id, trigger_time, message) VALUES (?, ?, ?)', (user_id, trigger_time, message))
+            await db.commit()
+
+    @tasks.loop(seconds=60)
+    async def check_reminders_loop(self): # Renamed from create_tables
+        current_time = int(datetime.now().timestamp())
+        reminders_to_process = []
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            # Fetch reminders that are due
+            async with db.execute('SELECT id, user_id, message FROM reminders WHERE trigger_time <= ?', (current_time,)) as cursor:
+                async for row in cursor:
+                    reminders_to_process.append(row) # (id, user_id, message)
+            
+            if not reminders_to_process:
+                return
+
+            reminders_sent_ids = []
+            reminders_failed_ids = [] # For users not found or DMs failed
+
+            for reminder_id, user_id, message in reminders_to_process:
+                user = self.bot.get_user(user_id)
+                if user:
+                    try:
+                        await user.send(f"🔔 Reminder: {message}")
+                        reminders_sent_ids.append(reminder_id)
+                    except nextcord.HTTPException as e: # Handles cases like user blocking DMs, etc.
+                        print(f"Failed to send reminder ID {reminder_id} to user {user_id}: {e}")
+                        reminders_failed_ids.append(reminder_id) # Decide if you want to retry or delete
+                else:
+                    print(f"User {user_id} for reminder ID {reminder_id} not found. Marking for deletion.")
+                    reminders_failed_ids.append(reminder_id) # User left server, etc.
+
+            # Delete reminders that were processed (sent or failed definitively)
+            ids_to_delete = reminders_sent_ids + reminders_failed_ids
+            if ids_to_delete:
+                placeholders = ','.join('?' for _ in ids_to_delete)
+                await db.execute(f'DELETE FROM reminders WHERE id IN ({placeholders})', tuple(ids_to_delete))
+                await db.commit()
+
+    @check_reminders_loop.before_loop
+    async def before_check_reminders_loop(self):
+        await self.bot.wait_until_ready()
+        print("Reminder checking loop is active.")
+
+def setup(bot):
+    bot.add_cog(Reminder(bot))
+    print("ReminderCog loaded successfully.")

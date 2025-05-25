@@ -1,7 +1,6 @@
 import nextcord
 from nextcord.ext import commands
 import os
-import asyncio
 
 from server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -19,6 +18,12 @@ intents=nextcord.Intents.default()
 intents.message_content=True
 intents.members=True
 intents.guilds=True
+intents.reactions=True
+# intents.presences=True 
+intents.emojis_and_stickers=True
+# intents.voice_states=True
+intents.guild_messages=True
+intents.guild_reactions=True
 
 bot = commands.Bot(
     command_prefix='.',
@@ -48,7 +53,7 @@ async def load_extensions(directory: str):
 @bot.event
 async def on_ready():
     try:
-        await load_extensions('production')
+        await load_extensions('testing')
         await bot.sync_application_commands(guild_id=GUILD_ID)
         print('Bot is ready and running.')
     except nextcord.HTTPException as e:
