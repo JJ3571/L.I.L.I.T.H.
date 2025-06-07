@@ -37,8 +37,7 @@ class Birthday(commands.Cog):
         now_pacific = datetime.now(pytz.timezone('US/Pacific'))
         print(f"--------------------------------")
         print(f"[DEBUG] Current time (US/Pacific): {now_pacific}")
-        # Consider adjusting the hour check if it's meant to be US/Pacific hour
-        if now_pacific.hour >= 8: # Assuming this is 8 AM US/Pacific
+        if now_pacific.hour >= 8: #  8 AM PST
             # print("[DEBUG] Hour is past 8 AM (US/Pacific), checking birthdays.")
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
@@ -71,20 +70,18 @@ class Birthday(commands.Cog):
                 if not message_exists:
                     member = channel.guild.get_member(int(user_id))
                     print(f"[DEBUG] Member object for user {user_id}: {member}")
-                    if member: # Check if member is not None
+                    if member:
                         print(f"[DEBUG] Member mention: {member.mention}")
-                        print(f"[DEBUG] Member found: {member}")
                         embed = nextcord.Embed(title="🎂 **BIRTH!**", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
                         embed.add_field(name='\u200B', value=f"Send {member.mention} some dabloons:", inline=False)
                         print(f"[DEBUG] Embed created for user {user_id}")
                         view = BirthdayButtonView(self.bot, birthday_user_id=member.id)
                         message = await channel.send(embed=embed, view=view)
                         role = channel.guild.get_role(birthday_role_id)
-                        if role: # Check if role is not None
+                        if role:
                             await member.add_roles(role)
                         else:
                             print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
-                        # Store the message ID and user ID, using the US/Pacific date for which the message was sent
                         self.store_birthday_message(message.id, user_id, pacific_date_to_check_str)
                         print(f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
                     else:

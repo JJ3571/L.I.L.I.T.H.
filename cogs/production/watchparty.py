@@ -40,7 +40,7 @@ class WatchPartyCog(commands.Cog):
             await watch_party_channel.edit(category=seen_category)
             self.reservation_end_time = current_time + WATCH_PARTY_AUTO_HIDE_TIMEOUT
             overwrites = watch_party_channel.overwrites
-            overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True,use_soundboard=False)
+            overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True)
             await watch_party_channel.edit(overwrites=overwrites)
             print(f"Watch Party channel '{watch_party_channel.name}' moved to seen category for the event and reserved until {self.reservation_end_time}.")
 
@@ -77,7 +77,7 @@ class WatchPartyCog(commands.Cog):
             readable_time = self.reservation_end_time.strftime("%m/%d at %I:%M%p PST")
             readable_time = readable_time.replace("AM", "am").replace("PM", "pm")
             overwrites = watch_party_channel.overwrites
-            overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True,use_soundboard=False)
+            overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True)
             await watch_party_channel.edit(overwrites=overwrites)
             await interaction.followup.send(f"{watch_party_channel.name} reserved until {readable_time}.")
         else:

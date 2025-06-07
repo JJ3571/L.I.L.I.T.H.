@@ -45,11 +45,38 @@ class Economy(commands.Cog):
                 result = await cursor.fetchone()
             return result[0] if result else 0
 
-    async def deduct_user_balance(self, user_id: int, amount: int): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-            await conn.commit()
+    async def deduct_user_balance(self, user_id: int, amount: int):
+        print(f"[EconomyCog] Attempting to deduct {amount} from user {user_id}")
+        if not isinstance(amount, int) or amount <= 0:
+            print(f"[EconomyCog] Deduction failed: Amount must be a positive integer. Received: {amount}")
+            return False
+
+        try:
+            current_balance = await self.get_user_balance(user_id)
+
+            if current_balance < amount:
+                print(f"[EconomyCog] Deduction failed for user {user_id}: Insufficient balance. Has {current_balance}, needs {amount}.")
+                return False
+
+            async with aiosqlite.connect(self.db_path) as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+                    if cursor.rowcount == 0:
+                        print(f"[EconomyCog] Deduction failed for user {user_id}: User not found during update, or no rows affected.")
+                        return False
+                
+                await conn.commit()
+            
+            new_balance = current_balance - amount
+            print(f"[EconomyCog] Successfully deducted {amount} from user {user_id}. New balance: {new_balance}")
+            return True
+
+        except Exception as e:
+            print(f"[EconomyCog] Error in deduct_user_balance for user {user_id}, amount {amount}: {e}")
+            import traceback
+            traceback.print_exc()
+            # In case of an error, the transaction initiated by 'async with aiosqlite.connect' should automatically rollback.
+            return False
 
     async def update_balance(self, user_id, amount): # Made async
         async with aiosqlite.connect(self.db_path) as conn:
