@@ -97,43 +97,115 @@ class Birthday(commands.Cog):
         await self.bot.wait_until_ready()
         now_pacific = datetime.now(pytz.timezone('US/Pacific'))  # Use US/Pacific timezone
         today_pacific_date = now_pacific.date()  # Get only the date part (this is a date object)
+        current_pacific_mm_dd = now_pacific.strftime("%m-%d") # For role audit
+
         # print(f"--------------------------------")
         # print(f"[DEBUG] Current date (US/Pacific for cleanup): {today_pacific_date}")
+        # print(f"[DEBUG] Current MM-DD (US/Pacific for role audit): {current_pacific_mm_dd}")
 
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
 
-        c.execute("SELECT user_id, message_id, birthday FROM birthday_messages")
-        messages = c.fetchall()
-        # print(f"[DEBUG] Messages to check for cleanup: {messages}")
-
-        channel = self.bot.get_channel(birthday_announcement_channel_id)
-        if channel is None:
-            print("[ERROR] Birthday channel not found for cleanup.")
+        guild = self.bot.get_guild(GUILD_ID) # Get the guild object once
+        if guild is None:
+            print("[ERROR] Guild not found for cleanup.")
             conn.close()
             return
 
-        for message_tuple in messages: # Renamed 'message' to 'message_tuple'
-            user_id, message_id, birthday_str = message_tuple # 'birthday_str' is now a YYYY-MM-DD string for US/Pacific
-            
-            # Parse the stored US/Pacific birthday date string
-            birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
+        channel = guild.get_channel(birthday_announcement_channel_id) # Needed for message deletion
+        # No early return if channel is None, as role cleanup might still be possible/needed
 
-            print(f"[DEBUG] Checking message ID {message_id} for user ID {user_id}")
-            print(f"[DEBUG] Stored Message Date (US/Pacific): {birthday_date_obj}, Current Date (US/Pacific): {today_pacific_date}")
+        birthday_role = guild.get_role(birthday_role_id)
+        # No early return if role is None yet, message cleanup might proceed.
 
-            # Check if the current US/Pacific date is past the US/Pacific date of the message
-            if today_pacific_date > birthday_date_obj:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    await msg.delete()
-                    print(f"[DEBUG] Deleted message ID {message_id} for user ID {user_id}")
-                except nextcord.NotFound:
-                    print(f"[ERROR] Message ID {message_id} not found in channel for deletion.")
+        # Part 1: Message-driven cleanup (and associated role removal)
+        if channel: # Only proceed if channel exists
+            c.execute("SELECT user_id, message_id, birthday FROM birthday_messages")
+            messages_to_cleanup = c.fetchall()
+            # print(f"[DEBUG] Messages to check for cleanup: {messages_to_cleanup}")
+
+            for message_tuple in messages_to_cleanup:
+                user_id_str, message_id, birthday_str = message_tuple
+                
+                birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
+
+                # print(f"[DEBUG] Checking message ID {message_id} for user ID {user_id_str}")
+                # print(f"[DEBUG] Stored Message Date (US/Pacific): {birthday_date_obj}, Current Date (US/Pacific): {today_pacific_date}")
+
+                if today_pacific_date > birthday_date_obj:
+                    try:
+                        msg = await channel.fetch_message(message_id)
+                        await msg.delete()
+                        print(f"[DEBUG] Deleted message ID {message_id} for user ID {user_id_str}")
+                    except nextcord.NotFound:
+                        print(f"[DEBUG] Message ID {message_id} not found in channel for deletion (already deleted or error).")
+                    except nextcord.Forbidden:
+                        print(f"[ERROR] Bot lacks permissions to delete message ID {message_id}.")
+                    except Exception as e:
+                        print(f"[ERROR] Unexpected error deleting message ID {message_id}: {e}")
+                    finally:
+                        # Always try to remove role and DB entry if message was due for cleanup
+                        if birthday_role:
+                            member = guild.get_member(int(user_id_str))
+                            if member:
+                                if birthday_role in member.roles:
+                                    try:
+                                        await member.remove_roles(birthday_role)
+                                        print(f"[DEBUG] Removed birthday role from user ID {user_id_str} (associated with old message {message_id})")
+                                    except nextcord.Forbidden:
+                                        print(f"[ERROR] Bot lacks permissions to remove role from user ID {user_id_str}.")
+                                    except Exception as e:
+                                        print(f"[ERROR] Error removing role from user ID {user_id_str}: {e}")
+                                # else:
+                                    # print(f"[DEBUG] User ID {user_id_str} did not have the birthday role (message cleanup).")
+                            # else:
+                                # print(f"[DEBUG] Member not found for user ID {user_id_str} during message cleanup role removal.")
+                        # else:
+                            # print("[DEBUG] Birthday role not found, cannot remove from user (message cleanup).")
+                        
+                        c.execute("DELETE FROM birthday_messages WHERE message_id = ?", (message_id,))
+                        # print(f"[DEBUG] Removed message ID {message_id} from database.")
+        elif not channel:
+            print("[ERROR] Birthday channel not found for message cleanup part.")
+
+
+        # Part 2: General Role Audit
+        if birthday_role: # Only proceed if birthday_role is found
+            # print(f"[DEBUG] Starting general role audit for role: {birthday_role.name}")
+            members_with_role = [m for m in guild.members if birthday_role in m.roles]
+            # if not members_with_role:
+                # print("[DEBUG] No members currently have the birthday role.")
+
+            for member in members_with_role:
+                c.execute("SELECT strftime('%m-%d', birthday) FROM birthdays WHERE user_id = ?", (str(member.id),))
+                birthday_record = c.fetchone()
+                
+                should_have_role = False
+                if birthday_record:
+                    member_birthday_mm_dd = birthday_record[0]
+                    # print(f"[DEBUG] Audit: Member {member.display_name} (ID: {member.id}) has DB birthday MM-DD: {member_birthday_mm_dd}")
+                    if member_birthday_mm_dd == current_pacific_mm_dd:
+                        should_have_role = True
+                # else:
+                    # print(f"[DEBUG] Audit: Member {member.display_name} (ID: {member.id}) has role but no birthday record in DB.")
+
+                if not should_have_role:
+                    try:
+                        await member.remove_roles(birthday_role)
+                        print(f"[AUDIT] Removed birthday role from {member.display_name} (ID: {member.id}). Reason: Not their birthday ({current_pacific_mm_dd}) or no DB record.")
+                    except nextcord.Forbidden:
+                        print(f"[ERROR][AUDIT] Bot lacks permissions to remove role from {member.display_name} (ID: {member.id}).")
+                    except Exception as e:
+                        print(f"[ERROR][AUDIT] Error removing role from {member.display_name} (ID: {member.id}): {e}")
+                # else:
+                    # print(f"[DEBUG] Audit: Member {member.display_name} (ID: {member.id}) correctly has the role for birthday {current_pacific_mm_dd}.")
+        elif not birthday_role:
+            print("[ERROR] Birthday role not found, skipping general role audit.")
+
 
         conn.commit()
         conn.close()
-        print(f"--------------------------------")
+        # print(f"--------------------------------")
         
 
     def store_birthday_message(self, message_id, user_id, pacific_date_str): # Changed last parameter

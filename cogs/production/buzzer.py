@@ -35,26 +35,26 @@ class Buzzer(commands.Cog):
         self.db_path = "buzzer.db"
 
     async def create_tables(self):
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS buzzer_entries (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        message_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        username TEXT NOT NULL,
-                        buzz_time REAL NOT NULL
-                    )
-                ''')
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS buzzer_sessions (
-                        message_id INTEGER PRIMARY KEY,
-                        channel_id INTEGER NOT NULL,
-                        locked BOOLEAN NOT NULL DEFAULT FALSE,
-                        first_buzz_timestamp REAL DEFAULT NULL
-                    )
-                ''')
-                await db.commit()
-            print("Buzzer database tables created/verified successfully.")
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS buzzer_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL,
+                    buzz_time REAL NOT NULL
+                )
+            ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS buzzer_sessions (
+                    message_id INTEGER PRIMARY KEY,
+                    channel_id INTEGER NOT NULL,
+                    locked BOOLEAN NOT NULL DEFAULT FALSE,
+                    first_buzz_timestamp REAL DEFAULT NULL
+                )
+            ''')
+            await db.commit()
+        print("Buzzer database tables created/verified successfully.")
 
 
     async def get_session_info(self, message_id):
