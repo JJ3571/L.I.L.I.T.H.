@@ -15,9 +15,9 @@ class Economy(commands.Cog):
         self.voice_timers = {}
         self.message_counts = {}
         self.reward_interval = 60  # seconds
-        self.voice_reward_amount = 5
-        self.message_reward_amount = 1
-        self.movie_night_reward = 1000
+        self.voice_reward_amount = 5 # coins
+        self.message_reward_amount = 1 # coins
+        self.movie_night_reward = 1000 # coins
         self.movie_night_time_threshold = 90 * 60  # 1.5 hours in seconds
 
         self.leaderboard_items_per_page = 12
