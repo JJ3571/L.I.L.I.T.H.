@@ -363,6 +363,255 @@ class WaterboardCog(commands.Cog):
 
         asyncio.create_task(self.waterboard_user(interaction, user, seen_category))
 
+    @nextcord.slash_command(name="enhanced-waterboard", description="Enhanced waterboard that hides the original voice channel", guild_ids=[GUILD_ID])
+    async def enhanced_waterboard(self, interaction: nextcord.Interaction, user: nextcord.Member):
+        print(f"User id: {interaction.user.id} used the enhanced-waterboard command on {user.name}.")
+        
+        cost = 0
+        usage_count_for_next_cost_message = 0
+
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                # Check if the user is exempt
+                await cursor.execute("SELECT exempt_until FROM exempt_users WHERE user_id = ?", (user.id,))
+                exempt_result = await cursor.fetchone() 
+                if exempt_result:
+                    exempt_until = exempt_result[0]
+                    if time.time() < exempt_until:
+                        embed = nextcord.Embed(
+                            title="Exempt User",
+                            description=f"{user.mention} is exempt from waterboarding until <t:{int(exempt_until)}:F>.",
+                            color=nextcord.Color.red()
+                        )
+                        await interaction.response.send_message(embed=embed, ephemeral=True)
+                        return
+
+                current_time = time.time()
+                await cursor.execute("SELECT last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent FROM waterboarded_users WHERE user_id = ?", (user.id,))
+                wb_stats_result = await cursor.fetchone() 
+
+                current_usage_count = 0
+                total_waterboarded = 0
+                total_coins_spent = 0
+
+                if wb_stats_result:
+                    last_waterboarded_time, current_usage_count, total_waterboarded, total_coins_spent = wb_stats_result
+                    if current_time - last_waterboarded_time > 1800:  # 30 minutes in seconds
+                        current_usage_count = 0
+
+                # Enhanced waterboard costs 1.5x the normal cost
+                enhanced_cost_multiplier = 1.5
+                cost = int(self.waterboard_cost * enhanced_cost_multiplier * (self.cooldown_multiplier ** current_usage_count))
+
+                economy_cog = self.bot.get_cog('Economy')
+                if not economy_cog:
+                    embed_err_econ = nextcord.Embed(title="Error", description="Economy cog is not available.", color=nextcord.Color.red())
+                    await interaction.response.send_message(embed=embed_err_econ, ephemeral=True)
+                    return
+
+                balance = await economy_cog.get_user_balance(interaction.user.id)
+                if balance < cost:
+                    embed_insufficient_funds = nextcord.Embed(
+                        title="Insufficient Funds",
+                        description=f"You need {cost} coins to enhanced waterboard {user.mention}. Your current balance is {balance} coins.",
+                        color=nextcord.Color.orange()
+                    )
+                    await interaction.response.send_message(embed=embed_insufficient_funds, ephemeral=True)
+                    return
+
+                await economy_cog.deduct_user_balance(interaction.user.id, cost)
+                
+                new_db_usage_count = current_usage_count + 1
+                usage_count_for_next_cost_message = new_db_usage_count
+
+                total_waterboarded += 1
+                total_coins_spent += cost
+                await cursor.execute(
+                    "INSERT OR REPLACE INTO waterboarded_users (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) VALUES (?, ?, ?, ?, ?)",
+                    (user.id, current_time, new_db_usage_count, total_waterboarded, total_coins_spent)
+                )
+                await conn.commit()
+
+        next_cost = int(self.waterboard_cost * enhanced_cost_multiplier * (self.cooldown_multiplier ** usage_count_for_next_cost_message))
+        embed_purchased = nextcord.Embed(
+            title="Enhanced Waterboard Purchased",
+            description=f"You have successfully enhanced waterboarded {user.mention} for {cost} coins. The next enhanced usage will cost {next_cost} coins.",
+            color=nextcord.Color.dark_blue()
+        )
+        await interaction.response.send_message(embed=embed_purchased, ephemeral=True)
+
+        # Check if the target user is in a voice channel BEFORE starting
+        if not user.voice or not user.voice.channel:
+            print(f"Target user {user.name} is not in a voice channel. Enhanced waterboarding action will not proceed.")
+            embed_not_in_vc = nextcord.Embed(
+                title="Enhanced Waterboard Action Cancelled",
+                description=f"{user.mention} is not in a voice channel. The enhanced waterboarding process cannot proceed (you were still charged as the command was initiated).",
+                color=nextcord.Color.orange()
+            )
+            await interaction.followup.send(embed=embed_not_in_vc, ephemeral=True)
+            return
+
+        guild = interaction.guild
+        seen_category = nextcord.utils.get(guild.categories, id=seen_category_id)
+        if not seen_category:
+            embed_no_category = nextcord.Embed(title="Configuration Error", description="The 'seen' category for waterboarding channels was not found. Please contact an admin.", color=nextcord.Color.red())
+            await interaction.followup.send(embed=embed_no_category, ephemeral=True) 
+            return
+
+        asyncio.create_task(self.enhanced_waterboard_user(interaction, user, seen_category))
+
+    async def enhanced_waterboard_user(self, interaction: nextcord.Interaction, user: nextcord.Member, seen_category):
+        guild = interaction.guild
+        bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
+        original_channel = user.voice.channel if user.voice else None
+        original_channel_id = original_channel.id if original_channel else None
+        
+        # Store original permissions for the target user
+        original_permissions = None
+        if original_channel:
+            original_permissions = original_channel.overwrites_for(user)
+
+        session_counted = False
+        try:
+            # Increment active session counter
+            async with self.waterboard_sessions_lock:
+                self.active_waterboard_sessions += 1
+                session_counted = True
+            print(f"Enhanced waterboard session started for {WaterboardCog.s_print_static(user.name)}. Active sessions: {self.active_waterboard_sessions}")
+
+            # Hide the original channel from the target user
+            if original_channel:
+                try:
+                    overwrite = nextcord.PermissionOverwrite(view_channel=False)
+                    await original_channel.set_permissions(user, overwrite=overwrite, reason="Enhanced waterboard - hiding channel")
+                    print(f"Hidden original channel {WaterboardCog.s_print_static(original_channel.name)} from {WaterboardCog.s_print_static(user.name)}")
+                except Exception as e:
+                    print(f"Error hiding channel from {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
+
+            # Ensure temporary channels are created if they don't exist
+            await self.create_temp_channels(guild, seen_category) 
+            
+            temp_channel_ids = await self.get_temp_channels()
+
+            if not temp_channel_ids:
+                print(f"Error: No temporary channels available for enhanced waterboarding {WaterboardCog.s_print_static(user.name)}.")
+                return
+
+            # Voice check (primarily in main command, safeguard here)
+            if not user.voice or user.voice.channel is None:
+                print(f"{WaterboardCog.s_print_static(user.name)} is not in a voice channel (checked in enhanced task).")
+                return
+
+            print(f"Starting enhanced channel movement for {WaterboardCog.s_print_static(user.name)}.")
+            # Move user through the temporary channels (same as regular waterboard)
+            for channel_id in temp_channel_ids:
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    print(f"Temporary channel {channel_id} not found during enhanced waterboarding of {WaterboardCog.s_print_static(user.name)}.")
+                    continue 
+                
+                # For enhanced waterboard, if user disconnects, we move them back to original channel first
+                if not user.voice or user.voice.channel is None:
+                    print(f"{WaterboardCog.s_print_static(user.name)} disconnected during enhanced waterboarding. Attempting to move back to original channel.")
+                    if original_channel:
+                        try:
+                            # Temporarily allow them to see the channel to move them back
+                            temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
+                            await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
+                            await user.move_to(original_channel)
+                            print(f"Moved {WaterboardCog.s_print_static(user.name)} back to original channel after disconnect.")
+                            # Hide the channel again
+                            overwrite = nextcord.PermissionOverwrite(view_channel=False)
+                            await original_channel.set_permissions(user, overwrite=overwrite, reason="Enhanced waterboard - re-hiding channel")
+                        except Exception as e:
+                            print(f"Error moving {WaterboardCog.s_print_static(user.name)} back after disconnect: {WaterboardCog.s_print_static(str(e))}")
+                            break
+                    else:
+                        break
+                
+                print(f"Moving {WaterboardCog.s_print_static(user.name)} to temporary channel: {WaterboardCog.s_print_static(channel.name)}.")
+                try:
+                    await user.move_to(channel)
+                except nextcord.errors.HTTPException as e:
+                    print(f"Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}: {WaterboardCog.s_print_static(str(e))}")
+                    if e.status == 400:
+                        print(f"User {WaterboardCog.s_print_static(user.name)} likely disconnected or channel issue during enhanced waterboard.")
+                        # Try to move them back to original channel
+                        if original_channel:
+                            try:
+                                temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
+                                await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
+                                await user.move_to(original_channel)
+                                print(f"Moved {WaterboardCog.s_print_static(user.name)} back to original channel after error.")
+                            except Exception as move_error:
+                                print(f"Error moving {WaterboardCog.s_print_static(user.name)} back after error: {WaterboardCog.s_print_static(str(move_error))}")
+                        break 
+                await asyncio.sleep(1.3)
+
+            # Move the user back to the original channel
+            if original_channel:
+                print(f"Moving {WaterboardCog.s_print_static(user.name)} back to the original channel after enhanced waterboard.")
+                try:
+                    # Temporarily allow them to see and connect to the channel
+                    temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
+                    await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
+                    
+                    # Move them back
+                    await user.move_to(original_channel)
+                    print(f"{WaterboardCog.s_print_static(user.name)} has been moved back to the original channel after enhanced waterboard.")
+                except Exception as e:
+                    print(f"Error moving {WaterboardCog.s_print_static(user.name)} back to original channel: {WaterboardCog.s_print_static(str(e))}")
+            else:
+                print(f"Original channel not found for {WaterboardCog.s_print_static(user.name)} in enhanced waterboard.")
+
+        except Exception as e:
+            print(f"Error during enhanced waterboarding process for {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
+        finally:
+            # Always restore original permissions
+            if original_channel:
+                try:
+                    if original_permissions:
+                        await original_channel.set_permissions(user, overwrite=original_permissions, reason="Enhanced waterboard - restoring original permissions")
+                    else:
+                        await original_channel.set_permissions(user, overwrite=None, reason="Enhanced waterboard - removing custom permissions")
+                    print(f"Restored original permissions for {WaterboardCog.s_print_static(user.name)} in {WaterboardCog.s_print_static(original_channel.name)}")
+                except Exception as e:
+                    print(f"Error restoring permissions for {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
+
+            if session_counted:
+                should_schedule_deletion = False
+                async with self.waterboard_sessions_lock:
+                    self.active_waterboard_sessions -= 1
+                    print(f"Enhanced waterboard session ended for {WaterboardCog.s_print_static(user.name)}. Active sessions: {self.active_waterboard_sessions}")
+                    if self.active_waterboard_sessions == 0:
+                        should_schedule_deletion = True
+                
+                if should_schedule_deletion:
+                    print("All active waterboard sessions concluded. Scheduling check for temp channel deletion.")
+                    asyncio.create_task(self.schedule_temp_channel_deletion_if_needed())
+
+            # Final message sending logic
+            try:
+                embed = nextcord.Embed(
+                    description=f"{user.mention} was enhanced waterboarded by {interaction.user.mention}.",
+                    color=nextcord.Color.dark_blue()
+                )
+                if interaction.response.is_done(): 
+                    await interaction.followup.send(embed=embed, ephemeral=True) 
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+                if bot_spam_channel:
+                    public_embed = nextcord.Embed(
+                        description=f"{user.mention} was enhanced waterboarded by {interaction.user.mention}! 💀",
+                        color=nextcord.Color.dark_blue()
+                    )
+                    await bot_spam_channel.send(embed=public_embed)
+            except nextcord.errors.NotFound:
+                print(f"Error: Interaction not found for follow-up message for enhanced waterboard of {WaterboardCog.s_print_static(user.name)}.")
+            except Exception as e:
+                print(f"Error sending followup/bot-spam message for enhanced waterboard of {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
+
     @nextcord.slash_command(name="waterboard-ranks", description="All time waterboard rankings.",guild_ids=[GUILD_ID])
     async def leaderboard(self, interaction: nextcord.Interaction):
         async with aiosqlite.connect(self.db_path) as conn:
