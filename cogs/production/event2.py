@@ -67,15 +67,15 @@ class Event(commands.Cog):
                 ''', (event_id,))
                 return await cursor.fetchone()
 
-    async def join_event(self, event_id: int, user_id: int):
+    async def join_event(self, event_id: int, user_id: int, status: str = 'confirmed'):
         """Add a user to an event"""
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.cursor() as cursor:
                 try:
                     await cursor.execute('''
-                        INSERT INTO event_attendees (event_id, user_id)
-                        VALUES (?, ?)
-                    ''', (event_id, user_id))
+                        INSERT INTO event_attendees (event_id, user_id, status)
+                        VALUES (?, ?, ?)
+                    ''', (event_id, user_id, status))
                     await conn.commit()
                     return True
                 except aiosqlite.IntegrityError:
@@ -104,6 +104,53 @@ class Event(commands.Cog):
                     ORDER BY joined_at ASC
                 ''', (event_id,))
                 return await cursor.fetchall()
+
+    async def get_attendees_by_status(self, event_id: int, status: str = 'confirmed'):
+        """Get attendees for an event by status"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    SELECT user_id, joined_at
+                    FROM event_attendees 
+                    WHERE event_id = ? AND status = ?
+                    ORDER BY joined_at ASC
+                ''', (event_id, status))
+                return await cursor.fetchall()
+
+    async def get_attendees_display_text(self, event_id: int):
+        """Get formatted attendee text for embed display"""
+        # Get confirmed attendees
+        confirmed = await self.get_attendees_by_status(event_id, 'confirmed')
+        alternates = await self.get_attendees_by_status(event_id, 'alternate')
+        
+        attendee_names = []
+        alternate_names = []
+        
+        # Get confirmed attendee names
+        for user_id, _ in confirmed:
+            user = self.bot.get_user(user_id)
+            name = user.display_name if user else f"User{user_id}"
+            attendee_names.append(name)
+        
+        # Get alternate names
+        for user_id, _ in alternates:
+            user = self.bot.get_user(user_id)
+            name = user.display_name if user else f"User{user_id}"
+            alternate_names.append(f"{name}?")
+        
+        # Combine lists
+        all_names = attendee_names + alternate_names
+        
+        if not all_names:
+            return "None"
+        
+        # If too many attendees, truncate and show count
+        if len(all_names) > 20:
+            display_names = all_names[:15]
+            remaining = len(all_names) - 15
+            return f"{', '.join(display_names)}, +{remaining} more"
+        else:
+            return ', '.join(all_names)
 
     async def get_attendee_count(self, event_id: int):
         """Get the number of attendees for an event"""
@@ -144,7 +191,8 @@ class Event(commands.Cog):
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.cursor() as cursor:
                 await cursor.execute('''
-                    SELECT event_id, creator_id, event_name, event_description, event_time, max_attendees
+                    SELECT event_id, creator_id, event_name, event_description, event_time, 
+                           created_at, max_attendees, status
                     FROM events 
                     WHERE status = 'active' AND event_time > datetime('now')
                     ORDER BY event_time ASC
@@ -229,19 +277,31 @@ class Event(commands.Cog):
 
     @event_command.subcommand(name="list", description="List all upcoming events")
     async def list_events_command(self, interaction: nextcord.Interaction):
-        """List all upcoming events"""
+        """List all upcoming events with dropdown selection"""
         await interaction.response.defer()
 
-        events = await self.get_upcoming_events(limit=10)
+        events = await self.get_upcoming_events(limit=25)  # Get more events for dropdown
         if not events:
             await interaction.followup.send("❌ No upcoming events found!", ephemeral=True)
             return
 
-        # Create an embed to display the events
-        embed = nextcord.Embed(title="Upcoming Events", color=nextcord.Color.blurple())
-        for event in events:
-            embed.add_field(name=event[1], value=f"Description: {event[2]}\nTime: {event[3]}", inline=False)
-        await interaction.followup.send(embed=embed)
+        # Create dropdown view
+        view = EventListView(events=events, cog=self)
+        
+        # Create initial embed
+        embed = nextcord.Embed(
+            title="📅 Upcoming Events",
+            description="Select an event from the dropdown below to interact with it.",
+            color=nextcord.Color.blurple()
+        )
+        embed.add_field(
+            name="📋 Instructions",
+            value="• Use the dropdown to select an event\n• Join, leave, or view attendees\n• Event details will be shown after selection",
+            inline=False
+        )
+        embed.set_footer(text=f"Found {len(events)} upcoming events")
+
+        await interaction.followup.send(embed=embed, view=view)
 
     def parse_datetime_string(self, datetime_str: str):
         """
@@ -477,6 +537,271 @@ class EventView(nextcord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
         except Exception as e:
             print(f"Error updating embed: {e}")
+
+
+# Event List View with Dropdown
+class EventListView(nextcord.ui.View):
+    def __init__(self, events, cog):
+        super().__init__(timeout=300)
+        self.events = events
+        self.cog = cog
+        self.selected_event_id = None
+        
+        # Add dropdown
+        self.add_item(EventDropdown(events=events, view=self))
+        
+        # Add interaction buttons (initially disabled)
+        self.join_button = nextcord.ui.Button(
+            label="✅ Join Event", 
+            style=nextcord.ButtonStyle.green, 
+            disabled=True
+        )
+        self.join_button.callback = self.join_event
+        self.add_item(self.join_button)
+        
+        self.join_alternate_button = nextcord.ui.Button(
+            label="? Join as Alternate", 
+            style=nextcord.ButtonStyle.secondary, 
+            disabled=True
+        )
+        self.join_alternate_button.callback = self.join_alternate
+        self.add_item(self.join_alternate_button)
+        
+        self.leave_button = nextcord.ui.Button(
+            label="❌ Leave Event", 
+            style=nextcord.ButtonStyle.red, 
+            disabled=True
+        )
+        self.leave_button.callback = self.leave_event
+        self.add_item(self.leave_button)
+        
+        # View attendees button (will be added conditionally)
+        self.attendees_button = nextcord.ui.Button(
+            label="👥 View Attendees", 
+            style=nextcord.ButtonStyle.blurple, 
+            disabled=True
+        )
+        self.attendees_button.callback = self.view_attendees
+    
+    async def update_for_selected_event(self, interaction: nextcord.Interaction, event_id: int):
+        """Update the embed and enable buttons when an event is selected"""
+        self.selected_event_id = event_id
+        
+        # Get event details
+        event_data = await self.cog.get_event(event_id)
+        if not event_data:
+            await interaction.response.send_message("❌ Event not found!", ephemeral=True)
+            return
+        
+        # Parse event data
+        event_id, creator_id, event_name, event_description, event_time, created_at, max_attendees, status = event_data
+        
+        # Parse the event time for display
+        event_datetime = datetime.datetime.fromisoformat(event_time.replace('Z', '+00:00'))
+        attendee_count = await self.cog.get_attendee_count(event_id)
+        attendees_text = await self.cog.get_attendees_display_text(event_id)
+        
+        # Create updated embed
+        embed = nextcord.Embed(
+            title=f"🎉 {event_name}",
+            description=event_description,
+            color=0x00ff00,
+            timestamp=event_datetime
+        )
+        
+        embed.add_field(
+            name="📅 Event Time", 
+            value=f"{nextcord.utils.format_dt(event_datetime, style='F')} ({nextcord.utils.format_dt(event_datetime, style='R')})", 
+            inline=False
+        )
+        
+        creator = self.cog.bot.get_user(creator_id)
+        creator_mention = creator.mention if creator else f"User {creator_id}"
+        
+        embed.add_field(name="👤 Created by", value=creator_mention, inline=True)
+        
+        # Show attendees with names or use button for large lists
+        if max_attendees and max_attendees > 20:
+            embed.add_field(name="👥 Attendees", value=f"{attendee_count} attending", inline=True)
+        else:
+            embed.add_field(name="👥 Attendees", value=attendees_text, inline=False)
+        
+        if max_attendees:
+            embed.add_field(name="📊 Max Attendees", value=str(max_attendees), inline=True)
+        
+        embed.set_footer(text=f"Event ID: {event_id}")
+        
+        # Enable buttons
+        self.join_button.disabled = False
+        self.join_alternate_button.disabled = False
+        self.leave_button.disabled = False
+        
+        # Add view attendees button only for large events
+        if max_attendees and max_attendees > 20:
+            if self.attendees_button not in self.children:
+                self.add_item(self.attendees_button)
+            self.attendees_button.disabled = False
+        else:
+            # Remove button if it exists
+            if self.attendees_button in self.children:
+                self.remove_item(self.attendees_button)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def join_event(self, interaction: nextcord.Interaction):
+        """Handle joining the selected event"""
+        if not self.selected_event_id:
+            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
+            return
+        
+        # Check if user is already attending
+        if await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
+            await interaction.response.send_message("❌ You're already signed up for this event!", ephemeral=True)
+            return
+        
+        # Check if event is full
+        event_data = await self.cog.get_event(self.selected_event_id)
+        current_count = await self.cog.get_attendee_count(self.selected_event_id)
+        max_attendees = event_data[6] if event_data else None
+        
+        if max_attendees and current_count >= max_attendees:
+            await interaction.response.send_message("❌ This event is full!", ephemeral=True)
+            return
+        
+        # Join the event
+        success = await self.cog.join_event(self.selected_event_id, interaction.user.id)
+        if success:
+            await self.refresh_event_display(interaction)
+            await interaction.followup.send(f"✅ {interaction.user.mention} joined the event!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to join the event!", ephemeral=True)
+    
+    async def join_alternate(self, interaction: nextcord.Interaction):
+        """Handle joining the selected event as an alternate"""
+        if not self.selected_event_id:
+            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
+            return
+        
+        # Check if user is already attending
+        if await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
+            await interaction.response.send_message("❌ You're already signed up for this event!", ephemeral=True)
+            return
+        
+        # Join the event as alternate
+        success = await self.cog.join_event(self.selected_event_id, interaction.user.id, status='alternate')
+        if success:
+            await self.refresh_event_display(interaction)
+            await interaction.followup.send(f"? {interaction.user.mention} joined as an alternate!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to join the event!", ephemeral=True)
+    
+    async def leave_event(self, interaction: nextcord.Interaction):
+        """Handle leaving the selected event"""
+        if not self.selected_event_id:
+            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
+            return
+        
+        # Check if user is attending
+        if not await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
+            await interaction.response.send_message("❌ You're not signed up for this event!", ephemeral=True)
+            return
+        
+        # Leave the event
+        success = await self.cog.leave_event(self.selected_event_id, interaction.user.id)
+        if success:
+            await self.refresh_event_display(interaction)
+            await interaction.followup.send(f"✅ {interaction.user.mention} left the event!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to leave the event!", ephemeral=True)
+    
+    async def view_attendees(self, interaction: nextcord.Interaction):
+        """Show attendees for the selected event"""
+        if not self.selected_event_id:
+            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
+            return
+        
+        attendees = await self.cog.get_event_attendees(self.selected_event_id)
+        
+        if not attendees:
+            await interaction.response.send_message("📭 No one has signed up for this event yet!", ephemeral=True)
+            return
+        
+        # Create attendees list with status
+        confirmed_list = []
+        alternate_list = []
+        
+        for user_id, joined_at, status in attendees:
+            user = self.cog.bot.get_user(user_id)
+            name = user.display_name if user else f"User {user_id}"
+            
+            if status == 'confirmed':
+                confirmed_list.append(f"• {name}")
+            elif status == 'alternate':
+                alternate_list.append(f"• {name}?")
+        
+        # Build description
+        description_parts = []
+        if confirmed_list:
+            description_parts.append("**Confirmed:**\n" + "\n".join(confirmed_list[:15]))
+        if alternate_list:
+            description_parts.append("**Alternates:**\n" + "\n".join(alternate_list[:10]))
+        
+        embed = nextcord.Embed(
+            title=f"👥 Event Attendees ({len(attendees)})",
+            description="\n\n".join(description_parts) if description_parts else "No attendees",
+            color=0x0099ff
+        )
+        
+        total_shown = len(confirmed_list[:15]) + len(alternate_list[:10])
+        if len(attendees) > total_shown:
+            embed.set_footer(text=f"... and {len(attendees) - total_shown} more")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    async def refresh_event_display(self, interaction: nextcord.Interaction):
+        """Refresh the event display after a change"""
+        if self.selected_event_id:
+            await self.update_for_selected_event(interaction, self.selected_event_id)
+
+
+class EventDropdown(nextcord.ui.Select):
+    def __init__(self, events, view):
+        self.view_parent = view
+        
+        # Create options from events
+        options = []
+        for event in events[:25]:  # Discord limit of 25 options
+            event_id, creator_id, event_name, event_description, event_time, created_at, max_attendees, status = event
+            
+            # Parse event time for display
+            try:
+                event_datetime = datetime.datetime.fromisoformat(event_time.replace('Z', '+00:00'))
+                # Use simple MM/DD HH:MM format for dropdown (Discord doesn't render timestamp formatting)
+                time_str = event_datetime.strftime("%m/%d")
+            except:
+                time_str = "Unknown time"
+            
+            # Truncate name and description if too long
+            display_name = event_name[:100] if len(event_name) <= 100 else event_name[:97] + "..."
+            description = f"{time_str}" if len(time_str) <= 100 else time_str[:97] + "..."
+            
+            options.append(nextcord.SelectOption(
+                label=display_name,
+                description=description,
+                value=str(event_id),
+                emoji="🎉"
+            ))
+        
+        super().__init__(
+            placeholder="Choose an event to interact with...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: nextcord.Interaction):
+        event_id = int(self.values[0])
+        await self.view_parent.update_for_selected_event(interaction, event_id)
 
 
 # Event Creation Modal

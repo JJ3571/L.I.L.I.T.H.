@@ -11,6 +11,79 @@ from server_configs.cogs_config import admin_user_ids
 pkgo_api_url = "https://pogoapi.net/api/v1/"
 raid_bosses_key = "raid_bosses.json"
 
+class FriendCodePaginationView(nextcord.ui.View):
+    def __init__(self, users, bot, per_page=10):
+        super().__init__(timeout=300)  # 5 minutes timeout
+        self.users = users
+        self.bot = bot
+        self.per_page = per_page
+        self.current_page = 0
+        self.max_pages = (len(users) - 1) // per_page + 1
+        
+        # Update button states
+        self.update_buttons()
+    
+    def update_buttons(self):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page == self.max_pages - 1
+        
+        # Hide buttons if only one page
+        if self.max_pages <= 1:
+            self.previous_button.style = nextcord.ButtonStyle.gray
+            self.next_button.style = nextcord.ButtonStyle.gray
+            self.previous_button.disabled = True
+            self.next_button.disabled = True
+    
+    def create_embed(self):
+        start_idx = self.current_page * self.per_page
+        end_idx = min(start_idx + self.per_page, len(self.users))
+        page_users = self.users[start_idx:end_idx]
+        
+        embed = nextcord.Embed(
+            title="🎮 Clan Friend Codes",
+            description=f"Page {self.current_page + 1} of {self.max_pages}",
+            color=nextcord.Color.red()
+        )
+        
+        for discord_id, in_game_name, friend_code in page_users:
+            # Format the friend code into 4-number chunks for display
+            formatted_friend_code = " ".join([friend_code[i:i+4] for i in range(0, 12, 4)])
+            
+            # Create individual field for each user
+            # Field name: IGN, Field value: Discord mention + friend code
+            field_value = f"<@{discord_id}>\n```{formatted_friend_code}```"
+            
+            embed.add_field(
+                name=f"🎯 {in_game_name}",
+                value=field_value,
+                inline=True
+            )
+        
+        embed.set_footer(text=f"Total members: {len(self.users)}")
+        
+        return embed
+    
+    @nextcord.ui.button(label="◀", style=nextcord.ButtonStyle.primary)
+    async def previous_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if self.current_page > 0:
+            self.current_page -= 1
+            self.update_buttons()
+            embed = self.create_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+    
+    @nextcord.ui.button(label="▶", style=nextcord.ButtonStyle.primary)
+    async def next_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        if self.current_page < self.max_pages - 1:
+            self.current_page += 1
+            self.update_buttons()
+            embed = self.create_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+    
+    async def on_timeout(self):
+        # Disable all buttons when the view times out
+        for item in self.children:
+            item.disabled = True
+
 class Pokemon(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -165,58 +238,49 @@ class Pokemon(commands.Cog):
 
     @pkgo.subcommand(name="clan-friendcodes", description="Get a list of all friend codes for the Clan!")
     async def allusers(self, interaction: nextcord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         users = self.get_all_users()
-        if users:
-            for discord_id, in_game_name, friend_code in users:
-                formatted_friend_code = " ".join([friend_code[i:i+4] for i in range(0, 12, 4)])
-                user = self.bot.get_user(discord_id) #get the discord user object
+        
+        if not users:
+            await interaction.followup.send("No users found in the clan roster.")
+            return
 
-                embed = nextcord.Embed(color=nextcord.Color.red())
-                if user:
-                    embed.set_author(name=user.display_name, icon_url=user.avatar.url if user.avatar else user.default_avatar.url)
-                else:
-                    embed.set_author(name=f"User ID: {discord_id}") #if user is not found, use their id.
-                embed.add_field(name="User", value=f"<@{discord_id}>", inline=True)
-                embed.add_field(name="IGN", value=in_game_name, inline=True)
-                embed.add_field(name="Code", value=f"`{formatted_friend_code}`", inline=True)
+        # Create paginated view
+        view = FriendCodePaginationView(users, self.bot)
+        embed = view.create_embed()
+        
+        await interaction.followup.send(embed=embed, view=view)
 
-                await interaction.channel.send(embed=embed)
-                await asyncio.sleep(1)
-            await interaction.response.send_message("Clan friendcodes sent!", ephemeral=True)
-        else:
-            await interaction.response.send_message("No users found")
+    @pkgo.subcommand(name="admin-add", description="Admin-only: Add a friend code for another user.")
+    async def admin_add(self, interaction: nextcord.Interaction, user: nextcord.User, in_game_name: str, friend_code: str):
+        # Check if the user is an admin
+        if interaction.user.id not in admin_user_ids:
+            await interaction.response.send_message(
+                "You do not have permission to use this command.", ephemeral=True
+            )
+            return
 
-    # @pkgo.subcommand(name="admin-add", description="Admin-only: Add a friend code for another user.")
-    # async def admin_add(self, interaction: nextcord.Interaction, user: nextcord.User, in_game_name: str, friend_code: str):
-    #     # Check if the user is an admin
-    #     if interaction.user.id not in admin_user_ids:
-    #         await interaction.response.send_message(
-    #             "You do not have permission to use this command.", ephemeral=True
-    #         )
-    #         return
+        # Remove spaces from the input
+        sanitized_friend_code = friend_code.replace(" ", "")
 
-    #     # Remove spaces from the input
-    #     sanitized_friend_code = friend_code.replace(" ", "")
+        # Validate that the friend code contains only digits and is exactly 12 characters long
+        if not sanitized_friend_code.isdigit() or len(sanitized_friend_code) != 12:
+            await interaction.response.send_message(
+                "Invalid friend code! Please ensure it contains exactly 12 digits and no letters or special characters.",
+                ephemeral=True
+            )
+            return
 
-    #     # Validate that the friend code contains only digits and is exactly 12 characters long
-    #     if not sanitized_friend_code.isdigit() or len(sanitized_friend_code) != 12:
-    #         await interaction.response.send_message(
-    #             "Invalid friend code! Please ensure it contains exactly 12 digits and no letters or special characters.",
-    #             ephemeral=True
-    #         )
-    #         return
+        # Store the sanitized friend code (without spaces) in the database
+        discord_id = str(user.id)
+        self.add_user(discord_id, in_game_name, sanitized_friend_code)
 
-    #     # Store the sanitized friend code (without spaces) in the database
-    #     discord_id = str(user.id)
-    #     self.add_user(discord_id, in_game_name, sanitized_friend_code)
+        # Format the friend code into 4-number chunks for display
+        formatted_friend_code = " ".join([sanitized_friend_code[i:i+4] for i in range(0, 12, 4)])
 
-    #     # Format the friend code into 4-number chunks for display
-    #     formatted_friend_code = " ".join([sanitized_friend_code[i:i+4] for i in range(0, 12, 4)])
-
-    #     await interaction.response.send_message(
-    #         f"Admin {interaction.user.mention} added {user.mention} with in-game name {in_game_name} and friend code `{formatted_friend_code}`"
-    #     )
+        await interaction.response.send_message(
+            f"Admin {interaction.user.mention} added {user.mention} with in-game name {in_game_name} and friend code `{formatted_friend_code}`"
+        )
         
 def setup(bot):
     bot.add_cog(Pokemon(bot))
