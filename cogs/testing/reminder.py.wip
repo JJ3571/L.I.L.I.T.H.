@@ -6,6 +6,7 @@ import aiosqlite
 from datetime import datetime, timedelta
 import pytz
 from server_configs.config import GUILD_ID
+from server_configs.database_config import DATABASE_PATHS
 
 class ReminderModal(Modal):
     def __init__(self, reminder_cog_instance):
@@ -160,7 +161,7 @@ class ReminderModal(Modal):
 class Reminder(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = 'reminders.db'
+        self.db_path = DATABASE_PATHS["reminders"]
         self.initial_db_setup.start()
         self.check_reminders_loop.start()
 

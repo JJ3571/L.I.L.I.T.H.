@@ -7,6 +7,7 @@ import pytz
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
+from server_configs.database_config import DATABASE_PATHS
 
 
 class Economy(commands.Cog):
@@ -22,7 +23,7 @@ class Economy(commands.Cog):
 
         self.leaderboard_items_per_page = 12
 
-        self.db_path = "economy.db"
+        self.db_path = DATABASE_PATHS["economy"]
         self.reward_users.start()
         self.backup_task.start()
 

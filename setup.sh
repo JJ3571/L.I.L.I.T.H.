@@ -13,6 +13,11 @@ source .venv/bin/activate
 echo "Installing dependencies..."
 pip install -r requirements.txt
 
+# Verify installation
+echo ""
+echo "Verifying dependencies..."
+python check_dependencies.py
+
 echo ""
 echo "Setup complete!"
 echo "To activate the environment in future sessions, run: source .venv/bin/activate"

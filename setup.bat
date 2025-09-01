@@ -13,6 +13,11 @@ REM Install dependencies
 echo Installing dependencies...
 pip install -r requirements.txt
 
+REM Verify installation
+echo.
+echo Verifying dependencies...
+python check_dependencies.py
+
 echo.
 echo Setup complete! 
 echo To activate the environment in future sessions, run: .venv\Scripts\activate.bat

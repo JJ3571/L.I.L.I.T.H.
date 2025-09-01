@@ -6,6 +6,7 @@ import time
 from server_configs.config import GUILD_ID
 # Ensure this import is correct and admin_user_ids is populated
 from server_configs.cogs_config import admin_user_ids
+from server_configs.database_config import DATABASE_PATHS
 
 class BuzzerView(nextcord.ui.View):
     def __init__(self, cog_instance):
@@ -32,7 +33,7 @@ class BuzzerView(nextcord.ui.View):
 class Buzzer(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "buzzer.db"
+        self.db_path = DATABASE_PATHS["buzzer"]
 
     async def create_tables(self):
         async with aiosqlite.connect(self.db_path) as db:

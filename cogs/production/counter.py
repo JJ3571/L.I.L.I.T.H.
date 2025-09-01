@@ -7,7 +7,9 @@ import logging
 from typing import Optional, Dict, Any
 
 from server_configs.config import GUILD_ID
-DB_PATH = "counter.db"
+from server_configs.database_config import DATABASE_PATHS
+
+DB_PATH = DATABASE_PATHS["counter"]
 
 # Set up logging
 logger = logging.getLogger(__name__)

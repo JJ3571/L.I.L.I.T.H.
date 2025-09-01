@@ -4,6 +4,7 @@ import aiosqlite
 import time
 
 from server_configs.config import GUILD_ID
+from server_configs.database_config import DATABASE_PATHS
 
 # Define Powerups
 POWERUP_TYPES = {
@@ -36,7 +37,7 @@ POWERUP_TYPES = {
 class PowerupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = 'powerups.db'
+        self.db_path = DATABASE_PATHS["powerups"]
         self.check_expired_powerups.start()
 
     async def cog_load(self):

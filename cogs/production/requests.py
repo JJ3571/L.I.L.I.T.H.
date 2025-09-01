@@ -9,8 +9,9 @@ import pytz
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids
+from server_configs.database_config import DATABASE_PATHS
 
-DB_PATH = "request.db"
+DB_PATH = DATABASE_PATHS["request"]
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)

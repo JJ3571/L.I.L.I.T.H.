@@ -6,11 +6,12 @@ import pytz
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
+from server_configs.database_config import DATABASE_PATHS
 
 class Birthday(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "birthday.db"
+        self.db_path = DATABASE_PATHS["birthday"]
         self.bot.loop.create_task(self.create_tables())
         self.check_birthdays.start()
         self.cleanup_birthdays.start()

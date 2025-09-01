@@ -7,7 +7,9 @@ import logging
 from typing import Optional, Dict, Any, List
 
 from server_configs.config import GUILD_ID
-DB_PATH = "greek_gods.db"
+from server_configs.database_config import DATABASE_PATHS
+
+DB_PATH = DATABASE_PATHS["greek_gods"]
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)

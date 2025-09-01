@@ -7,11 +7,12 @@ import pytz
 import re
 
 from server_configs.config import GUILD_ID
+from server_configs.database_config import DATABASE_PATHS
 
 class Event(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = 'event.db'
+        self.db_path = DATABASE_PATHS["event"]
         # Initialize database when cog loads
         self.bot.loop.create_task(self.create_tables())
 

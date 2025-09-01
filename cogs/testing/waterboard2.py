@@ -7,11 +7,12 @@ import aiosqlite
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import seen_category_id, bot_spam_id, admin_user_ids
 from cogs.production.economy import Economy
+from server_configs.database_config import DATABASE_PATHS
 
 class WaterboardCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "waterboard.db"
+        self.db_path = DATABASE_PATHS["waterboard"]
         self.channel_creation_lock = asyncio.Lock()
         self.cooldown_multiplier = 2
         self.waterboard_cost = 200

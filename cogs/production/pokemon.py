@@ -6,6 +6,7 @@ import asyncio
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids
+from server_configs.database_config import DATABASE_PATHS
 
 
 pkgo_api_url = "https://pogoapi.net/api/v1/"
@@ -87,7 +88,7 @@ class FriendCodePaginationView(nextcord.ui.View):
 class Pokemon(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "pokemon.db"
+        self.db_path = DATABASE_PATHS["pokemon"]
         self.create_tables()
 
     def create_tables(self):

@@ -1,7 +1,34 @@
-# Discord Bot Dependencies
+# Discord Bot Dependencies - Core
 nextcord==2.6.0
 aiosqlite==0.21.0
 
-# Optional: Add other packages as needed
-# python-dotenv  # For environment variables
-# asyncio        # Usually built-in with Python 3.7+
+# HTTP/API Libraries
+aiohttp==3.11.11
+requests==2.32.3
+
+# Timezone/Date Libraries
+pytz==2024.2
+
+# Webhook Support
+discord-webhook==1.4.1
+
+# Google AI/Gemini Integration
+google-genai==1.10.0
+google-generativeai==0.8.4
+
+# Note: The following are built-in Python modules and don't need to be installed:
+# - asyncio (built-in since Python 3.4)
+# - sqlite3 (built-in)
+# - datetime (built-in)
+# - time (built-in)
+# - random (built-in)
+# - os (built-in)
+# - re (built-in)
+# - logging (built-in)
+# - itertools (built-in)
+# - math (built-in)
+# - unicodedata (built-in)
+# - typing (built-in since Python 3.5)
+
+# Optional: Development/Environment Libraries (uncomment if needed)
+# python-dotenv  # For .env files with environment variables

@@ -7,7 +7,9 @@ from datetime import datetime
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import admin_user_ids
-DB_PATH = "wager.db"
+from server_configs.database_config import DATABASE_PATHS
+
+DB_PATH = DATABASE_PATHS["wager"]
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
