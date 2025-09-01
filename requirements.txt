@@ -1,0 +1,7 @@
+# Discord Bot Dependencies
+nextcord==2.6.0
+aiosqlite==0.21.0
+
+# Optional: Add other packages as needed
+# python-dotenv  # For environment variables
+# asyncio        # Usually built-in with Python 3.7+

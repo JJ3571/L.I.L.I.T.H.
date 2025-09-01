@@ -460,6 +460,141 @@ class WaterboardCog(commands.Cog):
 
         asyncio.create_task(self.enhanced_waterboard_user(interaction, user, seen_category))
 
+    @nextcord.slash_command(name="waterboard-party", description="Waterboard everyone in a voice channel (except yourself)", guild_ids=[GUILD_ID])
+    async def waterboard_party(self, interaction: nextcord.Interaction):
+        print(f"User id: {interaction.user.id} used the waterboard-party command.")
+        
+        # Check if the user is in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            embed = nextcord.Embed(
+                title="Not in Voice Channel",
+                description="You must be in a voice channel to use the waterboard party command.",
+                color=nextcord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        user_voice_channel = interaction.user.voice.channel
+        
+        # Get all users in the voice channel except the command initiator
+        target_users = [member for member in user_voice_channel.members if member.id != interaction.user.id and not member.bot]
+        
+        if not target_users:
+            embed = nextcord.Embed(
+                title="No Targets Found",
+                description="There are no other users in your voice channel to waterboard.",
+                color=nextcord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Calculate total cost (base cost * number of users * party multiplier)
+        party_multiplier = 2.5  # Party commands cost more
+        base_cost_per_user = self.waterboard_cost
+        total_cost = int(base_cost_per_user * party_multiplier * len(target_users))
+
+        # Check economy
+        economy_cog = self.bot.get_cog('Economy')
+        if not economy_cog:
+            embed_err_econ = nextcord.Embed(title="Error", description="Economy cog is not available.", color=nextcord.Color.red())
+            await interaction.response.send_message(embed=embed_err_econ, ephemeral=True)
+            return
+
+        balance = await economy_cog.get_user_balance(interaction.user.id)
+        if balance < total_cost:
+            embed_insufficient_funds = nextcord.Embed(
+                title="Insufficient Funds",
+                description=f"You need {total_cost} coins to waterboard {len(target_users)} users. Your current balance is {balance} coins.",
+                color=nextcord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed_insufficient_funds, ephemeral=True)
+            return
+
+        # Check for exempt users and filter them out
+        exempt_users = []
+        final_target_users = []
+        
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                current_time = time.time()
+                for user in target_users:
+                    await cursor.execute("SELECT exempt_until FROM exempt_users WHERE user_id = ?", (user.id,))
+                    exempt_result = await cursor.fetchone()
+                    if exempt_result and current_time < exempt_result[0]:
+                        exempt_users.append(user)
+                    else:
+                        final_target_users.append(user)
+
+        if not final_target_users:
+            exempt_list = ", ".join([user.mention for user in exempt_users])
+            embed = nextcord.Embed(
+                title="All Users Exempt",
+                description=f"All users in the channel are exempt from waterboarding: {exempt_list}",
+                color=nextcord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Recalculate cost for non-exempt users
+        final_cost = int(base_cost_per_user * party_multiplier * len(final_target_users))
+        if balance < final_cost:
+            embed_insufficient_funds = nextcord.Embed(
+                title="Insufficient Funds",
+                description=f"You need {final_cost} coins to waterboard {len(final_target_users)} non-exempt users. Your current balance is {balance} coins.",
+                color=nextcord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed_insufficient_funds, ephemeral=True)
+            return
+
+        # Deduct the cost
+        await economy_cog.deduct_user_balance(interaction.user.id, final_cost)
+
+        # Update database for each user
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                current_time = time.time()
+                for user in final_target_users:
+                    await cursor.execute("SELECT total_waterboarded, total_coins_spent FROM waterboarded_users WHERE user_id = ?", (user.id,))
+                    result = await cursor.fetchone()
+                    if result:
+                        total_waterboarded, total_coins_spent = result
+                        total_waterboarded += 1
+                        total_coins_spent += int(base_cost_per_user * party_multiplier)
+                    else:
+                        total_waterboarded = 1
+                        total_coins_spent = int(base_cost_per_user * party_multiplier)
+                    
+                    await cursor.execute(
+                        "INSERT OR REPLACE INTO waterboarded_users (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) VALUES (?, ?, ?, ?, ?)",
+                        (user.id, current_time, 0, total_waterboarded, total_coins_spent)
+                    )
+                await conn.commit()
+
+        # Send confirmation message
+        target_mentions = ", ".join([user.mention for user in final_target_users])
+        exempt_message = ""
+        if exempt_users:
+            exempt_mentions = ", ".join([user.mention for user in exempt_users])
+            exempt_message = f"\n\nExempt users (not waterboarded): {exempt_mentions}"
+
+        embed_purchased = nextcord.Embed(
+            title="Waterboard Party Purchased",
+            description=f"You have successfully initiated a waterboard party for {final_cost} coins!\n\nTargets: {target_mentions}{exempt_message}",
+            color=nextcord.Color.purple()
+        )
+        await interaction.response.send_message(embed=embed_purchased, ephemeral=True)
+
+        # Get the seen category
+        guild = interaction.guild
+        seen_category = nextcord.utils.get(guild.categories, id=seen_category_id)
+        if not seen_category:
+            embed_no_category = nextcord.Embed(title="Configuration Error", description="The 'seen' category for waterboarding channels was not found. Please contact an admin.", color=nextcord.Color.red())
+            await interaction.followup.send(embed=embed_no_category, ephemeral=True) 
+            return
+
+        # Start the party waterboard process
+        asyncio.create_task(self.waterboard_party_users(interaction, final_target_users, seen_category, user_voice_channel))
+
     async def enhanced_waterboard_user(self, interaction: nextcord.Interaction, user: nextcord.Member, seen_category):
         guild = interaction.guild
         bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
@@ -793,6 +928,153 @@ class WaterboardCog(commands.Cog):
                 print(f"Error: Interaction not found for follow-up message for {WaterboardCog.s_print_static(user.name)}.") #
             except Exception as e:
                  print(f"Error sending followup/bot-spam message for {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}") #
+
+    async def waterboard_party_users(self, interaction: nextcord.Interaction, target_users: list, seen_category, original_channel):
+        """
+        Waterboards multiple users simultaneously through 5 water channels.
+        """
+        guild = interaction.guild
+        bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
+        original_channel_id = original_channel.id
+
+        session_counted = False
+        active_users = list(target_users)  # Track users who are still connected
+        
+        try:
+            # Increment active session counter
+            async with self.waterboard_sessions_lock:
+                self.active_waterboard_sessions += 1
+                session_counted = True
+            
+            user_names = [WaterboardCog.s_print_static(user.name) for user in target_users]
+            print(f"Waterboard party session started for {len(target_users)} users: {', '.join(user_names)}. Active sessions: {self.active_waterboard_sessions}")
+
+            # Ensure temporary channels are created if they don't exist
+            await self.create_temp_channels(guild, seen_category) 
+            
+            temp_channel_ids = await self.get_temp_channels()
+
+            if not temp_channel_ids:
+                print(f"Error: No temporary channels available for waterboard party.")
+                return
+
+            # Filter out users who are no longer in voice before starting
+            active_users = [user for user in active_users if user.voice and user.voice.channel]
+            
+            if not active_users:
+                print("No users are in voice channels for waterboard party.")
+                return
+
+            print(f"Starting waterboard party for {len(active_users)} users through {len(temp_channel_ids)} channels.")
+            
+            # Move all users through exactly 5 water channels (repeat channels if necessary)
+            water_channels_to_use = []
+            for i in range(5):  # Exactly 5 channels
+                channel_id = temp_channel_ids[i % len(temp_channel_ids)]  # Cycle through available channels
+                water_channels_to_use.append(channel_id)
+
+            # Move users through each water channel
+            for round_num, channel_id in enumerate(water_channels_to_use, 1):
+                channel = self.bot.get_channel(channel_id)
+                if not channel:
+                    print(f"Temporary channel {channel_id} not found during waterboard party round {round_num}.")
+                    continue 
+
+                # Filter out disconnected users before each move
+                previously_active = len(active_users)
+                active_users = [user for user in active_users if user.voice and user.voice.channel]
+                
+                if len(active_users) < previously_active:
+                    disconnected_count = previously_active - len(active_users)
+                    print(f"Round {round_num}: {disconnected_count} user(s) disconnected, continuing with {len(active_users)} remaining users.")
+                
+                if not active_users:
+                    print(f"All users disconnected during waterboard party at round {round_num}.")
+                    break
+
+                print(f"Round {round_num}/5: Moving {len(active_users)} users to {WaterboardCog.s_print_static(channel.name)}")
+                
+                # Move all active users to the current water channel
+                for user in list(active_users):  # Use list() to avoid modification during iteration
+                    try:
+                        await user.move_to(channel)
+                        print(f"  Moved {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}")
+                    except nextcord.errors.HTTPException as e:
+                        print(f"  Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}: {WaterboardCog.s_print_static(str(e))}")
+                        if e.status == 400:  # User likely disconnected
+                            print(f"  User {WaterboardCog.s_print_static(user.name)} likely disconnected. Removing from active list.")
+                            if user in active_users:
+                                active_users.remove(user)
+                    except Exception as e:
+                        print(f"  Unexpected error moving {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
+                        if user in active_users:
+                            active_users.remove(user)
+
+                # Wait between channel moves
+                await asyncio.sleep(1.8)  # Slightly longer delay for party mode
+
+            # Move remaining users back to the original channel
+            if active_users:
+                print(f"Moving {len(active_users)} remaining users back to original channel.")
+                original_channel_obj = self.bot.get_channel(original_channel_id)
+                if original_channel_obj:
+                    for user in active_users:
+                        try:
+                            await user.move_to(original_channel_obj)
+                            print(f"  Moved {WaterboardCog.s_print_static(user.name)} back to original channel.")
+                        except Exception as e:
+                            print(f"  Error moving {WaterboardCog.s_print_static(user.name)} back to original channel: {WaterboardCog.s_print_static(str(e))}")
+                else:
+                    print(f"Original channel not found for waterboard party return.")
+            else:
+                print("No users remaining to move back to original channel.")
+
+        except Exception as e:
+            print(f"Error during waterboard party process: {WaterboardCog.s_print_static(str(e))}")
+        finally:
+            if session_counted:
+                should_schedule_deletion = False
+                async with self.waterboard_sessions_lock:
+                    self.active_waterboard_sessions -= 1
+                    print(f"Waterboard party session ended. Active sessions: {self.active_waterboard_sessions}")
+                    if self.active_waterboard_sessions == 0:
+                        should_schedule_deletion = True
+                
+                if should_schedule_deletion:
+                    print("All active waterboard sessions concluded. Scheduling check for temp channel deletion.")
+                    asyncio.create_task(self.schedule_temp_channel_deletion_if_needed())
+
+            # Send completion messages
+            try:
+                final_active_count = len([user for user in target_users if user.voice and user.voice.channel])
+                disconnected_count = len(target_users) - final_active_count
+                
+                target_mentions = ", ".join([user.mention for user in target_users])
+                status_message = f"Waterboard party completed for: {target_mentions}"
+                if disconnected_count > 0:
+                    status_message += f"\n\n{disconnected_count} user(s) disconnected during the process."
+
+                embed = nextcord.Embed(
+                    title="Waterboard Party Complete",
+                    description=status_message,
+                    color=nextcord.Color.purple()
+                )
+                
+                if interaction.response.is_done(): 
+                    await interaction.followup.send(embed=embed, ephemeral=True) 
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+                if bot_spam_channel:
+                    public_embed = nextcord.Embed(
+                        description=f"🎉 **WATERBOARD PARTY!** 🎉\n{target_mentions} were all waterboarded by {interaction.user.mention}! 💀💦",
+                        color=nextcord.Color.purple()
+                    )
+                    await bot_spam_channel.send(embed=public_embed)
+            except nextcord.errors.NotFound:
+                print(f"Error: Interaction not found for follow-up message for waterboard party.")
+            except Exception as e:
+                print(f"Error sending followup/bot-spam message for waterboard party: {WaterboardCog.s_print_static(str(e))}")
 
     
     
