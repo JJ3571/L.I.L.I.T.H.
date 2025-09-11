@@ -3,6 +3,7 @@ from nextcord.ext import commands, tasks
 import asyncio
 import time
 import aiosqlite
+from asyncio import Semaphore
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import seen_category_id, bot_spam_id, admin_user_ids
@@ -16,6 +17,9 @@ class WaterboardCog(commands.Cog):
         self.channel_creation_lock = asyncio.Lock()
         self.cooldown_multiplier = 2
         self.waterboard_cost = 200
+
+        # Rate limiting for voice moves
+        self.voice_move_semaphore = Semaphore(3)  # Limit to 3 concurrent moves
 
         self.active_waterboard_sessions = 0
         self.waterboard_sessions_lock = asyncio.Lock() 
@@ -219,6 +223,73 @@ class WaterboardCog(commands.Cog):
         if not self._tables_created:  # Check the initialized flag
             await self.create_tables()
             self._tables_created = True # Set flag after creation
+
+    async def move_user_with_rate_limit(self, user: nextcord.Member, channel: nextcord.VoiceChannel, max_retries: int = 3):
+        """
+        Move a user to a voice channel with rate limiting and exponential backoff.
+        """
+        async with self.voice_move_semaphore:
+            for attempt in range(max_retries):
+                try:
+                    await user.move_to(channel)
+                    await asyncio.sleep(0.3)  # Small delay between moves
+                    return True
+                except nextcord.errors.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
+                        print(f"Rate limited moving {self.s_print_static(user.name)}, waiting {wait_time}s (attempt {attempt + 1})")
+                        await asyncio.sleep(wait_time)
+                    elif e.status == 400:  # User likely disconnected
+                        print(f"User {self.s_print_static(user.name)} likely disconnected during move")
+                        return False
+                    else:
+                        print(f"HTTP error moving {self.s_print_static(user.name)}: {e}")
+                        return False
+                except Exception as e:
+                    print(f"Unexpected error moving {self.s_print_static(user.name)}: {e}")
+                    return False
+            
+            print(f"Failed to move {self.s_print_static(user.name)} after {max_retries} attempts")
+            return False
+
+    async def move_users_in_batches(self, users: list, channel: nextcord.VoiceChannel, batch_size: int = 3):
+        """
+        Move multiple users to a channel in batches to respect rate limits.
+        Returns list of users that were successfully moved.
+        """
+        successful_moves = []
+        
+        for i in range(0, len(users), batch_size):
+            batch = users[i:i + batch_size]
+            
+            # Create concurrent move tasks for the batch
+            move_tasks = [
+                self.move_user_with_rate_limit(user, channel) 
+                for user in batch
+            ]
+            
+            # Execute batch concurrently with error handling
+            try:
+                results = await asyncio.gather(*move_tasks, return_exceptions=True)
+                
+                # Process results
+                for user, result in zip(batch, results):
+                    if isinstance(result, Exception):
+                        print(f"Exception moving {self.s_print_static(user.name)}: {result}")
+                    elif result is True:
+                        successful_moves.append(user)
+                        print(f"Successfully moved {self.s_print_static(user.name)} to {self.s_print_static(channel.name)}")
+                    else:
+                        print(f"Failed to move {self.s_print_static(user.name)} to {self.s_print_static(channel.name)}")
+                
+            except Exception as e:
+                print(f"Batch move error: {e}")
+            
+            # Delay between batches to further respect rate limits
+            if i + batch_size < len(users):  # Don't delay after the last batch
+                await asyncio.sleep(0.8)
+        
+        return successful_moves
 
     @nextcord.slash_command(name="executivepardon", description="[Admin] Grant exemption from waterboarding for a set time.",guild_ids=[GUILD_ID])
     async def executivepardon_slash_command(self, 
@@ -666,23 +737,23 @@ class WaterboardCog(commands.Cog):
                         break
                 
                 print(f"Moving {WaterboardCog.s_print_static(user.name)} to temporary channel: {WaterboardCog.s_print_static(channel.name)}.")
-                try:
-                    await user.move_to(channel)
-                except nextcord.errors.HTTPException as e:
-                    print(f"Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}: {WaterboardCog.s_print_static(str(e))}")
-                    if e.status == 400:
-                        print(f"User {WaterboardCog.s_print_static(user.name)} likely disconnected or channel issue during enhanced waterboard.")
-                        # Try to move them back to original channel
-                        if original_channel:
-                            try:
-                                temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
-                                await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
-                                await user.move_to(original_channel)
-                                print(f"Moved {WaterboardCog.s_print_static(user.name)} back to original channel after error.")
-                            except Exception as move_error:
-                                print(f"Error moving {WaterboardCog.s_print_static(user.name)} back after error: {WaterboardCog.s_print_static(str(move_error))}")
-                        break 
-                await asyncio.sleep(1.3)
+                
+                # Use optimized move method with rate limiting
+                move_success = await self.move_user_with_rate_limit(user, channel)
+                if not move_success:
+                    print(f"Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)} during enhanced waterboard.")
+                    # Try to move them back to original channel
+                    if original_channel:
+                        try:
+                            temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
+                            await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
+                            await self.move_user_with_rate_limit(user, original_channel)
+                            print(f"Moved {WaterboardCog.s_print_static(user.name)} back to original channel after error.")
+                        except Exception as move_error:
+                            print(f"Error moving {WaterboardCog.s_print_static(user.name)} back after error: {WaterboardCog.s_print_static(str(move_error))}")
+                    break 
+                    
+                await asyncio.sleep(1.0)  # Reduced delay due to built-in rate limiting
 
             # Move the user back to the original channel
             if original_channel:
@@ -692,9 +763,12 @@ class WaterboardCog(commands.Cog):
                     temp_overwrite = nextcord.PermissionOverwrite(view_channel=True, connect=True)
                     await original_channel.set_permissions(user, overwrite=temp_overwrite, reason="Enhanced waterboard - temporary access for return")
                     
-                    # Move them back
-                    await user.move_to(original_channel)
-                    print(f"{WaterboardCog.s_print_static(user.name)} has been moved back to the original channel after enhanced waterboard.")
+                    # Move them back using optimized method
+                    move_success = await self.move_user_with_rate_limit(user, original_channel)
+                    if move_success:
+                        print(f"{WaterboardCog.s_print_static(user.name)} has been moved back to the original channel after enhanced waterboard.")
+                    else:
+                        print(f"Failed to move {WaterboardCog.s_print_static(user.name)} back to original channel after enhanced waterboard.")
                 except Exception as e:
                     print(f"Error moving {WaterboardCog.s_print_static(user.name)} back to original channel: {WaterboardCog.s_print_static(str(e))}")
             else:
@@ -868,25 +942,25 @@ class WaterboardCog(commands.Cog):
                     print(f"{WaterboardCog.s_print_static(user.name)} disconnected or moved out of voice channel during waterboarding.") #
                     break 
                 print(f"Moving {WaterboardCog.s_print_static(user.name)} to temporary channel: {WaterboardCog.s_print_static(channel.name)}.") #
-                try:
-                    await user.move_to(channel)
-                except nextcord.errors.HTTPException as e:
-                    print(f"Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}: {WaterboardCog.s_print_static(str(e))}") #
-                    if e.status == 400: # e.g., user disconnected, channel full/deleted
-                        print(f"User {WaterboardCog.s_print_static(user.name)} likely disconnected or channel issue. Aborting moves for this user.") #
-                        break 
-                await asyncio.sleep(1.3) # Delay to simulate the waterboarding process
+                
+                # Use optimized move method with rate limiting
+                move_success = await self.move_user_with_rate_limit(user, channel)
+                if not move_success:
+                    print(f"Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}, aborting waterboard.") #
+                    break
+                    
+                await asyncio.sleep(1.0)  # Reduced delay due to built-in rate limiting
 
-            # Move the user back to the original channel
+            # Move the user back to the original channel using optimized method
             if user.voice and original_channel_id: # # Check if user is still in a voice channel
                 print(f"Moving {WaterboardCog.s_print_static(user.name)} back to the original channel.")
                 original_channel = self.bot.get_channel(original_channel_id)
                 if original_channel:
-                    try:
-                        await user.move_to(original_channel) #
+                    move_success = await self.move_user_with_rate_limit(user, original_channel)
+                    if move_success:
                         print(f"{WaterboardCog.s_print_static(user.name)} has been moved back to the original channel.") #
-                    except Exception as e: #
-                        print(f"Error moving {WaterboardCog.s_print_static(user.name)} back to original channel: {WaterboardCog.s_print_static(str(e))}") #
+                    else:
+                        print(f"Failed to move {WaterboardCog.s_print_static(user.name)} back to original channel.") #
                 else:
                     print(f"Original channel not found for {WaterboardCog.s_print_static(user.name)}.") #
             else:
@@ -995,36 +1069,25 @@ class WaterboardCog(commands.Cog):
 
                 print(f"Round {round_num}/5: Moving {len(active_users)} users to {WaterboardCog.s_print_static(channel.name)}")
                 
-                # Move all active users to the current water channel
-                for user in list(active_users):  # Use list() to avoid modification during iteration
-                    try:
-                        await user.move_to(channel)
-                        print(f"  Moved {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}")
-                    except nextcord.errors.HTTPException as e:
-                        print(f"  Failed to move {WaterboardCog.s_print_static(user.name)} to {WaterboardCog.s_print_static(channel.name)}: {WaterboardCog.s_print_static(str(e))}")
-                        if e.status == 400:  # User likely disconnected
-                            print(f"  User {WaterboardCog.s_print_static(user.name)} likely disconnected. Removing from active list.")
-                            if user in active_users:
-                                active_users.remove(user)
-                    except Exception as e:
-                        print(f"  Unexpected error moving {WaterboardCog.s_print_static(user.name)}: {WaterboardCog.s_print_static(str(e))}")
-                        if user in active_users:
-                            active_users.remove(user)
+                # Use optimized batch moving with rate limiting
+                successfully_moved_users = await self.move_users_in_batches(active_users, channel, batch_size=3)
+                
+                # Update active_users to only include those successfully moved
+                active_users = [user for user in successfully_moved_users if user.voice and user.voice.channel]
+                
+                if len(successfully_moved_users) < len(active_users):
+                    failed_count = len(active_users) - len(successfully_moved_users)
+                    print(f"Round {round_num}: {failed_count} user(s) failed to move or disconnected")
 
-                # Wait between channel moves
-                await asyncio.sleep(1.8)  # Slightly longer delay for party mode
+                # Shorter delay between channel moves due to built-in rate limiting
+                await asyncio.sleep(1.0)  # Reduced from 1.8s due to better rate limiting
 
-            # Move remaining users back to the original channel
+            # Move remaining users back to the original channel using optimized method
             if active_users:
                 print(f"Moving {len(active_users)} remaining users back to original channel.")
                 original_channel_obj = self.bot.get_channel(original_channel_id)
                 if original_channel_obj:
-                    for user in active_users:
-                        try:
-                            await user.move_to(original_channel_obj)
-                            print(f"  Moved {WaterboardCog.s_print_static(user.name)} back to original channel.")
-                        except Exception as e:
-                            print(f"  Error moving {WaterboardCog.s_print_static(user.name)} back to original channel: {WaterboardCog.s_print_static(str(e))}")
+                    await self.move_users_in_batches(active_users, original_channel_obj, batch_size=3)
                 else:
                     print(f"Original channel not found for waterboard party return.")
             else:
