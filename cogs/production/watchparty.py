@@ -1,6 +1,8 @@
 import nextcord
 from nextcord.ext import commands, tasks
 import datetime, pytz
+import asyncio
+from asyncio import Semaphore
 
 from server_configs.config import GUILD_ID
 from server_configs.cogs_config import watch_party_channel_id, seen_category_id, hidden_category_id
@@ -14,6 +16,11 @@ class WatchPartyCog(commands.Cog):
         self.bot = bot
         self.reserved_channels = {}
         self.reservation_end_time = None
+        
+        # Rate limiting for voice moves
+        self.voice_move_semaphore = Semaphore(2)  # Limit to 2 concurrent moves for safety
+        self.move_delay = 0.5  # Default delay in seconds between moves
+        
         print("Initializing WatchPartyCog.")
         self.monitor_watch_party.start()
 
@@ -60,6 +67,66 @@ class WatchPartyCog(commands.Cog):
         await self.bot.wait_until_ready()
         print("Bot is ready. Starting monitor_watch_party loop.")
 
+    async def move_user_with_rate_limit(self, user: nextcord.Member, target_channel: nextcord.VoiceChannel, max_retries: int = 3):
+        """
+        Move a user to a voice channel with rate limiting and exponential backoff.
+        """
+        async with self.voice_move_semaphore:
+            for attempt in range(max_retries):
+                try:
+                    await user.move_to(target_channel)
+                    await asyncio.sleep(self.move_delay)
+                    return True
+                except nextcord.errors.HTTPException as e:
+                    if e.status == 429:  # Rate limited
+                        wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
+                        print(f"Rate limited moving {user.display_name}, waiting {wait_time}s (attempt {attempt + 1})")
+                        await asyncio.sleep(wait_time)
+                    elif e.status == 400:  # User likely disconnected
+                        print(f"User {user.display_name} likely disconnected during move")
+                        return False
+                    else:
+                        print(f"HTTP error moving {user.display_name}: {e}")
+                        return False
+                except Exception as e:
+                    print(f"Unexpected error moving {user.display_name}: {e}")
+                    return False
+            
+            print(f"Failed to move {user.display_name} after {max_retries} attempts")
+            return False
+
+    async def vacate_users_with_rate_limit(self, users: list, target_channel: nextcord.VoiceChannel):
+        """
+        Move multiple users to a target channel with rate limiting and progress tracking.
+        """
+        if not users:
+            return []
+            
+        successful_moves = []
+        failed_moves = []
+        
+        print(f"Starting vacate operation: moving {len(users)} users to {target_channel.name}")
+        
+        for i, user in enumerate(users, 1):
+            # Check if user is still in a voice channel before attempting move
+            if not user.voice or not user.voice.channel:
+                print(f"User {user.display_name} is no longer in a voice channel, skipping...")
+                failed_moves.append(user)
+                continue
+                
+            print(f"Moving user {i}/{len(users)}: {user.display_name}")
+            
+            move_success = await self.move_user_with_rate_limit(user, target_channel)
+            
+            if move_success:
+                successful_moves.append(user)
+                print(f"✅ Successfully moved {user.display_name} to {target_channel.name}")
+            else:
+                failed_moves.append(user)
+                print(f"❌ Failed to move {user.display_name}")
+        
+        return successful_moves, failed_moves
+
     @nextcord.slash_command(name="watchparty", description="Manage the watch party channel.",guild_ids=[GUILD_ID])
     async def watchparty(self, interaction: nextcord.Interaction):
         pass
@@ -96,6 +163,145 @@ class WatchPartyCog(commands.Cog):
             await interaction.followup.send(f"{watch_party_channel.name} has been hidden.")
         else:
             await interaction.response.send_message("Failed to move the channel. Please check the configuration.")
+
+    @nextcord.slash_command(name="vacate", description="Move all users from one voice channel to another", guild_ids=[GUILD_ID])
+    async def vacate(self, interaction: nextcord.Interaction, 
+                     from_channel: nextcord.VoiceChannel = nextcord.SlashOption(name="from", description="The voice channel to move users from"),
+                     to_channel: nextcord.VoiceChannel = nextcord.SlashOption(name="to", description="The voice channel to move users to")):
+        
+        # Validate channels exist and are different
+        if from_channel == to_channel:
+            embed = nextcord.Embed(
+                title="Invalid Channels",
+                description="The 'from' and 'to' channels cannot be the same.",
+                color=nextcord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Get users in the source channel (excluding bots)
+        users_to_move = [member for member in from_channel.members if not member.bot]
+        
+        if not users_to_move:
+            embed = nextcord.Embed(
+                title="No Users to Move",
+                description=f"There are no users in {from_channel.mention} to move.",
+                color=nextcord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check bot permissions for both channels
+        bot_member = interaction.guild.get_member(self.bot.user.id)
+        
+        if not from_channel.permissions_for(bot_member).move_members:
+            embed = nextcord.Embed(
+                title="Permission Error",
+                description=f"I don't have permission to move members from {from_channel.mention}.",
+                color=nextcord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+            
+        if not to_channel.permissions_for(bot_member).move_members:
+            embed = nextcord.Embed(
+                title="Permission Error", 
+                description=f"I don't have permission to move members to {to_channel.mention}.",
+                color=nextcord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Send initial response
+        user_list = ", ".join([user.display_name for user in users_to_move[:5]])
+        if len(users_to_move) > 5:
+            user_list += f" and {len(users_to_move) - 5} others"
+            
+        embed = nextcord.Embed(
+            title="Vacating Channel",
+            description=f"Moving {len(users_to_move)} users from {from_channel.mention} to {to_channel.mention}...\n\nUsers: {user_list}",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(name="Rate Limiting", value=f"Using {self.move_delay}s delay between moves", inline=False)
+        await interaction.response.send_message(embed=embed)
+        
+        # Perform the move operation
+        successful_moves, failed_moves = await self.vacate_users_with_rate_limit(users_to_move, to_channel)
+        
+        # Send completion message
+        if successful_moves:
+            success_list = ", ".join([user.display_name for user in successful_moves[:10]])
+            if len(successful_moves) > 10:
+                success_list += f" and {len(successful_moves) - 10} others"
+        else:
+            success_list = "None"
+            
+        if failed_moves:
+            failed_list = ", ".join([user.display_name for user in failed_moves[:5]])
+            if len(failed_moves) > 5:
+                failed_list += f" and {len(failed_moves) - 5} others"
+        else:
+            failed_list = "None"
+        
+        # Determine embed color based on results
+        if len(successful_moves) == len(users_to_move):
+            embed_color = nextcord.Color.green()
+            title = "Vacate Completed Successfully"
+        elif successful_moves:
+            embed_color = nextcord.Color.orange()
+            title = "Vacate Partially Completed"
+        else:
+            embed_color = nextcord.Color.red()
+            title = "Vacate Failed"
+        
+        completion_embed = nextcord.Embed(
+            title=title,
+            description=f"Vacate operation completed for {from_channel.mention} → {to_channel.mention}",
+            color=embed_color
+        )
+        completion_embed.add_field(
+            name=f"✅ Successfully Moved ({len(successful_moves)})",
+            value=success_list,
+            inline=False
+        )
+        if failed_moves:
+            completion_embed.add_field(
+                name=f"❌ Failed to Move ({len(failed_moves)})",
+                value=failed_list,
+                inline=False
+            )
+        
+        await interaction.followup.send(embed=completion_embed)
+
+    # @nextcord.slash_command(name="vacate-config", description="Configure the vacate command rate limiting", guild_ids=[GUILD_ID])
+    # async def vacate_config(self, interaction: nextcord.Interaction,
+    #                         delay: float = nextcord.SlashOption(name="delay", description="Delay in seconds between moves (0.1 - 5.0)", min_value=0.1, max_value=5.0)):
+        
+    #     # Check if user has administrator permissions
+    #     if not interaction.user.guild_permissions.administrator:
+    #         embed = nextcord.Embed(
+    #             title="Permission Denied",
+    #             description="Only administrators can configure the vacate command settings.",
+    #             color=nextcord.Color.red()
+    #         )
+    #         await interaction.response.send_message(embed=embed, ephemeral=True)
+    #         return
+        
+    #     old_delay = self.move_delay
+    #     self.move_delay = delay
+        
+    #     embed = nextcord.Embed(
+    #         title="Vacate Configuration Updated",
+    #         description=f"Rate limiting delay updated from {old_delay}s to {delay}s",
+    #         color=nextcord.Color.green()
+    #     )
+    #     embed.add_field(
+    #         name="Impact",
+    #         value=f"Each user move will now wait {delay} seconds, helping to avoid Discord rate limits.",
+    #         inline=False
+    #     )
+        
+    #     await interaction.response.send_message(embed=embed)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):

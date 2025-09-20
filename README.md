@@ -145,6 +145,17 @@ Move the watch party channel to the visible category.
 ### `/watchparty hide`
 Move the watch party channel to the hidden category.
 
+### `/vacate <from> <to>`
+Move all users from one voice channel to another with intelligent rate limiting.
+- **Parameters:**
+  - `from` (required) - Source voice channel to move users from
+  - `to` (required) - Destination voice channel to move users to
+- **Features:** Rate limiting, progress tracking, error handling, retry logic
+
+### `/vacate-config <delay>` 🔒
+**[Admin Only]** Configure the rate limiting delay for vacate operations.
+- **Parameters:** `delay` (required) - Delay in seconds between moves (0.1-5.0)
+
 ---
 
 ## 📊 Information
