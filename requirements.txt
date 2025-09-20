@@ -1,5 +1,5 @@
 # Discord Bot Dependencies - Core
-nextcord==2.6.0
+nextcord==3.1.1
 aiosqlite==0.21.0
 
 # HTTP/API Libraries

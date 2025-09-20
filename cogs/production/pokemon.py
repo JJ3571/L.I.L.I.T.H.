@@ -52,7 +52,7 @@ class FriendCodePaginationView(nextcord.ui.View):
             
             # Create individual field for each user
             # Field name: IGN, Field value: Discord mention + friend code
-            field_value = f"```{formatted_friend_code}```\n🔹<@{discord_id}>\n\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_"
+            field_value = f"```{formatted_friend_code}```\n🔹<@{discord_id}>\n" + "_" * 24
             
             embed.add_field(
                 name=f"♦️ IGN: {in_game_name}",
