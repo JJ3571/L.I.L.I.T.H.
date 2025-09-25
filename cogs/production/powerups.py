@@ -2,6 +2,8 @@ import nextcord
 from nextcord.ext import commands, tasks
 import aiosqlite
 import time
+from datetime import datetime
+import pytz
 
 from server_configs.config import GUILD_ID
 from server_configs.database_config import DATABASE_PATHS
@@ -10,10 +12,11 @@ from server_configs.database_config import DATABASE_PATHS
 POWERUP_TYPES = {
     "executive_pardon": {
         "name": "Executive Pardon",
-        "description": "Grants immunity from the waterboard for 1 hour.",
+        "description": "Grants immunity from the waterboard for 3 hour.",
         "price": 2000,
-        "duration_hours": 1,
-        "effect_type": "pardon"
+        "duration_hours": 3,
+        "effect_type": "pardon",
+        "storable": True
     },
     "name_color_red": {
         "name": "Pink @ Color",
@@ -21,7 +24,8 @@ POWERUP_TYPES = {
         "price": 1000,
         "duration_hours": 12,
         "effect_type": "role",
-        "role_name": "Pink"
+        "role_name": "Pink",
+        "storable": True
     },
     "name_color_blue": {
         "name": "Blue @ Color",
@@ -29,7 +33,26 @@ POWERUP_TYPES = {
         "price": 1000,
         "duration_hours": 12,
         "effect_type": "role",
-        "role_name": "Blue"
+        "role_name": "Blue",
+        "storable": True
+    },
+    "just_one_more": {
+        "name": "Just One More",
+        "description": "Forces JJ3571 to play just one more game for 1 hour.",
+        "price": 10000,
+        "duration_hours": 1,
+        "effect_type": "just_one_more",
+        "target_user_id": 321888250136363009,  # JJ3571's user ID
+        "storable": False  # This powerup is purchased and used immediately
+    },
+    "art_request": {
+        "name": "TheGiftedNut - Art Request",
+        "description": "Commission custom artwork from TheGiftedNut.",
+        "price": 10000,
+        "duration_hours": 0,  # Duration is irrelevant for art requests
+        "effect_type": "art_request",
+        "target_user_id": 220656152994643969,  # Nut's user ID
+        "storable": False  # This powerup is purchased and used immediately
     }
     # More powerups tbd
 }
@@ -39,9 +62,16 @@ class PowerupCog(commands.Cog):
         self.bot = bot
         self.db_path = DATABASE_PATHS["powerups"]
         self.check_expired_powerups.start()
+        self.cleanup_old_purchase_records.start()
 
     async def cog_load(self):
         await self.create_tables()
+        self.daily_art_request_reminder.start()
+        
+    def cog_unload(self):
+        """Stop background tasks when cog unloads"""
+        self.cleanup_old_purchase_records.cancel()
+        self.daily_art_request_reminder.cancel()
 
     async def create_tables(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -61,6 +91,27 @@ class PowerupCog(commands.Cog):
                     PRIMARY KEY (user_id, powerup_type)
                 )
             ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS daily_powerup_purchases (
+                    user_id INTEGER NOT NULL,
+                    powerup_type TEXT NOT NULL,
+                    purchase_date TEXT NOT NULL,
+                    PRIMARY KEY (user_id, powerup_type, purchase_date)
+                )
+            ''')
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS art_requests (
+                    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    requester_user_id INTEGER NOT NULL,
+                    artist_user_id INTEGER NOT NULL,
+                    request_description TEXT NOT NULL,
+                    purchase_date TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    completion_date TEXT,
+                    rejection_reason TEXT,
+                    amount_paid INTEGER NOT NULL
+                )
+            ''')
             await db.commit()
 
     # --- Database Helper Functions ---
@@ -75,6 +126,111 @@ class PowerupCog(commands.Cog):
             async with db.execute("SELECT powerup_type, COUNT(*) as quantity FROM powerup_inventory WHERE user_id = ? GROUP BY powerup_type",
                                   (user_id,)) as cursor:
                 return await cursor.fetchall()
+    
+    async def get_user_total_inventory_count(self, user_id: int):
+        """Get the total number of powerups in a user's inventory"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM powerup_inventory WHERE user_id = ?", (user_id,)) as cursor:
+                result = await cursor.fetchone()
+                return result[0] if result else 0
+    
+    async def has_purchased_today(self, user_id: int, powerup_type: str):
+        """Check if user has already purchased this powerup type today (PST timezone)"""
+        # Get current PST date
+        pst = pytz.timezone('US/Pacific')
+        current_pst = datetime.now(pst)
+        today_date = current_pst.strftime('%Y-%m-%d')
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM daily_powerup_purchases WHERE user_id = ? AND powerup_type = ? AND purchase_date = ?", 
+                                  (user_id, powerup_type, today_date)) as cursor:
+                result = await cursor.fetchone()
+                return (result[0] if result else 0) > 0
+    
+    async def record_daily_purchase(self, user_id: int, powerup_type: str):
+        """Record that user purchased this powerup type today"""
+        # Get current PST date
+        pst = pytz.timezone('US/Pacific')
+        current_pst = datetime.now(pst)
+        today_date = current_pst.strftime('%Y-%m-%d')
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("INSERT OR IGNORE INTO daily_powerup_purchases (user_id, powerup_type, purchase_date) VALUES (?, ?, ?)",
+                             (user_id, powerup_type, today_date))
+            await db.commit()
+    
+    def is_user_in_voice_chat(self, user_id: int):
+        """Check if a user is currently in a voice channel"""
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return False
+        
+        member = guild.get_member(user_id)
+        if not member:
+            return False
+        
+        return member.voice is not None and member.voice.channel is not None
+    
+    async def create_art_request(self, requester_user_id: int, artist_user_id: int, request_description: str, amount_paid: int):
+        """Create a new art request"""
+        pst = pytz.timezone('US/Pacific')
+        current_pst = datetime.now(pst)
+        purchase_date = current_pst.strftime('%Y-%m-%d %H:%M:%S')
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                INSERT INTO art_requests (requester_user_id, artist_user_id, request_description, purchase_date, amount_paid)
+                VALUES (?, ?, ?, ?, ?)
+            """, (requester_user_id, artist_user_id, request_description, purchase_date, amount_paid)) as cursor:
+                request_id = cursor.lastrowid
+            await db.commit()
+            return request_id
+    
+    async def get_pending_art_requests(self, artist_user_id: int):
+        """Get all pending art requests for an artist"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT request_id, requester_user_id, request_description, purchase_date, amount_paid
+                FROM art_requests
+                WHERE artist_user_id = ? AND status = 'pending'
+                ORDER BY purchase_date ASC
+            """, (artist_user_id,)) as cursor:
+                return await cursor.fetchall()
+    
+    async def complete_art_request(self, request_id: int):
+        """Mark an art request as completed"""
+        pst = pytz.timezone('US/Pacific')
+        current_pst = datetime.now(pst)
+        completion_date = current_pst.strftime('%Y-%m-%d %H:%M:%S')
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE art_requests
+                SET status = 'completed', completion_date = ?
+                WHERE request_id = ?
+            """, (completion_date, request_id))
+            await db.commit()
+    
+    async def reject_art_request(self, request_id: int, rejection_reason: str):
+        """Mark an art request as rejected"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE art_requests
+                SET status = 'rejected', rejection_reason = ?
+                WHERE request_id = ?
+            """, (rejection_reason, request_id))
+            await db.commit()
+    
+    async def get_art_request_details(self, request_id: int):
+        """Get details of a specific art request"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("""
+                SELECT request_id, requester_user_id, artist_user_id, request_description, 
+                       purchase_date, status, completion_date, rejection_reason, amount_paid
+                FROM art_requests
+                WHERE request_id = ?
+            """, (request_id,)) as cursor:
+                return await cursor.fetchone()
 
     async def get_active_powerups_for_user(self, user_id: int):
         async with aiosqlite.connect(self.db_path) as db:
@@ -266,6 +422,65 @@ class PowerupCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+    @powerups_group.subcommand(name="art-requests", description="Manage art requests (TheGiftedNut only)")
+    async def art_requests_command(self, interaction: nextcord.Interaction):
+        """Admin command for Nut to manage art requests"""
+        nut_user_id = 220656152994643969  # Nut's user ID
+        
+        if interaction.user.id != nut_user_id:
+            await interaction.response.send_message("⛔ This command is only available to TheGiftedNut!", ephemeral=True)
+            return
+        
+        # Get all pending art requests
+        pending_requests = await self.get_pending_art_requests(nut_user_id)
+        
+        if not pending_requests:
+            embed = nextcord.Embed(
+                title="🎨 Art Request Management",
+                description="No pending art requests at this time!",
+                color=nextcord.Color.green()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        embed = nextcord.Embed(
+            title="🎨 Art Request Management",
+            description=f"You have {len(pending_requests)} pending art request(s)",
+            color=nextcord.Color.purple()
+        )
+        
+        # Show details of up to 5 requests
+        for i, request in enumerate(pending_requests[:5]):
+            request_id, requester_user_id, request_description, purchase_date, amount_paid = request
+            guild = interaction.guild
+            requester = guild.get_member(requester_user_id) if guild else None
+            requester_name = requester.display_name if requester else f"User {requester_user_id}"
+            
+            embed.add_field(
+                name=f"Request #{request_id} - {requester_name}",
+                value=f"💰 {amount_paid} 🪙\n📅 {purchase_date[:10]}\n📝 {request_description[:150]}{'...' if len(request_description) > 150 else ''}",
+                inline=False
+            )
+        
+        if len(pending_requests) > 5:
+            embed.add_field(
+                name="📋 Additional Requests",
+                value=f"+ {len(pending_requests) - 5} more pending requests",
+                inline=False
+            )
+        
+        # Create management view for the oldest request
+        if pending_requests:
+            oldest_request = pending_requests[0]  # First in list is oldest
+            request_details = await self.get_art_request_details(oldest_request[0])
+            if request_details:
+                view = ArtRequestManagementView(self, request_details)
+                embed.set_footer(text="Use the buttons below to manage the oldest request.")
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # --- Background Task ---
     @tasks.loop(minutes=1)
@@ -284,6 +499,93 @@ class PowerupCog(commands.Cog):
 
     @check_expired_powerups.before_loop
     async def before_check_expired_powerups(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=24)  # Run once per day
+    async def cleanup_old_purchase_records(self):
+        """Clean up purchase records older than 7 days to keep database tidy"""
+        from datetime import timedelta
+        pst = pytz.timezone('US/Pacific')
+        current_pst = datetime.now(pst)
+        cutoff_date = (current_pst - timedelta(days=7)).strftime('%Y-%m-%d')  # 7 days ago
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM daily_powerup_purchases WHERE purchase_date < ?", (cutoff_date,))
+            await db.commit()
+    
+    @cleanup_old_purchase_records.before_loop
+    async def before_cleanup_old_purchase_records(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=24)  # Run once per day
+    async def daily_art_request_reminder(self):
+        """Send daily reminder to Nut about pending art requests"""
+        nut_user_id = 220656152994643969  # Nut's user ID
+        
+        # Get pending art requests for Nut
+        pending_requests = await self.get_pending_art_requests(nut_user_id)
+        
+        if not pending_requests:
+            return  # No pending requests, no reminder needed
+        
+        # Get bot spam channel
+        try:
+            from server_configs.cogs_config import bot_spam_id
+            bot_spam_channel = self.bot.get_channel(bot_spam_id)
+            if not bot_spam_channel:
+                return
+        except ImportError:
+            return
+        
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return
+        
+        nut_user = guild.get_member(nut_user_id)
+        if not nut_user:
+            return
+        
+        # Create reminder embed
+        embed = nextcord.Embed(
+            title="🎨 Daily Art Request Reminder",
+            description=f"{nut_user.mention}, you have {len(pending_requests)} pending art request(s)!",
+            color=nextcord.Color.purple()
+        )
+        
+        # Add details for each request (limit to 5 for readability)
+        for i, request in enumerate(pending_requests[:5]):
+            request_id, requester_user_id, request_description, purchase_date, amount_paid = request
+            requester = guild.get_member(requester_user_id)
+            requester_name = requester.display_name if requester else f"User {requester_user_id}"
+            
+            embed.add_field(
+                name=f"Request #{request_id} - {requester_name}",
+                value=f"💰 {amount_paid} 🪙\n📅 {purchase_date[:10]}\n📝 {request_description[:100]}{'...' if len(request_description) > 100 else ''}",
+                inline=False
+            )
+        
+        if len(pending_requests) > 5:
+            embed.add_field(
+                name="📋 Additional Requests",
+                value=f"+ {len(pending_requests) - 5} more pending requests",
+                inline=False
+            )
+        
+        # Create management view for the most recent request
+        if pending_requests:
+            most_recent = pending_requests[0]  # They're ordered by purchase_date ASC, so first is oldest
+            request_details = await self.get_art_request_details(most_recent[0])
+            if request_details:
+                view = ArtRequestManagementView(self, request_details)
+                embed.set_footer(text="Use the buttons below to manage the oldest request, or use /powerups art-requests for full management.")
+                await bot_spam_channel.send(embed=embed, view=view)
+            else:
+                await bot_spam_channel.send(embed=embed)
+        else:
+            await bot_spam_channel.send(embed=embed)
+    
+    @daily_art_request_reminder.before_loop
+    async def before_daily_art_request_reminder(self):
         await self.bot.wait_until_ready()
 
 # --- UI Views ---
@@ -305,8 +607,14 @@ class PowerupPurchaseView(nextcord.ui.View):
             ))
         
         if powerup_options:
-            self.add_item(PowerupSelect(powerup_options))
-            self.add_item(QuantitySelect())
+            powerup_select = PowerupSelect(powerup_options)
+            self.add_item(powerup_select)
+            
+            # Only add quantity selector if there are storable powerups
+            has_storable = any(POWERUP_TYPES.get(p_type, {}).get("storable", True) for p_type in POWERUP_TYPES.keys())
+            if has_storable:
+                self.add_item(QuantitySelect())
+            
             self.add_item(PurchaseButton(self.cog))
         else:
             pass
@@ -317,7 +625,25 @@ class PowerupSelect(nextcord.ui.Select):
 
     async def callback(self, interaction: nextcord.Interaction):
         self.view.selected_powerup = self.values[0]
-        await interaction.response.defer()
+        
+        # For non-storable powerups, set quantity to 1 and disable quantity selector
+        powerup_info = POWERUP_TYPES.get(self.values[0])
+        if powerup_info and not powerup_info.get("storable", True):
+            self.view.selected_quantity = 1
+            # Disable quantity selector for non-storable items
+            for item in self.view.children:
+                if isinstance(item, QuantitySelect):
+                    item.disabled = True
+        else:
+            # Re-enable quantity selector for storable items
+            for item in self.view.children:
+                if isinstance(item, QuantitySelect):
+                    item.disabled = False
+        
+        try:
+            await interaction.response.edit_message(view=self.view)
+        except:
+            await interaction.response.defer()
 
 class QuantitySelect(nextcord.ui.Select):
     def __init__(self):
@@ -358,6 +684,98 @@ class PurchaseButton(nextcord.ui.Button):
 
         if user_balance is None or user_balance < total_cost:
             await interaction.followup.send(f"You need {total_cost} coins, but have {user_balance or 0}.", ephemeral=True)
+            return
+
+        # Handle non-storable powerups (like "Just one more")
+        if not powerup_info.get("storable", True):
+            # Special handling for just_one_more powerup
+            if selected_powerup_type == "just_one_more":
+                # Check if user has already purchased this powerup today
+                if await self.powerup_cog_instance.has_purchased_today(interaction.user.id, selected_powerup_type):
+                    embed = nextcord.Embed(
+                        title="⏰ Daily Limit Reached",
+                        description=f"You can only purchase **Just One More** once per day (PST timezone)!\n\nNext purchase available tomorrow at midnight PST.",
+                        color=nextcord.Color.red()
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+                
+                # Check if JJ3571 is in a voice chat
+                target_user_id = powerup_info["target_user_id"]
+                if not self.powerup_cog_instance.is_user_in_voice_chat(target_user_id):
+                    target_user = interaction.guild.get_member(target_user_id)
+                    target_name = target_user.display_name if target_user else "JJ3571"
+                    
+                    embed = nextcord.Embed(
+                        title="🎧 Target Not Available",
+                        description=f"{target_name} must be in a voice channel to play just one more game!\n\nPlease wait until they're active and in voice chat.",
+                        color=nextcord.Color.orange()
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+                
+                success = await economy_cog.deduct_user_balance(interaction.user.id, total_cost)
+                if success:
+                    # Record the daily purchase
+                    await self.powerup_cog_instance.record_daily_purchase(interaction.user.id, selected_powerup_type)
+                    
+                    # Add money to JJ3571's trust fund
+                    await economy_cog.add_to_trust_fund(powerup_info["target_user_id"], total_cost)
+                    
+                    # Send notification embed
+                    target_user = interaction.guild.get_member(powerup_info["target_user_id"])
+                    if target_user:
+                        voice_channel_name = target_user.voice.channel.name if target_user.voice and target_user.voice.channel else "Unknown"
+                        embed = nextcord.Embed(
+                            title="🎮 Just One More!",
+                            description=f"{interaction.user.mention} has purchased **Just One More** for {target_user.mention}!\n\nTime to play just one more game! ⏰ 1 hour duration\n🎧 Currently in: **{voice_channel_name}**",
+                            color=nextcord.Color.orange()
+                        )
+                        embed.set_footer(text=f"💰 {total_cost} coins added to {target_user.display_name}'s trust fund")
+                        
+                        # Send to bot spam channel if available
+                        try:
+                            from server_configs.cogs_config import bot_spam_id
+                            bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
+                            if bot_spam_channel:
+                                await bot_spam_channel.send(embed=embed)
+                        except ImportError:
+                            pass  # If bot_spam_id not available, skip public notification
+                        
+                        await interaction.followup.send(f"Successfully purchased {powerup_info['name']}! {target_user.mention} has been notified and {total_cost} coins added to their trust fund.", ephemeral=True)
+                    else:
+                        await interaction.followup.send(f"Purchased {powerup_info['name']} for {total_cost} coins! Target user not found but trust fund updated.", ephemeral=True)
+                    
+                    self.view.stop()
+                else:
+                    await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
+            elif selected_powerup_type == "art_request":
+                # Show art request modal for user to input their request
+                modal = ArtRequestModal(self.powerup_cog_instance, economy_cog, powerup_info, total_cost)
+                
+                # Since we already deferred, we need to use a different approach
+                # Create a simple view with a button to trigger the modal
+                view = ArtRequestTriggerView(modal)
+                embed = nextcord.Embed(
+                    title="🎨 Art Request - TheGiftedNut",
+                    description=f"Click the button below to submit your art request.\n\n**Cost:** {total_cost} 🪙",
+                    color=nextcord.Color.purple()
+                )
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                self.view.stop()
+                return
+            else:
+                await interaction.followup.send("This powerup type is not yet implemented.", ephemeral=True)
+            return
+
+        # Check inventory limit (max 3 powerups total) - only for storable powerups
+        current_inventory_count = await self.powerup_cog_instance.get_user_total_inventory_count(interaction.user.id)
+        if current_inventory_count + selected_quantity > 3:
+            remaining_slots = max(0, 3 - current_inventory_count)
+            if remaining_slots == 0:
+                await interaction.followup.send("Your inventory is full! You can only hold 3 powerups at a time. Use some powerups first.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"You can only purchase {remaining_slots} more powerup(s). Your inventory limit is 3 total.", ephemeral=True)
             return
 
         success = await economy_cog.deduct_user_balance(interaction.user.id, total_cost)
@@ -508,6 +926,166 @@ class DeactivatePowerupButton(nextcord.ui.Button):
             await interaction.edit_original_message(embed=new_embed, view=None)
         else:
             await interaction.edit_original_message(embed=new_embed, view=new_view)
+
+class ArtRequestTriggerView(nextcord.ui.View):
+    def __init__(self, modal: 'ArtRequestModal'):
+        super().__init__(timeout=300)
+        self.modal = modal
+
+    @nextcord.ui.button(label="📝 Submit Art Request", style=nextcord.ButtonStyle.primary)
+    async def submit_request(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await interaction.response.send_modal(self.modal)
+
+class ArtRequestModal(nextcord.ui.Modal):
+    def __init__(self, powerup_cog_instance: PowerupCog, economy_cog, powerup_info: dict, total_cost: int):
+        super().__init__("Art Request - TheGiftedNut", timeout=300)  # 5 minute timeout
+        self.powerup_cog_instance = powerup_cog_instance
+        self.economy_cog = economy_cog
+        self.powerup_info = powerup_info
+        self.total_cost = total_cost
+
+        self.request_description = nextcord.ui.TextInput(
+            label="Art Request Description",
+            placeholder="Describe your custom artwork request in detail...",
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=2000,
+            required=True
+        )
+        self.add_item(self.request_description)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Deduct payment
+        success = await self.economy_cog.deduct_user_balance(interaction.user.id, self.total_cost)
+        if not success:
+            await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
+            return
+        
+        # Create art request
+        request_id = await self.powerup_cog_instance.create_art_request(
+            requester_user_id=interaction.user.id,
+            artist_user_id=self.powerup_info["target_user_id"],
+            request_description=self.request_description.value,
+            amount_paid=self.total_cost
+        )
+        
+        # Send confirmation to purchaser
+        embed = nextcord.Embed(
+            title="🎨 Art Request Submitted",
+            description=f"Your art request has been submitted to TheGiftedNut!\n\n**Request ID:** #{request_id}\n**Amount:** {self.total_cost} 🪙",
+            color=nextcord.Color.purple()
+        )
+        embed.add_field(name="Your Request", value=self.request_description.value[:1000] + ("..." if len(self.request_description.value) > 1000 else ""), inline=False)
+        embed.set_footer(text="TheGiftedNut will be notified and can accept or decline your request.")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+        # Send notification to bot spam channel
+        try:
+            from server_configs.cogs_config import bot_spam_id
+            bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
+            if bot_spam_channel:
+                artist_user = interaction.guild.get_member(self.powerup_info["target_user_id"])
+                public_embed = nextcord.Embed(
+                    title="🎨 New Art Request!",
+                    description=f"{interaction.user.mention} has commissioned art from {artist_user.mention if artist_user else 'TheGiftedNut'}!",
+                    color=nextcord.Color.purple()
+                )
+                public_embed.add_field(name="Request ID", value=f"#{request_id}", inline=True)
+                public_embed.add_field(name="Commission Value", value=f"{self.total_cost} 🪙", inline=True)
+                await bot_spam_channel.send(embed=public_embed)
+        except ImportError:
+            pass
+
+class ArtRequestManagementView(nextcord.ui.View):
+    def __init__(self, powerup_cog_instance: PowerupCog, request_details: tuple):
+        super().__init__(timeout=None)  # Persistent view
+        self.powerup_cog_instance = powerup_cog_instance
+        self.request_id, self.requester_user_id, self.artist_user_id, self.request_description, \
+        self.purchase_date, self.status, self.completion_date, self.rejection_reason, self.amount_paid = request_details
+
+    @nextcord.ui.button(label="✅ Complete Request", style=nextcord.ButtonStyle.green)
+    async def complete_request(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        # Only allow the artist (Nut) to complete requests
+        if interaction.user.id != self.artist_user_id:
+            await interaction.response.send_message("Only TheGiftedNut can complete art requests.", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        # Complete the request
+        await self.powerup_cog_instance.complete_art_request(self.request_id)
+        
+        # Add money to artist's trust fund
+        economy_cog = self.powerup_cog_instance.bot.get_cog('Economy')
+        if economy_cog:
+            await economy_cog.add_to_trust_fund(self.artist_user_id, self.amount_paid)
+        
+        # Send completion notification
+        embed = nextcord.Embed(
+            title="✅ Art Request Completed",
+            description=f"Request #{self.request_id} has been marked as completed!",
+            color=nextcord.Color.green()
+        )
+        embed.add_field(name="Commission Value", value=f"{self.amount_paid} 🪙 → Trust Fund", inline=True)
+        
+        # Disable buttons
+        for item in self.children:
+            item.disabled = True
+        
+        await interaction.followup.send(embed=embed)
+        await interaction.edit_original_message(view=self)
+
+    @nextcord.ui.button(label="❌ Reject Request", style=nextcord.ButtonStyle.red)
+    async def reject_request(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        # Only allow the artist (Nut) to reject requests
+        if interaction.user.id != self.artist_user_id:
+            await interaction.response.send_message("Only TheGiftedNut can reject art requests.", ephemeral=True)
+            return
+        
+        # Show rejection reason modal
+        modal = ArtRejectionModal(self.powerup_cog_instance, self.request_id, self.requester_user_id, self.amount_paid)
+        await interaction.response.send_modal(modal)
+
+class ArtRejectionModal(nextcord.ui.Modal):
+    def __init__(self, powerup_cog_instance: PowerupCog, request_id: int, requester_user_id: int, amount_paid: int):
+        super().__init__("Reject Art Request", timeout=300)
+        self.powerup_cog_instance = powerup_cog_instance
+        self.request_id = request_id
+        self.requester_user_id = requester_user_id
+        self.amount_paid = amount_paid
+
+        self.rejection_reason = nextcord.ui.TextInput(
+            label="Rejection Reason",
+            placeholder="Explain why this request cannot be completed...",
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=500,
+            required=True
+        )
+        self.add_item(self.rejection_reason)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        await interaction.response.defer()
+        
+        # Reject the request
+        await self.powerup_cog_instance.reject_art_request(self.request_id, self.rejection_reason.value)
+        
+        # Refund the requester
+        economy_cog = self.powerup_cog_instance.bot.get_cog('Economy')
+        if economy_cog:
+            await economy_cog.update_balance(self.requester_user_id, self.amount_paid)
+        
+        # Send rejection notification
+        embed = nextcord.Embed(
+            title="❌ Art Request Rejected",
+            description=f"Request #{self.request_id} has been rejected and refunded.",
+            color=nextcord.Color.red()
+        )
+        embed.add_field(name="Reason", value=self.rejection_reason.value, inline=False)
+        embed.add_field(name="Refund", value=f"{self.amount_paid} 🪙 returned to requester", inline=True)
+        
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     cog_instance = PowerupCog(bot)

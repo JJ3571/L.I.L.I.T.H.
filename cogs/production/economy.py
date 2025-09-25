@@ -37,6 +37,12 @@ class Economy(commands.Cog):
                         balance INTEGER DEFAULT 0
                     )
                 ''')
+                await cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS trust_fund (
+                        beneficiary_user_id INTEGER PRIMARY KEY,
+                        balance INTEGER DEFAULT 0
+                    )
+                ''')
             await conn.commit()
 
     async def get_user_balance(self, user_id):
@@ -65,6 +71,42 @@ class Economy(commands.Cog):
                 await cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
                 result = await cursor.fetchall() # await fetchall
             return result
+    
+    # Trust Fund Methods
+    async def add_to_trust_fund(self, beneficiary_user_id: int, amount: int):
+        """Add money to a user's trust fund"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("INSERT OR IGNORE INTO trust_fund (beneficiary_user_id) VALUES (?)", (beneficiary_user_id,))
+                await cursor.execute("UPDATE trust_fund SET balance = balance + ? WHERE beneficiary_user_id = ?", (amount, beneficiary_user_id))
+            await conn.commit()
+    
+    async def get_trust_fund_balance(self, beneficiary_user_id: int):
+        """Get the trust fund balance for a user"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT balance FROM trust_fund WHERE beneficiary_user_id = ?", (beneficiary_user_id,))
+                result = await cursor.fetchone()
+            return result[0] if result else 0
+    
+    async def withdraw_from_trust_fund(self, beneficiary_user_id: int, amount: int):
+        """Withdraw money from a user's trust fund to their regular balance"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                # Check if trust fund has enough balance
+                await cursor.execute("SELECT balance FROM trust_fund WHERE beneficiary_user_id = ?", (beneficiary_user_id,))
+                result = await cursor.fetchone()
+                current_balance = result[0] if result else 0
+                
+                if current_balance < amount:
+                    return False  # Not enough in trust fund
+                
+                # Deduct from trust fund and add to regular balance
+                await cursor.execute("UPDATE trust_fund SET balance = balance - ? WHERE beneficiary_user_id = ?", (amount, beneficiary_user_id))
+                await cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (beneficiary_user_id,))
+                await cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, beneficiary_user_id))
+            await conn.commit()
+            return True
 
     @tasks.loop(minutes=1)
     async def backup_task(self):
@@ -531,6 +573,49 @@ class Economy(commands.Cog):
                 print("Sent error message to user.")
             except Exception as send_error:
                 print(f"Failed to send error message to user: {send_error}")
+
+    @econ.subcommand(name="trustfund", description="[JJ3571 Only] Check trust fund balance or withdraw from trust fund")
+    async def trustfund_command(self, interaction: nextcord.Interaction, 
+                               action: str = nextcord.SlashOption(choices=["balance", "withdraw"], description="Check balance or withdraw"),
+                               amount: int = nextcord.SlashOption(required=False, description="Amount to withdraw (only for withdraw action)")):
+        # Only allow JJ3571 to use this command
+        if interaction.user.id != 321888250136363009:  # JJ3571's user ID
+            await interaction.response.send_message("This command is only available to JJ3571.", ephemeral=True)
+            return
+
+        if action == "balance":
+            trust_balance = await self.get_trust_fund_balance(interaction.user.id)
+            embed = nextcord.Embed(
+                title="🏦 Trust Fund Balance",
+                description=f"Your trust fund contains **{trust_balance}** 🪙",
+                color=nextcord.Color.gold()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        elif action == "withdraw":
+            if amount is None or amount <= 0:
+                await interaction.response.send_message("Please specify a valid amount to withdraw.", ephemeral=True)
+                return
+            
+            trust_balance = await self.get_trust_fund_balance(interaction.user.id)
+            if trust_balance < amount:
+                await interaction.response.send_message(f"Insufficient trust fund balance. You have {trust_balance} 🪙 available.", ephemeral=True)
+                return
+            
+            success = await self.withdraw_from_trust_fund(interaction.user.id, amount)
+            if success:
+                new_balance = await self.get_user_balance(interaction.user.id)
+                new_trust_balance = await self.get_trust_fund_balance(interaction.user.id)
+                embed = nextcord.Embed(
+                    title="🏦 Trust Fund Withdrawal",
+                    description=f"Successfully withdrew **{amount}** 🪙 from your trust fund!",
+                    color=nextcord.Color.green()
+                )
+                embed.add_field(name="New Regular Balance", value=f"{new_balance} 🪙", inline=True)
+                embed.add_field(name="Remaining Trust Fund", value=f"{new_trust_balance} 🪙", inline=True)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message("Withdrawal failed. Please try again.", ephemeral=True)
     
 class AdminGiveView(nextcord.ui.View):
     def __init__(self, cog, member, amount,reason):

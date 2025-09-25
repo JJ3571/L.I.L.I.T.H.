@@ -14,7 +14,9 @@ discord-webhook==1.4.1
 
 # Google AI/Gemini Integration
 google-genai==1.10.0
-google-generativeai==0.8.4
+
+# Image Processing
+Pillow==11.1.0
 
 # Note: The following are built-in Python modules and don't need to be installed:
 # - asyncio (built-in since Python 3.4)

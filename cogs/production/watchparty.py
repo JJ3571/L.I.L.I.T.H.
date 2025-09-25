@@ -56,7 +56,11 @@ class WatchPartyCog(commands.Cog):
             return
 
         if len(watch_party_channel.members) == 0:
-            last_message_time = max((message.created_at for message in await watch_party_channel.history(limit=100).flatten()), default=None)
+            # Get message history using async iteration instead of deprecated flatten()
+            messages = []
+            async for message in watch_party_channel.history(limit=100):
+                messages.append(message)
+            last_message_time = max((message.created_at for message in messages), default=None)
             if last_message_time and (datetime.datetime.now(pytz.utc) - last_message_time) > WATCH_PARTY_AUTO_HIDE_TIMEOUT:
                 hidden_category = guild.get_channel(hidden_category_id)
                 await watch_party_channel.edit(category=hidden_category)

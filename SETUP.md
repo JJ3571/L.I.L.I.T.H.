@@ -31,7 +31,7 @@ pip install -r requirements.txt
 - `requests` - HTTP library for synchronous requests  
 - `pytz` - Timezone calculations
 - `discord-webhook` - Webhook support for bot messages
-- `google-genai` & `google-generativeai` - Google AI/Gemini integration
+- `google-genai` - Google AI/Gemini integration (latest SDK)
 
 ### 4. Configure the bot
 - Copy `server_configs/config_template.py` to `server_configs/config.py`
