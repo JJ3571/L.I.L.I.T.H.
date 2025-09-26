@@ -274,8 +274,12 @@ class PowerupCog(commands.Cog):
         if powerup_info["effect_type"] == "pardon":
             waterboard_cog = self.bot.get_cog('WaterboardCog')
             if waterboard_cog and hasattr(waterboard_cog, 'executive_pardon'):
-                await waterboard_cog.executive_pardon(user_id, powerup_info["duration_hours"])
-                return True
+                try:
+                    await waterboard_cog.executive_pardon(user_id, powerup_info["duration_hours"])
+                    return True
+                except Exception as e:
+                    print(f"Error calling executive_pardon: {e}")
+                    return False
             else:
                 print("Error: WaterboardCog or executive_pardon method not found.")
                 return False
@@ -640,18 +644,65 @@ class PowerupSelect(nextcord.ui.Select):
                 if isinstance(item, QuantitySelect):
                     item.disabled = False
         
-        try:
-            await interaction.response.edit_message(view=self.view)
-        except:
-            await interaction.response.defer()
+        # Update the placeholder to show current selection
+        self.placeholder = f"{powerup_info['name']}" if powerup_info else "Choose a powerup..."
+        
+        # Update quantity selector placeholder too
+        for item in self.view.children:
+            if isinstance(item, QuantitySelect):
+                item.placeholder = f"Quantity: {self.view.selected_quantity}"
+        
+        # Update the embed to show the selected powerup
+        embed = nextcord.Embed(title="Powerup Shop", color=nextcord.Color.blue())
+        
+        if powerup_info:
+            embed.description = f"**Selected:** {powerup_info['name']} ({powerup_info['price']} coins)\n{powerup_info['description']}"
+            if not powerup_info.get("storable", True):
+                embed.description += "\n\n⚠️ This powerup activates immediately upon purchase."
+            
+            # Show total cost if quantity > 1
+            if self.view.selected_quantity > 1:
+                total_cost = powerup_info['price'] * self.view.selected_quantity
+                embed.add_field(name="Total Cost", value=f"{total_cost} coins (x{self.view.selected_quantity})", inline=True)
+        
+        # Still show all available powerups
+        for p_type, p_info in POWERUP_TYPES.items():
+            embed.add_field(name=f"{p_info['name']} ({p_info['price']} coins)", value=p_info['description'], inline=False)
+        
+        await interaction.response.edit_message(embed=embed, view=self.view)
 
 class QuantitySelect(nextcord.ui.Select):
     def __init__(self):
-        options = [nextcord.SelectOption(label=str(i), value=str(i)) for i in range(1, 6)]
+        options = [nextcord.SelectOption(label=str(i), value=str(i)) for i in range(1, 4)]  # 1, 2, 3 (max inventory is 3)
         super().__init__(placeholder="Select quantity (default 1)...", min_values=1, max_values=1, options=options, custom_id="quantity_select")
     
     async def callback(self, interaction: nextcord.Interaction):
         self.view.selected_quantity = int(self.values[0])
+        
+        # Update the placeholder to show current selection
+        self.placeholder = f"Quantity: {self.view.selected_quantity}"
+        
+        # Update the embed if a powerup is selected
+        if self.view.selected_powerup:
+            powerup_info = POWERUP_TYPES.get(self.view.selected_powerup)
+            if powerup_info:
+                embed = nextcord.Embed(title="Powerup Shop", color=nextcord.Color.blue())
+                embed.description = f"**Selected:** {powerup_info['name']} ({powerup_info['price']} coins)\n{powerup_info['description']}"
+                
+                if not powerup_info.get("storable", True):
+                    embed.description += "\n\n⚠️ This powerup activates immediately upon purchase."
+                
+                # Show total cost
+                total_cost = powerup_info['price'] * self.view.selected_quantity
+                embed.add_field(name="Total Cost", value=f"{total_cost} coins (x{self.view.selected_quantity})", inline=True)
+                
+                # Show all available powerups
+                for p_type, p_info in POWERUP_TYPES.items():
+                    embed.add_field(name=f"{p_info['name']} ({p_info['price']} coins)", value=p_info['description'], inline=False)
+                
+                await interaction.response.edit_message(embed=embed, view=self.view)
+                return
+        
         await interaction.response.defer()
 
 class PurchaseButton(nextcord.ui.Button):
@@ -707,7 +758,7 @@ class PurchaseButton(nextcord.ui.Button):
                     target_name = target_user.display_name if target_user else "JJ3571"
                     
                     embed = nextcord.Embed(
-                        title="🎧 Target Not Available",
+                        title="JJ Not Available",
                         description=f"{target_name} must be in a voice channel to play just one more game!\n\nPlease wait until they're active and in voice chat.",
                         color=nextcord.Color.orange()
                     )
@@ -779,10 +830,24 @@ class PurchaseButton(nextcord.ui.Button):
             return
 
         success = await economy_cog.deduct_user_balance(interaction.user.id, total_cost)
+        
         if success:
             for _ in range(selected_quantity):
                 await self.powerup_cog_instance.add_powerup_to_inventory(interaction.user.id, selected_powerup_type)
-            await interaction.followup.send(f"Purchased {selected_quantity}x {powerup_info['name']} for {total_cost} coins!", ephemeral=True)
+            # Create success message with optional activate button
+            success_embed = nextcord.Embed(
+                title="✅ Purchase Successful!",
+                description=f"Purchased {selected_quantity}x **{powerup_info['name']}** for {total_cost} coins!",
+                color=nextcord.Color.green()
+            )
+            
+            # Add activate button for storable powerups
+            if powerup_info.get("storable", True):
+                activate_view = ActivateNowView(selected_powerup_type, powerup_info['name'], self.powerup_cog_instance)
+                await interaction.followup.send(embed=success_embed, view=activate_view, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=success_embed, ephemeral=True)
+            
             self.view.stop()
         else:
             await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
@@ -799,6 +864,56 @@ class PowerupInventoryView(nextcord.ui.View):
                 powerup_info = POWERUP_TYPES.get(powerup_type)
                 if powerup_info:
                     self.add_item(UsePowerupButton(powerup_type, powerup_info['name'], self.cog))
+
+class ActivateNowView(nextcord.ui.View):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog, timeout=300):
+        super().__init__(timeout=timeout)
+        self.add_item(ActivateNowButton(powerup_type, powerup_name, cog))
+
+class ActivateNowButton(nextcord.ui.Button):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):
+        super().__init__(label=f"🚀 Activate {powerup_name}", style=nextcord.ButtonStyle.success, custom_id=f"activate_{powerup_type}")
+        self.powerup_type = powerup_type
+        self.cog = cog
+
+    async def callback(self, interaction: nextcord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        # Check if user still has this powerup in inventory
+        inventory = await self.cog.get_user_inventory(interaction.user.id)
+        has_powerup = any(ptype == self.powerup_type and qty > 0 for ptype, qty in inventory)
+
+        if not has_powerup:
+            await interaction.followup.send(f"You no longer have {POWERUP_TYPES[self.powerup_type]['name']} in your inventory.", ephemeral=True)
+            return
+
+        # Remove one from inventory
+        removed = await self.cog.remove_powerup_from_inventory(interaction.user.id, self.powerup_type)
+        if not removed:
+            await interaction.followup.send("Unable to remove powerup from inventory.", ephemeral=True)
+            return
+
+        # Apply the powerup effect
+        success = await self.cog.apply_powerup_effect(interaction.user.id, self.powerup_type)
+        if success:
+            powerup_info = POWERUP_TYPES[self.powerup_type]
+            if powerup_info.get("duration"):
+                await interaction.followup.send(f"✅ Successfully activated {powerup_info['name']}! Duration: {powerup_info['duration']}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"✅ Successfully activated {powerup_info['name']}!", ephemeral=True)
+            
+            # Disable this button since it was used
+            self.disabled = True
+            self.label = "✅ Activated!"
+            self.style = nextcord.ButtonStyle.secondary
+            try:
+                await interaction.edit_original_response(view=self.view)
+            except:
+                pass  # In case the message can't be edited
+        else:
+            # If activation failed, add the powerup back to inventory
+            await self.cog.add_powerup_to_inventory(interaction.user.id, self.powerup_type)
+            await interaction.followup.send("Failed to activate powerup. It has been returned to your inventory.", ephemeral=True)
 
 class UsePowerupButton(nextcord.ui.Button):
     def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):

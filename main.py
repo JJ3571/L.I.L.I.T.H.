@@ -65,4 +65,4 @@ if __name__ == "__main__":
         bot.close()
         print("Bot has been stopped.")
     except Exception as e:
-        print(f"An error occurred: {e}")
+                print(f"An error occurred: {e}")

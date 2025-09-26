@@ -55,8 +55,20 @@ class Economy(commands.Cog):
     async def deduct_user_balance(self, user_id: int, amount: int): # Made async
         async with aiosqlite.connect(self.db_path) as conn:
             async with conn.cursor() as cursor:
+                # First check if user has enough balance
+                await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+                result = await cursor.fetchone()
+                current_balance = result[0] if result else 0
+                
+                if current_balance < amount:
+                    print(f"DEBUG: Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
+                    return False
+                
+                # Deduct the amount
                 await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+                print(f"DEBUG: Successfully deducted {amount} coins from user {user_id}")
             await conn.commit()
+            return True
 
     async def update_balance(self, user_id, amount): # Made async
         async with aiosqlite.connect(self.db_path) as conn:
