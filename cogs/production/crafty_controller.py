@@ -275,9 +275,9 @@ class CraftyController(commands.Cog):
         
         for server_id, server in self._servers_cache.items():
             name = server.get("server_name", f"Server {server_id}")
-            choice_text = f"{name} (ID: {server_id})"
-            if current.lower() in choice_text.lower():
-                choices.append(choice_text)
+            # Only show server name in autocomplete, no ID
+            if current.lower() in name.lower():
+                choices.append(name)
         
         return choices[:25]  # Discord limit
     
@@ -286,13 +286,20 @@ class CraftyController(commands.Cog):
         try:
             logger.info(f"Parsing server choice: '{choice}'")
             
-            # Extract ID from "Server Name (ID: uuid-string)" format
+            # Look up server ID by name in the cache
+            for server_id, server in self._servers_cache.items():
+                server_name = server.get("server_name", f"Server {server_id}")
+                if server_name == choice:
+                    logger.info(f"Found server ID '{server_id}' for name '{choice}'")
+                    return server_id
+            
+            # Fallback: try the old format for backwards compatibility
             if "(ID: " in choice and choice.endswith(")"):
                 id_part = choice.split("(ID: ")[1][:-1]
-                logger.info(f"Extracted server ID: '{id_part}'")
+                logger.info(f"Extracted server ID from old format: '{id_part}'")
                 return id_part
-            else:
-                logger.warning(f"Choice format doesn't match expected pattern: '{choice}'")
+            
+            logger.warning(f"Could not find server ID for choice: '{choice}'")
                 
         except Exception as e:
             logger.error(f"Error parsing server choice '{choice}': {e}")
@@ -307,6 +314,38 @@ class CraftyController(commands.Cog):
         else:
             # All other servers use modded domain with port
             return f"modded.lif3gaming.gg:{server_port}"
+    
+    def _format_creation_date(self, created_str: str) -> str:
+        """Format creation date for display"""
+        try:
+            from datetime import datetime
+            # Parse the ISO format from the API
+            created = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+            return created.strftime("%b %d, %Y")
+        except:
+            return "Unknown"
+    
+    def _calculate_uptime(self, started_str: str) -> str:
+        """Calculate uptime from started timestamp"""
+        try:
+            from datetime import datetime
+            # Parse the started time (format: "2022-05-25 15:44:05")
+            started = datetime.strptime(started_str, "%Y-%m-%d %H:%M:%S")
+            now = datetime.now()
+            uptime = now - started
+            
+            days = uptime.days
+            hours, remainder = divmod(uptime.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            
+            if days > 0:
+                return f"{days}d {hours}h {minutes}m"
+            elif hours > 0:
+                return f"{hours}h {minutes}m"
+            else:
+                return f"{minutes}m"
+        except:
+            return "Unknown"
     
     async def _check_crafty_available(self, interaction: nextcord.Interaction) -> bool:
         """Check if Crafty Controller is available and respond with error if not"""
@@ -532,11 +571,6 @@ class CraftyController(commands.Cog):
         """Parent command for Crafty Controller - use subcommands"""
         pass
 
-    @slash_command(
-        name="crafty_servers",
-        description="List all available Minecraft servers",
-        guild_ids=[GUILD_ID]
-    )
     async def list_servers(self, interaction: nextcord.Interaction):
         """List all available servers"""
         await interaction.response.defer()
@@ -558,32 +592,52 @@ class CraftyController(commands.Cog):
             timestamp=interaction.created_at
         )
         
+        # Get stats for each server to show versions and status
         for server_id, server in self._servers_cache.items():
             name = server.get("server_name", f"Server {server_id}")
-            server_type = server.get("type", "unknown")
             
-            embed.add_field(
-                name=f"{name}",
-                value=f"**ID:** {server_id}\n**Type:** {server_type}",
-                inline=True
-            )
+            # Get creation date from server info
+            created_date = "Unknown"
+            if server.get("created"):
+                created_date = self._format_creation_date(server["created"])
+            
+            # Get server stats to show version and status
+            stats = await self.crafty_api.get_server_stats(server_id)
+            if stats:
+                running = stats.get("running", False)
+                status_icon = "🟢" if running else "🔴"
+                status_text = "Online" if running else "Offline"
+                
+                version = stats.get("version", "Unknown")
+                players = f"{stats.get('online', 0)}/{stats.get('max', 0)}"
+                
+                # Calculate uptime if server is running
+                uptime_info = ""
+                if running and stats.get("started"):
+                    uptime = self._calculate_uptime(stats["started"])
+                    uptime_info = f"\n**Uptime:** {uptime}"
+                
+                embed.add_field(
+                    name=f"{status_icon} {name}",
+                    value=f"**Version:** {version}\n**Players:** {players}\n**Created:** {created_date}{uptime_info}",
+                    inline=True
+                )
+            else:
+                # Fallback if stats unavailable
+                server_type = server.get("type", "unknown")
+                embed.add_field(
+                    name=f"❓ {name}",
+                    value=f"**Type:** {server_type}\n**Created:** {created_date}\n**Status:** Unknown",
+                    inline=True
+                )
         
-        embed.set_footer(text="Use /crafty_status <server> to see detailed information")
+        embed.set_footer(text="Use /crafty status <server> to see detailed information")
         await interaction.followup.send(embed=embed)
     
-    @slash_command(
-        name="crafty_status",
-        description="Get detailed status of a Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def server_status(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server",
-            autocomplete=True,
-            required=True
-        )
+        server: str
     ):
         """Get server status and statistics"""
         await interaction.response.defer()
@@ -618,52 +672,39 @@ class CraftyController(commands.Cog):
             server_address = self._format_server_address(server_port)
             
             embed.add_field(
-                name="🌍 Server Details",
-                value=f"**Address:** {server_address}",
-                inline=True
+                name="🌍 Connection Info",
+                value=f"**Server Address:** {server_address}",
+                inline=False
             )
             
-            if stats.get("version"):
-                embed.add_field(
-                    name="📋 Version",
-                    value=stats.get("version", "Unknown"),
-                    inline=True
-                )
+            # Add player list if there are players online
+            players_data = stats.get("players", [])
+            if players_data and len(players_data) > 0:
+                try:
+                    import json
+                    if isinstance(players_data, str):
+                        players_list = json.loads(players_data)
+                    else:
+                        players_list = players_data
+                    
+                    if players_list:
+                        player_names = [player.get("name", "Unknown") for player in players_list]
+                        embed.add_field(
+                            name="� Online Players",
+                            value=", ".join(player_names[:10]) + ("..." if len(player_names) > 10 else ""),
+                            inline=False
+                        )
+                except:
+                    pass  # Skip if we can't parse player data
         
         await interaction.followup.send(embed=embed)
     
-    @server_status.on_autocomplete("server")
-    async def server_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        try:
-            if not self.crafty_available:
-                choices = ["Crafty Controller not available"]
-            else:
-                choices = await self._get_server_choices(current)
-                if not choices:
-                    choices = ["No servers found"]
-            
-            await interaction.response.send_autocomplete(choices)
-        except Exception as e:
-            logger.error(f"Error in autocomplete: {e}")
-            try:
-                await interaction.response.send_autocomplete(["Error loading servers"])
-            except:
-                pass  # Interaction already acknowledged
+
     
-    @slash_command(
-        name="crafty_start",
-        description="Start a Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def start_server(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server to start",
-            autocomplete=True,
-            required=True
-        )
+        server: str
     ):
         """Start a server"""
         await interaction.response.defer()
@@ -692,25 +733,12 @@ class CraftyController(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to start server. Check Crafty Controller logs.", ephemeral=True)
     
-    @start_server.on_autocomplete("server")
-    async def start_server_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        choices = await self._get_server_choices(current)
-        await interaction.response.send_autocomplete(choices)
+
     
-    @slash_command(
-        name="crafty_stop",
-        description="Stop a Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def stop_server(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server to stop",
-            autocomplete=True,
-            required=True
-        )
+        server: str
     ):
         """Stop a server"""
         await interaction.response.defer()
@@ -757,25 +785,12 @@ class CraftyController(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to stop server. Check Crafty Controller logs.", ephemeral=True)
     
-    @stop_server.on_autocomplete("server")
-    async def stop_server_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        choices = await self._get_server_choices(current)
-        await interaction.response.send_autocomplete(choices)
+
     
-    @slash_command(
-        name="crafty_restart",
-        description="Restart a Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def restart_server(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server to restart",
-            autocomplete=True,
-            required=True
-        )
+        server: str
     ):
         """Restart a server"""
         await interaction.response.defer()
@@ -825,25 +840,12 @@ class CraftyController(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to restart server. Check Crafty Controller logs.", ephemeral=True)
     
-    @restart_server.on_autocomplete("server")
-    async def restart_server_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        choices = await self._get_server_choices(current)
-        await interaction.response.send_autocomplete(choices)
+
     
-    @slash_command(
-        name="crafty_backup",
-        description="Create a backup of a Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def backup_server(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server to backup",
-            autocomplete=True,
-            required=True
-        )
+        server: str
     ):
         """Create a server backup"""
         await interaction.response.defer()
@@ -868,29 +870,13 @@ class CraftyController(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to start backup. Check Crafty Controller logs.", ephemeral=True)
     
-    @backup_server.on_autocomplete("server")
-    async def backup_server_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        choices = await self._get_server_choices(current)
-        await interaction.response.send_autocomplete(choices)
+
     
-    @slash_command(
-        name="crafty_command",
-        description="Send a command to a running Minecraft server",
-        guild_ids=[GUILD_ID]
-    )
     async def send_command(
         self,
         interaction: nextcord.Interaction,
-        server: str = SlashOption(
-            description="Select a server",
-            autocomplete=True,
-            required=True
-        ),
-        command: str = SlashOption(
-            description="Command to send (without leading slash)",
-            required=True
-        )
+        server: str,
+        command: str
     ):
         """Send a command to the server console"""
         await interaction.response.defer()
@@ -922,11 +908,7 @@ class CraftyController(commands.Cog):
         else:
             await interaction.followup.send("❌ Failed to send command. Check if server is running.", ephemeral=True)
     
-    @send_command.on_autocomplete("server")
-    async def send_command_autocomplete(self, interaction: nextcord.Interaction, current: str):
-        """Autocomplete for server selection"""
-        choices = await self._get_server_choices(current)
-        await interaction.response.send_autocomplete(choices)
+
 
     # /crafty subcommands - cleaner structure without prefixes
     

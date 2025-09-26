@@ -34,16 +34,18 @@ class AdminCommandToggle(commands.Cog):
         command: str = SlashOption(
             description="Specific command to toggle",
             required=False,
-            default=None
+            default=None,
+            autocomplete=True
         )
     ):
         """Toggle admin command visibility"""
-        await interaction.response.defer(ephemeral=True)
-        
-        # Check if user has admin permissions
+        # Check if user has admin permissions first (before any async operations)
         if not interaction.user.guild_permissions.administrator:
-            await interaction.followup.send("❌ You need administrator permissions to use this command.", ephemeral=True)
+            await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
             return
+        
+        # Now defer for longer operations
+        await interaction.response.defer(ephemeral=True)
         
         if action == "list":
             await self._list_commands(interaction, cog)
@@ -194,8 +196,8 @@ class AdminCommandToggle(commands.Cog):
             # Get the module name
             module_name = cog_instance.__module__
             
-            # Reload the cog
-            await self.bot.reload_extension(module_name)
+            # Reload the cog (not awaited as reload_extension is not async)
+            self.bot.reload_extension(module_name)
             logger.info(f"Successfully auto-reloaded cog {cog}")
             return True
             
@@ -215,8 +217,8 @@ class AdminCommandToggle(commands.Cog):
             # Get the module name
             module_name = cog_instance.__module__
             
-            # Reload the cog
-            await self.bot.reload_extension(module_name)
+            # Reload the cog (not awaited as reload_extension is not async)
+            self.bot.reload_extension(module_name)
             
             embed = nextcord.Embed(
                 title="🔄 Commands Reloaded",
@@ -236,22 +238,45 @@ class AdminCommandToggle(commands.Cog):
     @admin_toggle.on_autocomplete("command")
     async def command_autocomplete(self, interaction: nextcord.Interaction, current: str):
         """Autocomplete for command names"""
-        # Get the cog parameter from the interaction
-        cog_name = "CraftyController"  # Default, could be enhanced to read from interaction
-        
-        # Get all available commands
-        all_commands = admin_command_manager.get_all_admin_commands(cog_name)
-        
-        # Filter commands based on current input
-        choices = []
-        for cmd in all_commands.keys():
-            if current.lower() in cmd.lower():
-                # Show status in the choice
-                status = "✅" if all_commands[cmd] else "❌"
-                choices.append(nextcord.SlashOption(name=f"{status} {cmd}", value=cmd))
-        
-        # Limit to 25 choices (Discord's limit)
-        await interaction.response.send_autocomplete(choices[:25])
+        try:
+            print(f"[AUTOCOMPLETE] Function called with current: '{current}'")
+            
+            # Get the cog parameter from the interaction options
+            cog_name = "CraftyController"  # Default
+            if hasattr(interaction, 'data') and 'options' in interaction.data:
+                for option in interaction.data['options']:
+                    if option['name'] == 'cog' and 'value' in option:
+                        cog_name = option['value']
+                        break
+            
+            print(f"[AUTOCOMPLETE] Using cog: {cog_name}")
+            logger.info(f"Autocomplete requested for cog: {cog_name}, current input: '{current}'")
+            
+            # Get all available commands
+            all_commands = admin_command_manager.get_all_admin_commands(cog_name)
+            print(f"[AUTOCOMPLETE] Available commands: {all_commands}")
+            logger.info(f"Available commands for {cog_name}: {all_commands}")
+            
+            # Filter commands based on current input
+            choices = []
+            for cmd in all_commands.keys():
+                if not current or current.lower() in cmd.lower():
+                    # The choice needs to return the actual command name, not the display name
+                    choices.append(cmd)
+            
+            print(f"[AUTOCOMPLETE] Sending choices: {choices}")
+            logger.info(f"Autocomplete choices: {choices}")
+            
+            # Limit to 25 choices (Discord's limit)
+            if not interaction.response.is_done():
+                await interaction.response.send_autocomplete(choices[:25])
+            
+        except Exception as e:
+            print(f"[AUTOCOMPLETE] Error: {e}")
+            logger.error(f"Error in command_autocomplete: {e}")
+            # Send empty list on error to prevent command failure
+            if not interaction.response.is_done():
+                await interaction.response.send_autocomplete([])
 
 def setup(bot):
     bot.add_cog(AdminCommandToggle(bot))

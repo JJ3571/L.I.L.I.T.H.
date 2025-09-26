@@ -586,13 +586,14 @@ class Economy(commands.Cog):
             except Exception as send_error:
                 print(f"Failed to send error message to user: {send_error}")
 
-    @econ.subcommand(name="trustfund", description="[JJ3571 Only] Check trust fund balance or withdraw from trust fund")
+    @econ.subcommand(name="trustfund", description="[JJ/Nut Only] Check trust fund balance or withdraw from trust fund")
     async def trustfund_command(self, interaction: nextcord.Interaction, 
                                action: str = nextcord.SlashOption(choices=["balance", "withdraw"], description="Check balance or withdraw"),
                                amount: int = nextcord.SlashOption(required=False, description="Amount to withdraw (only for withdraw action)")):
-        # Only allow JJ3571 to use this command
-        if interaction.user.id != 321888250136363009:  # JJ3571's user ID
-            await interaction.response.send_message("This command is only available to JJ3571.", ephemeral=True)
+        # Only allow JJ3571 and TheGiftedNut to use this command
+        allowed_users = [321888250136363009, 220656152994643969]  # JJ3571 and TheGiftedNut user IDs
+        if interaction.user.id not in allowed_users:
+            await interaction.response.send_message("This command is only available to JJ3571 and TheGiftedNut.", ephemeral=True)
             return
 
         if action == "balance":

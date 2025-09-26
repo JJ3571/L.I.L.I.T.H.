@@ -121,6 +121,40 @@ class CraftyAPI:
         except Exception as e:
             logger.error(f"API request error: {e}")
             return None
+
+    async def _make_action_request(self, endpoint: str, data: Dict = None) -> bool:
+        """
+        Make an authenticated action request to the Crafty API
+        For server actions, we only care about the status, not the data
+        
+        Args:
+            endpoint: API endpoint (without /api/v2 prefix)
+            data: Optional data to send
+            
+        Returns:
+            True if successful (status == "ok"), False otherwise
+        """
+        if not await self._ensure_authenticated():
+            return False
+        
+        try:
+            session = await self._get_session()
+            headers = {"Authorization": f"Bearer {self.token}"}
+            url = f"{self.api_url}{endpoint}"
+            
+            async with session.post(url, json=data, headers=headers) as response:
+                if response.status == 200:
+                    response_data = await response.json()
+                    success = response_data.get("status") == "ok"
+                    logger.info(f"Action request to {endpoint}: status={response_data.get('status')}, success={success}")
+                    return success
+                else:
+                    logger.error(f"Action request failed with status {response.status}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Action request error: {e}")
+            return False
     
     async def get_servers(self) -> Optional[List[Dict]]:
         """Get list of all servers"""
@@ -140,28 +174,23 @@ class CraftyAPI:
     
     async def start_server(self, server_id: str) -> bool:
         """Start a server"""
-        result = await self._make_request("POST", f"/servers/{server_id}/action/start_server")
-        return result is not None
+        return await self._make_action_request(f"/servers/{server_id}/action/start_server")
     
     async def stop_server(self, server_id: str) -> bool:
         """Stop a server"""
-        result = await self._make_request("POST", f"/servers/{server_id}/action/stop_server")
-        return result is not None
+        return await self._make_action_request(f"/servers/{server_id}/action/stop_server")
     
     async def restart_server(self, server_id: str) -> bool:
         """Restart a server"""
-        result = await self._make_request("POST", f"/servers/{server_id}/action/restart_server")
-        return result is not None
+        return await self._make_action_request(f"/servers/{server_id}/action/restart_server")
     
     async def kill_server(self, server_id: str) -> bool:
         """Force kill a server"""
-        result = await self._make_request("POST", f"/servers/{server_id}/action/kill_server")
-        return result is not None
+        return await self._make_action_request(f"/servers/{server_id}/action/kill_server")
     
     async def backup_server(self, server_id: str) -> bool:
         """Create a backup of the server"""
-        result = await self._make_request("POST", f"/servers/{server_id}/action/backup_server")
-        return result is not None
+        return await self._make_action_request(f"/servers/{server_id}/action/backup_server")
     
     async def send_command(self, server_id: str, command: str) -> bool:
         """
@@ -225,6 +254,9 @@ class CraftyAPI:
         running = stats_data.get("running", False)
         status = "🟢 Online" if running else "🔴 Offline"
         
+        # Get version information
+        version = stats_data.get("version", "Unknown")
+        
         cpu = stats_data.get("cpu", 0)
         mem = stats_data.get("mem", "0MB")
         mem_percent = stats_data.get("mem_percent", 0)
@@ -232,17 +264,19 @@ class CraftyAPI:
         online_players = stats_data.get("online", 0)
         max_players = stats_data.get("max", 0)
         
+        world_name = stats_data.get("world_name", "Unknown")
         world_size = stats_data.get("world_size", "Unknown")
         
         stats_text = f"""**{server_name}**
 {status}
-**CPU:** {cpu}%
-**Memory:** {mem} ({mem_percent}%)
+**Version:** {version}
 **Players:** {online_players}/{max_players}
-**World Size:** {world_size}"""
+**World:** {world_name} ({world_size})
+**CPU:** {cpu}%
+**Memory:** {mem} ({mem_percent}%)"""
         
         if running:
             started = stats_data.get("started", "Unknown")
-            stats_text += f"\n**Started:** {started}"
+            stats_text += f"\n**Uptime:** Since {started}"
         
         return stats_text
