@@ -7,6 +7,8 @@ import re
 import time
 import colorsys
 import io
+import json
+import aiohttp
 from PIL import Image, ImageDraw
 from google import genai
 from google.genai import types
@@ -17,6 +19,9 @@ from server_configs.cogs_config import webhook_url, character_avatars, ZERONI_RE
 
 COST_TO_SAY = 200
 COMMUNITY_NOTES_REACTION_EMOJI
+
+# OP.GG MCP Server endpoint
+OPGG_MCP_ENDPOINT = "https://mcp-api.op.gg/mcp"
 
 class ComplementaryColorView(nextcord.ui.View):
     def __init__(self, original_hex: str, comp_hex: str):
@@ -104,7 +109,7 @@ def generate_zeroni(input_text: str):
         api_key=GEMINI_API_KEY,
     )
 
-    model = "gemini-2.5-flash-preview-05-20"
+    model = "gemini-flash-latest"
     contents = [
         types.Content(
             role="user",
@@ -138,7 +143,7 @@ def generate_notes(input_text: str, include_web_search: bool = True):
         api_key=GEMINI_API_KEY,
     )
 
-    model = "gemini-2.5-flash-preview-05-20"
+    model = "gemini-flash-latest"
     
     system_instruction = """
     Generate a helpful and neutral Community Note for the following content. The note should:
@@ -190,6 +195,910 @@ def generate_notes(input_text: str, include_web_search: bool = True):
             print("Retrying without web search...")
             return generate_notes(input_text, include_web_search=False)
         return None
+
+async def list_opgg_mcp_tools() -> list:
+    """
+    List available OP.GG MCP tools.
+    
+    Returns:
+        List of available tool definitions or None on error
+    """
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list",
+        "params": {}
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OPGG_MCP_ENDPOINT,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if "result" in result and "tools" in result["result"]:
+                        return result["result"]["tools"]
+                    elif "result" in result:
+                        return result["result"]
+                    elif "error" in result:
+                        print(f"MCP tools/list error: {result['error']}")
+                        return None
+                    return result
+                else:
+                    response_text = await response.text()
+                    print(f"MCP tools/list failed with status {response.status}: {response_text}")
+                    return None
+    except Exception as e:
+        print(f"Error listing OP.GG MCP tools: {e}")
+        return None
+
+async def call_opgg_mcp_tool(tool_name: str, arguments: dict = None) -> dict:
+    """
+    Call an OP.GG MCP tool using JSON-RPC format.
+    
+    Args:
+        tool_name: Name of the MCP tool to call (e.g., 'lol-champion-leader-board')
+        arguments: Dictionary of arguments for the tool
+        
+    Returns:
+        Dictionary containing the tool response or None on error
+    """
+    if arguments is None:
+        arguments = {}
+    
+    # MCP uses JSON-RPC 2.0 format
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                OPGG_MCP_ENDPOINT,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    # Handle JSON-RPC response format
+                    if "result" in result:
+                        return result["result"]
+                    elif "error" in result:
+                        error_info = result['error']
+                        error_code = error_info.get('code', 'unknown')
+                        error_message = error_info.get('message', 'Unknown error')
+                        print(f"MCP tool error for '{tool_name}': Code {error_code}, Message: {error_message}")
+                        
+                        # If tool not found, try to list available tools for debugging
+                        if error_code == -32601:
+                            print(f"Tool '{tool_name}' not found. Attempting to list available tools...")
+                            available_tools = await list_opgg_mcp_tools()
+                            if available_tools:
+                                tool_names = [tool.get('name', 'unknown') for tool in available_tools if isinstance(tool, dict)]
+                                print(f"Available tools: {', '.join(tool_names[:10])}...")  # Show first 10
+                        
+                        # Return error dict for better error handling upstream
+                        return {"error": {"code": error_code, "message": error_message}}
+                    return result
+                else:
+                    response_text = await response.text()
+                    print(f"MCP tool call failed with status {response.status}: {response_text}")
+                    return None
+    except Exception as e:
+        print(f"Error calling OP.GG MCP tool {tool_name}: {e}")
+        return None
+
+def extract_summoner_info(query: str) -> tuple[str, str | None]:
+    """
+    Extract summoner name and tagline from a query.
+    REQUIRES the format: "Name#Tagline" (e.g., "JJ3571#NA1") inside quotation marks.
+    Supports usernames with spaces when quoted.
+    
+    Args:
+        query: The user's query text
+        
+    Returns:
+        Tuple of (summoner_name, tagline). tagline is None if not found in required format.
+    """
+    # First, try to find quoted strings (supports both single and double quotes)
+    # Pattern: "Name#Tagline" or 'Name#Tagline' or "Name #Tagline"
+    quoted_patterns = [
+        r'["\']([^"\']+?)[#\s]+([A-Z0-9]+)["\']',  # Matches "Name#Tagline" or 'Name#Tagline'
+        r'["\']([^"\']+?)\s*#\s*([A-Z0-9]+)["\']',  # Matches "Name #Tagline" with spaces
+    ]
+    
+    for pattern in quoted_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            summoner_name = match.group(1).strip()
+            tagline = match.group(2).upper()
+            # Validate that we got meaningful values
+            if summoner_name and tagline and len(tagline) >= 2:
+                return summoner_name, tagline
+    
+    # Fallback: Try unquoted format but be more strict (avoid matching common words)
+    # Only match if it looks like a real username (alphanumeric, possibly with spaces, followed by #Tagline)
+    # This is less reliable but provides backward compatibility
+    unquoted_patterns = [
+        r'\b([A-Za-z0-9][A-Za-z0-9\s]{2,20}?)[#\s]+([A-Z]{2,4}[0-9]?)\b',  # Standard format
+        r'([A-Za-z0-9][A-Za-z0-9\s]{2,20}?)\s*[#]\s*([A-Z]{2,4}[0-9]?)',  # With spaces around #
+    ]
+    
+    for pattern in unquoted_patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            summoner_name = match.group(1).strip()
+            tagline = match.group(2).upper()
+            # Filter out common words that might be matched incorrectly
+            common_words = {'what', 'has', 'had', 'was', 'are', 'for', 'and', 'but', 'not', 'you', 'your', 'his', 'her', 'they', 'them', 'the', 'this', 'that', 'with', 'from', 'show', 'get', 'find'}
+            if summoner_name.lower() not in common_words and len(summoner_name) >= 3:
+                # Validate tagline format (should be region code + optional number)
+                valid_tagline_pattern = r'^[A-Z]{2,4}[0-9]?$'
+                if re.match(valid_tagline_pattern, tagline):
+                    return summoner_name, tagline
+    
+    # No valid format found - return None to indicate format requirement not met
+    return None, None
+
+def get_region_from_tagline(tagline: str) -> str | None:
+    """
+    Map a Riot tagline to a region code for OP.GG MCP tools.
+    
+    Args:
+        tagline: Riot tagline (e.g., "NA1", "EUW1", "KR1")
+        
+    Returns:
+        Region code (e.g., "NA", "EUW", "KR") or None if not found
+    """
+    tagline_upper = tagline.upper()
+    
+    # Map common taglines to regions
+    tagline_to_region = {
+        # North America
+        'NA1': 'NA', 'NA': 'NA',
+        # Europe West
+        'EUW1': 'EUW', 'EUW': 'EUW',
+        # Europe Nordic & East
+        'EUNE1': 'EUNE', 'EUNE': 'EUNE',
+        # Korea
+        'KR1': 'KR', 'KR': 'KR',
+        # Brazil
+        'BR1': 'BR', 'BR': 'BR',
+        # Latin America North
+        'LAN1': 'LAN', 'LAN': 'LAN',
+        # Latin America South
+        'LAS1': 'LAS', 'LAS': 'LAS',
+        # Oceania
+        'OC1': 'OCE', 'OCE': 'OCE', 'OCE1': 'OCE',
+        # Russia
+        'RU1': 'RU', 'RU': 'RU',
+        # Turkey
+        'TR1': 'TR', 'TR': 'TR',
+        # Japan
+        'JP1': 'JP', 'JP': 'JP',
+        # Philippines
+        'PH1': 'PH', 'PH': 'PH',
+        # Singapore, Malaysia, Indonesia
+        'SG1': 'SG', 'SG': 'SG',
+        # Thailand
+        'TH1': 'TH', 'TH': 'TH',
+        # Taiwan, Hong Kong, Macau
+        'TW1': 'TW', 'TW': 'TW',
+        # Vietnam
+        'VN1': 'VN', 'VN': 'VN',
+    }
+    
+    return tagline_to_region.get(tagline_upper)
+
+def is_lol_related_query(query: str) -> bool:
+    """
+    Determine if a query is related to League of Legends.
+    
+    Args:
+        query: The user's query text
+        
+    Returns:
+        True if the query is LoL-related, False otherwise
+    """
+    query_lower = query.lower()
+    
+    # League of Legends keywords
+    lol_keywords = [
+        'league of legends', 'lol', 'league', 'summoner', 'champion', 'champ',
+        'ranked', 'aram', 'tft', 'teamfight tactics', 'op.gg', 'opgg',
+        'match history', 'game history', 'win rate', 'pick rate', 'ban rate', 'winrate', 'pickrate', 'banrate',
+        'counter', 'meta', 'build', 'item', 'rune', 'mastery', 'skin sale',
+        'esports', 'lcs', 'lec', 'lck', 'lpl', 'worlds', 'msi'
+    ]
+    
+    # Check if any keyword is in the query
+    return any(keyword in query_lower for keyword in lol_keywords)
+
+async def decide_query_method(query: str) -> str:
+    """
+    Use Gemini to decide whether to use web search or MCP tools for a query.
+    
+    Args:
+        query: The user's query
+        
+    Returns:
+        'mcp' if MCP tools should be used, 'web_search' if web search is better
+    """
+    # First, do a quick keyword check
+    if not is_lol_related_query(query):
+        return 'web_search'
+    
+    # For LoL-related queries, use Gemini to make a more nuanced decision
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    decision_prompt = f"""Analyze this query about League of Legends and determine the best data source:
+
+Query: "{query}"
+
+Available data sources:
+1. OP.GG MCP Tools - For specific game data like:
+   - Champion statistics, leaderboards, meta data, analysis
+   - Summoner search, game history, match data
+   - TFT meta decks, item combinations, champion builds
+   - Esports schedules and team standings
+   - Champion skin sales
+
+2. Web Search - For general information like:
+   - Game mechanics explanations
+   - Strategy guides and tips
+   - General game knowledge
+   - News and updates
+   - Community discussions
+
+Respond with ONLY one word: "mcp" if OP.GG MCP tools would provide better data, or "web_search" if general web search is better.
+"""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=decision_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        response_text = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                response_text += chunk.text
+        
+        response_text = response_text.strip().lower()
+        if 'mcp' in response_text:
+            return 'mcp'
+        else:
+            return 'web_search'
+    except Exception as e:
+        print(f"Error in decide_query_method: {e}")
+        # Default to MCP for LoL queries if decision fails
+        return 'mcp' if is_lol_related_query(query) else 'web_search'
+
+async def handle_lol_query_with_mcp(query: str, summoner_name: str = None, tagline: str = None) -> str:
+    """
+    Handle a League of Legends query using OP.GG MCP tools.
+    Uses Gemini to determine which MCP tool to use and formats the response.
+    
+    Args:
+        query: The user's LoL-related query
+        summoner_name: Optional summoner name (if already extracted)
+        tagline: Optional tagline (if already provided)
+        
+    Returns:
+        Formatted response string or None on error. Returns special string "PENDING_TAGLINE" if tagline confirmation is needed.
+    """
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    # Check if this is a summoner search query
+    is_summoner_query = 'summoner' in query.lower() or 'player' in query.lower() or summoner_name is not None
+    
+    # Extract summoner info if not provided
+    if is_summoner_query and not summoner_name:
+        extracted_name, extracted_tagline = extract_summoner_info(query)
+        if extracted_name:
+            summoner_name = extracted_name
+            if extracted_tagline:
+                tagline = extracted_tagline
+    
+    # If we have a summoner name but no tagline, we need to ask for confirmation
+    # This will be handled by the caller
+    
+    # First, try to get actual available tools from the MCP server
+    available_tools_list = await list_opgg_mcp_tools()
+    
+    # Build tool dictionary from actual tools or fallback to known tools
+    available_tools = {}
+    tool_schemas = {}  # Store full tool schemas for parameter extraction
+    if available_tools_list and isinstance(available_tools_list, list):
+        for tool in available_tools_list:
+            if isinstance(tool, dict) and 'name' in tool:
+                tool_name = tool['name']
+                tool_desc = tool.get('description', tool.get('name', 'No description'))
+                # Include input schema if available
+                input_schema = tool.get('inputSchema', {})
+                properties = input_schema.get('properties', {}) if isinstance(input_schema, dict) else {}
+                required = input_schema.get('required', []) if isinstance(input_schema, dict) else []
+                
+                # Build a more detailed description with parameter info
+                if required:
+                    param_info = f"Required params: {', '.join(required)}"
+                    tool_desc = f"{tool_desc} ({param_info})"
+                
+                available_tools[tool_name] = tool_desc
+                tool_schemas[tool_name] = {
+                    'description': tool.get('description', ''),
+                    'properties': properties,
+                    'required': required
+                }
+        print(f"Discovered {len(available_tools)} MCP tools from server")
+    else:
+        # Fallback to known tools if discovery fails
+        print("Could not discover tools from server, using fallback list")
+        available_tools = {
+            # Match history and summoner tools (using actual tool names from documentation)
+            'lol_list_summoner_matches': 'Returns recent match history with per-game stats for the target summoner',
+            'lol_get_summoner_game_detail': 'Returns full match detail (teams, participants, builds, bans) for a specific game id',
+            'lol_get_lane_matchup_guide': 'Provides lane matchup guidance for your champion versus a named opponent',
+            # Esports tools
+            'lol_esports_list_schedules': 'Returns upcoming LoL esports schedules with teams, leagues, and match times',
+            'lol_esports_list_team_standings': 'Returns the latest team standings for the requested LoL league',
+            # Legacy/alternative tool names (in case server uses different naming)
+            'lol-champion-leader-board': 'Get ranking board data for League of Legends champions',
+            'lol-champion-analysis': 'Provides analysis data for League of Legends champions (counter and ban/pick data)',
+            'lol-champion-meta-data': 'Retrieves meta data for a specific champion, including statistics and performance metrics',
+            'lol-champion-skin-sale': 'Retrieves information about champion skins that are currently on sale',
+            'lol-summoner-search': 'Search for League of Legends summoner information and stats',
+            'lol-champion-positions-data': 'Retrieves position statistics data for League of Legends champions',
+            'lol-summoner-game-history': 'Retrieve recent game history for a League of Legends summoner',
+            'lol-summoner-renewal': 'Refresh and update League of Legends summoner match history and stats',
+            'esports-lol-schedules': 'Get upcoming LoL match schedules',
+            'esports-lol-team-standings': 'Get team standings for a LoL league',
+            'tft-meta-trend-deck-list': 'TFT deck list tool for retrieving current meta decks',
+            'tft-meta-item-combinations': 'TFT tool for retrieving information about item combinations and recipes',
+            'tft-champion-item-build': 'TFT tool for retrieving champion item build information',
+            'tft-recommend-champion-for-item': 'TFT tool for retrieving champion recommendations for a specific item',
+            'tft-play-style-comment': 'This tool provides comments on the playstyle of TFT champions'
+        }
+    
+    # If no tools discovered, return error
+    if not available_tools:
+        return "Sorry, I couldn't connect to OP.GG's MCP server to retrieve League of Legends data. Please try again later."
+    
+    # Use Gemini to determine which tool to use and extract parameters
+    # Format tools as a list with detailed parameter information
+    tools_list = []
+    for name, desc in available_tools.items():
+        schema = tool_schemas.get(name, {})
+        required_params = schema.get('required', [])
+        properties = schema.get('properties', {})
+        
+        param_details = []
+        for param in required_params:
+            param_info = properties.get(param, {})
+            param_type = param_info.get('type', 'string')
+            param_desc = param_info.get('description', '')
+            enum_values = param_info.get('enum', [])
+            
+            if enum_values:
+                param_details.append(f"  - {param} ({param_type}): {param_desc} - Options: {', '.join(map(str, enum_values))}")
+            else:
+                param_details.append(f"  - {param} ({param_type}): {param_desc}")
+        
+        if param_details:
+            tools_list.append(f"- {name}: {desc}\n  Required parameters:\n" + "\n".join(param_details))
+        else:
+            tools_list.append(f"- {name}: {desc}")
+    
+    tools_text = "\n".join(tools_list)
+    
+    # Add summoner info to prompt if available
+    summoner_context = ""
+    if summoner_name:
+        if tagline:
+            summoner_context = f"""
+
+CRITICAL: The summoner name is EXACTLY '{summoner_name}' and tagline is '{tagline}'. 
+- For any parameter named 'game_name', 'summoner_name', 'name', or similar, you MUST use '{summoner_name}' (NOT the full query text)
+- For any parameter named 'tag_line', 'tagline', or similar, you MUST use '{tagline}'
+- Do NOT use the entire query as the game_name - only use '{summoner_name}'"""
+        else:
+            summoner_context = f"""
+
+CRITICAL: The summoner name is EXACTLY '{summoner_name}' (no tagline provided, will use default).
+- For any parameter named 'game_name', 'summoner_name', 'name', or similar, you MUST use '{summoner_name}' (NOT the full query text)
+- Do NOT use the entire query as the game_name - only use '{summoner_name}'"""
+    
+    tool_selection_prompt = f"""Based on this League of Legends query, determine which OP.GG MCP tool to use and extract ALL required parameters:
+
+Query: "{query}"{summoner_context}
+
+Available tools with their required parameters:
+{tools_text}
+
+CRITICAL INSTRUCTIONS:
+1. You MUST use the EXACT tool name as listed above
+2. You MUST provide ALL required parameters for the selected tool
+3. For game_mode, common values are: "ranked", "normal", "aram", "tft"
+4. For position, common values are: "top", "jungle", "mid", "adc", "support"
+5. For champion names, use the exact champion name (e.g., "Yasuo", "Jinx", "Ahri")
+6. Extract values from the query or use reasonable defaults if not specified
+
+Respond in JSON format with:
+{{
+    "tool": "exact-tool-name-from-list",
+    "arguments": {{
+        "param1": "value1",
+        "param2": "value2"
+    }}
+}}
+
+Example for "What is Yasuo's win rate in ranked mid lane?":
+{{
+    "tool": "lol_get_champion_analysis",
+    "arguments": {{
+        "champion": "Yasuo",
+        "game_mode": "ranked",
+        "position": "mid"
+    }}
+}}
+"""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=tool_selection_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+        )
+        
+        response_text = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                response_text += chunk.text
+        
+        # Parse the JSON response
+        try:
+            tool_decision = json.loads(response_text)
+            tool_name = tool_decision.get('tool')
+            tool_args = tool_decision.get('arguments', {})
+            
+            # Validate that the selected tool exists
+            if tool_name not in available_tools:
+                print(f"Warning: Selected tool '{tool_name}' not in available tools. Available: {list(available_tools.keys())[:5]}...")
+                # Try to find a similar tool
+                for available_name in available_tools.keys():
+                    if 'champion' in tool_name.lower() and 'champion' in available_name.lower():
+                        tool_name = available_name
+                        print(f"Using similar tool: {tool_name}")
+                        break
+            
+            # Validate and fill in required parameters
+            properties = {}
+            if tool_name in tool_schemas:
+                schema = tool_schemas[tool_name]
+                required_params = schema.get('required', [])
+                properties = schema.get('properties', {})
+            
+            # Override game_name/summoner_name parameters if we have an extracted summoner_name
+            # This prevents Gemini from using the entire query as the game_name
+            if summoner_name:
+                # Check for common parameter names that should contain the summoner name
+                name_params = ['game_name', 'summoner_name', 'name', 'username', 'player_name']
+                for param in name_params:
+                    if param in tool_args:
+                        # If the value is too long (likely the entire query), replace it
+                        if len(str(tool_args[param])) > len(summoner_name) + 10:
+                            print(f"Overriding incorrect {param} value '{tool_args[param][:50]}...' with '{summoner_name}'")
+                            tool_args[param] = summoner_name
+                        # Also check if it doesn't match our extracted name
+                        elif str(tool_args[param]).upper() != summoner_name.upper():
+                            # If it's close but not exact, use our extracted name
+                            if summoner_name.lower() not in str(tool_args[param]).lower():
+                                print(f"Overriding {param} value '{tool_args[param]}' with '{summoner_name}'")
+                                tool_args[param] = summoner_name
+                
+                # Also set it if the parameter exists in the schema but wasn't set
+                for param in name_params:
+                    if param in properties and param not in tool_args:
+                        tool_args[param] = summoner_name
+                        print(f"Added missing {param} parameter with value '{summoner_name}'")
+            
+            # Override tag_line if we have a tagline
+            if tagline:
+                tagline_params = ['tag_line', 'tagline', 'tag']
+                for param in tagline_params:
+                    if param in tool_args:
+                        if str(tool_args[param]).upper() != tagline.upper():
+                            print(f"Overriding {param} value '{tool_args[param]}' with '{tagline}'")
+                            tool_args[param] = tagline
+                    elif param in properties:
+                        tool_args[param] = tagline
+                        print(f"Added missing {param} parameter with value '{tagline}'")
+                
+                # Auto-add region if tool requires it and we can derive it from tagline
+                if 'region' in properties and 'region' not in tool_args:
+                    region = get_region_from_tagline(tagline)
+                    if region:
+                        tool_args['region'] = region
+                        print(f"Auto-added region '{region}' from tagline '{tagline}'")
+            
+            # Check for missing required parameters and add defaults
+            if tool_name in tool_schemas:
+                required_params = schema.get('required', [])
+                
+                for param in required_params:
+                    if param not in tool_args or not tool_args[param]:
+                        param_info = properties.get(param, {})
+                        enum_values = param_info.get('enum', [])
+                        
+                        # Use reasonable defaults based on parameter name
+                        if param == 'game_mode':
+                            tool_args[param] = 'ranked'  # Default to ranked
+                        elif param == 'position':
+                            # Try to infer from query, otherwise default to 'mid'
+                            if 'top' in query.lower():
+                                tool_args[param] = 'top'
+                            elif 'jungle' in query.lower() or 'jg' in query.lower():
+                                tool_args[param] = 'jungle'
+                            elif 'adc' in query.lower() or 'bot' in query.lower() or 'bottom' in query.lower():
+                                tool_args[param] = 'adc'
+                            elif 'support' in query.lower() or 'supp' in query.lower():
+                                tool_args[param] = 'support'
+                            else:
+                                tool_args[param] = 'mid'  # Default to mid
+                        elif param == 'champion':
+                            # Try to extract champion name from query if not provided
+                            if not tool_args.get(param):
+                                # This is a fallback - ideally Gemini should extract it
+                                print(f"Warning: Champion name not provided for required parameter '{param}'")
+                        elif enum_values:
+                            # Use first enum value as default
+                            tool_args[param] = enum_values[0]
+                        else:
+                            # Generic default based on type
+                            param_type = param_info.get('type', 'string')
+                            if param_type == 'string':
+                                tool_args[param] = ''
+                            elif param_type == 'number':
+                                tool_args[param] = 0
+                            elif param_type == 'boolean':
+                                tool_args[param] = False
+                        
+                        print(f"Added default value for required parameter '{param}': {tool_args[param]}")
+                
+                # Validate enum values
+                for param, value in tool_args.items():
+                    if param in properties:
+                        param_info = properties[param]
+                        enum_values = param_info.get('enum', [])
+                        if enum_values and value not in enum_values:
+                            print(f"Warning: Value '{value}' for parameter '{param}' not in enum {enum_values}, using first enum value")
+                            tool_args[param] = enum_values[0]
+        except json.JSONDecodeError:
+            # Fallback: try to extract tool name from text
+            print(f"Failed to parse tool decision JSON: {response_text}")
+            # Try to find a reasonable default based on query
+            if 'champion' in query.lower() and 'win' in query.lower():
+                # Find a champion-related tool
+                for tool_name_check in available_tools.keys():
+                    if 'champion' in tool_name_check.lower():
+                        tool_name = tool_name_check
+                        tool_args = {}
+                        print(f"Using fallback tool: {tool_name}")
+                        break
+                else:
+                    tool_name = list(available_tools.keys())[0] if available_tools else None
+                    tool_args = {}
+            else:
+                tool_name = list(available_tools.keys())[0] if available_tools else None
+                tool_args = {}
+        
+        if not tool_name:
+            return "Sorry, I couldn't determine which tool to use for your query. Please try rephrasing your question."
+        
+        # Call the MCP tool
+        print(f"Calling MCP tool: {tool_name} with arguments: {tool_args}")
+        mcp_result = await call_opgg_mcp_tool(tool_name, tool_args)
+        
+        if not mcp_result:
+            return "❌ Sorry, I couldn't retrieve the data from OP.GG. The service might be temporarily unavailable. Please try again later."
+        
+        # Check for error in result
+        if isinstance(mcp_result, dict):
+            if "error" in mcp_result:
+                error_info = mcp_result["error"]
+                error_code = error_info.get("code", "unknown")
+                error_message = error_info.get("message", "Unknown error")
+                
+                # Provide user-friendly error messages
+                if error_code == -32601:
+                    return f"❌ The requested tool '{tool_name}' is not available. Please try rephrasing your query."
+                elif error_code == -32602:
+                    return f"❌ Invalid parameters for the query. Error: {error_message}"
+                elif "not found" in error_message.lower() or "does not exist" in error_message.lower():
+                    return f"❌ The summoner or data you're looking for doesn't exist. Please check the name and try again."
+                else:
+                    return f"❌ Error retrieving data: {error_message}"
+        
+        # Use Gemini to format the MCP result into a user-friendly response
+        formatting_prompt = f"""The user asked: "{query}"
+
+I retrieved this data from OP.GG:
+{json.dumps(mcp_result, indent=2)}
+
+Please format this data into a clear, helpful response that directly answers the user's question. Be concise but informative. If the data is complex, summarize the key points."""
+        
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=formatting_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        formatted_response = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                formatted_response += chunk.text
+        
+        return formatted_response.strip() if formatted_response else str(mcp_result)
+        
+    except Exception as e:
+        print(f"Error in handle_lol_query_with_mcp: {e}")
+        return f"Sorry, I encountered an error while processing your League of Legends query: {str(e)}"
+
+async def format_summoner_analysis(mcp_result: dict, summoner_name: str, tagline: str, limit: int = 10) -> str:
+    """
+    Format summoner match history data into a readable analysis using Gemini.
+    
+    Args:
+        mcp_result: Raw MCP tool result from lol_list_summoner_matches
+        summoner_name: Summoner name
+        tagline: Summoner tagline
+        limit: Number of matches requested
+        
+    Returns:
+        Formatted analysis string
+    """
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    analysis_prompt = f"""Analyze this League of Legends match history data for summoner {summoner_name}#{tagline}:
+
+{json.dumps(mcp_result, indent=2)}
+
+Please provide a comprehensive analysis including:
+1. Overall win rate and recent performance trends
+2. Most played champions and their performance
+3. Preferred positions/roles
+4. Key statistics (KDA, CS, damage, etc.)
+5. Notable patterns or trends
+6. Brief improvement suggestions if applicable
+
+Be concise but informative. Format the response in a clear, readable way."""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=analysis_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        analysis_response = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                analysis_response += chunk.text
+        
+        return analysis_response.strip() if analysis_response else "Unable to generate analysis."
+    except Exception as e:
+        print(f"Error formatting summoner analysis: {e}")
+        return f"Match history retrieved, but analysis failed: {str(e)}"
+
+async def format_matchup_guide(mcp_result: dict, my_champion: str, opponent_champion: str, position: str) -> str:
+    """
+    Format lane matchup guide data into a readable response using Gemini.
+    
+    Args:
+        mcp_result: Raw MCP tool result from lol_get_lane_matchup_guide
+        my_champion: Your champion name
+        opponent_champion: Opponent champion name
+        position: Lane position
+        
+    Returns:
+        Formatted matchup guide string
+    """
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    guide_prompt = f"""Format this League of Legends lane matchup guide for {my_champion} vs {opponent_champion} in {position}:
+
+{json.dumps(mcp_result, indent=2)}
+
+Please organize the information clearly, including:
+1. Matchup overview and difficulty
+2. Rune recommendations
+3. Item build suggestions and timings
+4. Laning phase tips
+5. Key abilities to watch for
+6. General strategy
+
+Make it easy to read and actionable."""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=guide_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        guide_response = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                guide_response += chunk.text
+        
+        return guide_response.strip() if guide_response else "Unable to generate matchup guide."
+    except Exception as e:
+        print(f"Error formatting matchup guide: {e}")
+        return f"Matchup data retrieved, but formatting failed: {str(e)}"
+
+async def format_esports_schedule(mcp_result: dict) -> str:
+    """
+    Format esports schedule data into a readable response using Gemini.
+    
+    Args:
+        mcp_result: Raw MCP tool result from lol_esports_list_schedules
+        
+    Returns:
+        Formatted schedule string
+    """
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    schedule_prompt = f"""Format this League of Legends esports schedule:
+
+{json.dumps(mcp_result, indent=2)}
+
+Please organize upcoming matches clearly, including:
+1. Match dates and times (convert UTC to readable format)
+2. Teams playing
+3. League/tournament name
+4. Any important context
+
+Make it easy to scan and understand when matches are happening."""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=schedule_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        schedule_response = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                schedule_response += chunk.text
+        
+        return schedule_response.strip() if schedule_response else "Unable to generate schedule."
+    except Exception as e:
+        print(f"Error formatting esports schedule: {e}")
+        return f"Schedule data retrieved, but formatting failed: {str(e)}"
+
+async def format_team_standings(mcp_result: dict, league: str) -> str:
+    """
+    Format team standings data into a readable response using Gemini.
+    
+    Args:
+        mcp_result: Raw MCP tool result from lol_esports_list_team_standings
+        league: League name
+        
+    Returns:
+        Formatted standings string
+    """
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    model = "gemini-flash-latest"
+    
+    standings_prompt = f"""Format this League of Legends {league.upper()} team standings:
+
+{json.dumps(mcp_result, indent=2)}
+
+Please organize the standings clearly, showing:
+1. Team rankings
+2. Win/loss records
+3. Any relevant statistics
+4. Current form or trends if available
+
+Make it easy to read and compare teams."""
+    
+    try:
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=standings_prompt)],
+            ),
+        ]
+        
+        generate_content_config = types.GenerateContentConfig(
+            response_mime_type="text/plain",
+        )
+        
+        standings_response = ""
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            if chunk.text:
+                standings_response += chunk.text
+        
+        return standings_response.strip() if standings_response else "Unable to generate standings."
+    except Exception as e:
+        print(f"Error formatting team standings: {e}")
+        return f"Standings data retrieved, but formatting failed: {str(e)}"
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     """Convert hex color to RGB tuple"""
@@ -430,6 +1339,305 @@ class Say(commands.Cog):
                     webhook_id_for_log = temp_webhook_obj.id if temp_webhook_obj else "Unknown ID"
                     print(f"Error deleting temporary webhook {webhook_id_for_log}: {e}")
 
+    @nextcord.slash_command(name='opgg_summoner', description="Analyze a League of Legends summoner's recent performance", guild_ids=[GUILD_ID])
+    async def opgg_summoner(
+        self,
+        interaction: nextcord.Interaction,
+        summoner_name: str = nextcord.SlashOption(
+            name="summoner_name",
+            description="Summoner name (before the #)"
+        ),
+        tagline: str = nextcord.SlashOption(
+            name="tagline",
+            description="Tagline (after the #, e.g., NA1, EUW1)"
+        ),
+        region: str = nextcord.SlashOption(
+            name="region",
+            description="Server region",
+            required=False,
+            choices={"NA": "NA", "EUW": "EUW", "EUNE": "EUNE", "KR": "KR", "BR": "BR", "LAN": "LAN", "LAS": "LAS", "OCE": "OCE", "RU": "RU", "TR": "TR", "JP": "JP"}
+        ),
+        limit: int = nextcord.SlashOption(
+            name="limit",
+            description="Number of recent matches to analyze (default: 10)",
+            required=False,
+            min_value=1,
+            max_value=20
+        )
+    ):
+        """Analyze a summoner's recent match history and performance"""
+        await interaction.response.defer()
+        
+        try:
+            # Auto-detect region from tagline if not provided
+            if not region:
+                region = get_region_from_tagline(tagline)
+                if not region:
+                    await interaction.followup.send(
+                        f"❌ Could not determine region from tagline '{tagline}'. Please specify the region manually.",
+                        ephemeral=True
+                    )
+                    return
+            
+            # Default limit to 10 if not specified
+            if not limit:
+                limit = 10
+            
+            # Required output fields for match history
+            desired_output_fields = [
+                "data.game_history[].participants[].champion_name",
+                "data.game_history[].participants[].position",
+                "data.game_history[].participants[].stats.kill",
+                "data.game_history[].participants[].stats.death",
+                "data.game_history[].participants[].stats.assist",
+                "data.game_history[].participants[].stats.result",
+                "data.game_history[].participants[].stats.op_score",
+                "data.game_history[].participants[].stats.gold_earned",
+                "data.game_history[].participants[].stats.minion_kill",
+                "data.game_history[].participants[].stats.total_damage_dealt_to_champions",
+                "data.game_history[].game_type",
+                "data.game_history[].created_at",
+                "data.game_history[].id"
+            ]
+            
+            # Call MCP tool
+            tool_args = {
+                "game_name": summoner_name,
+                "tag_line": tagline,
+                "region": region,
+                "lang": "en_US",
+                "limit": limit,
+                "desired_output_fields": desired_output_fields
+            }
+            
+            mcp_result = await call_opgg_mcp_tool("lol_list_summoner_matches", tool_args)
+            
+            if not mcp_result:
+                await interaction.followup.send(
+                    f"❌ Failed to retrieve match history for {summoner_name}#{tagline}. The summoner may not exist or the service may be unavailable.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check for errors in result
+            if isinstance(mcp_result, dict) and "error" in mcp_result:
+                error_msg = mcp_result.get("error", {}).get("message", "Unknown error")
+                await interaction.followup.send(
+                    f"❌ Error retrieving match history: {error_msg}",
+                    ephemeral=True
+                )
+                return
+            
+            # Format the analysis
+            analysis = await format_summoner_analysis(mcp_result, summoner_name, tagline, limit)
+            
+            # Create embed
+            embed = nextcord.Embed(
+                title=f"Summoner Analysis: {summoner_name}#{tagline}",
+                description=analysis,
+                color=nextcord.Color.gold()
+            )
+            embed.set_footer(text=f"Region: {region} • {limit} recent matches")
+            embed.timestamp = nextcord.utils.utcnow()
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in /opgg_summoner: {e}")
+            await interaction.followup.send(
+                f"❌ An error occurred while analyzing the summoner: {str(e)}",
+                ephemeral=True
+            )
+
+    @nextcord.slash_command(name='opgg_matchup', description="Get lane matchup guide for League of Legends", guild_ids=[GUILD_ID])
+    async def opgg_matchup(
+        self,
+        interaction: nextcord.Interaction,
+        my_champion: str = nextcord.SlashOption(
+            name="my_champion",
+            description="Your champion name (e.g., AHRI, LEE_SIN)"
+        ),
+        opponent_champion: str = nextcord.SlashOption(
+            name="opponent_champion",
+            description="Opponent champion name (e.g., YASUO, ZED)"
+        ),
+        position: str = nextcord.SlashOption(
+            name="position",
+            description="Lane position",
+            choices={"top": "top", "mid": "mid", "jungle": "jungle", "adc": "adc", "support": "support"}
+        )
+    ):
+        """Get lane matchup guide for your champion vs opponent"""
+        await interaction.response.defer()
+        
+        try:
+            # Convert champion names to UPPER_SNAKE_CASE
+            my_champ_upper = my_champion.upper().replace(" ", "_")
+            opponent_champ_upper = opponent_champion.upper().replace(" ", "_")
+            
+            # Call MCP tool
+            tool_args = {
+                "lang": "en_US",
+                "position": position,
+                "my_champion": my_champ_upper,
+                "opponent_champion": opponent_champ_upper
+            }
+            
+            mcp_result = await call_opgg_mcp_tool("lol_get_lane_matchup_guide", tool_args)
+            
+            if not mcp_result:
+                await interaction.followup.send(
+                    f"❌ Failed to retrieve matchup guide for {my_champion} vs {opponent_champion}. Please check champion names and try again.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check for errors
+            if isinstance(mcp_result, dict) and "error" in mcp_result:
+                error_msg = mcp_result.get("error", {}).get("message", "Unknown error")
+                await interaction.followup.send(
+                    f"❌ Error retrieving matchup guide: {error_msg}",
+                    ephemeral=True
+                )
+                return
+            
+            # Format the guide
+            guide = await format_matchup_guide(mcp_result, my_champion, opponent_champion, position)
+            
+            # Create embed
+            embed = nextcord.Embed(
+                title=f"Matchup Guide: {my_champion} vs {opponent_champion} ({position})",
+                description=guide,
+                color=nextcord.Color.blue()
+            )
+            embed.set_footer(text=f"Position: {position.title()}")
+            embed.timestamp = nextcord.utils.utcnow()
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in /opgg_matchup: {e}")
+            await interaction.followup.send(
+                f"❌ An error occurred while retrieving the matchup guide: {str(e)}",
+                ephemeral=True
+            )
+
+    @nextcord.slash_command(name='opgg_esports_schedule', description="View upcoming League of Legends esports matches", guild_ids=[GUILD_ID])
+    async def opgg_esports_schedule(self, interaction: nextcord.Interaction):
+        """Get upcoming esports match schedules"""
+        await interaction.response.defer()
+        
+        try:
+            # Call MCP tool (no parameters needed)
+            mcp_result = await call_opgg_mcp_tool("lol_esports_list_schedules", {})
+            
+            if not mcp_result:
+                await interaction.followup.send(
+                    "❌ Failed to retrieve esports schedule. The service may be temporarily unavailable.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check for errors
+            if isinstance(mcp_result, dict) and "error" in mcp_result:
+                error_msg = mcp_result.get("error", {}).get("message", "Unknown error")
+                await interaction.followup.send(
+                    f"❌ Error retrieving schedule: {error_msg}",
+                    ephemeral=True
+                )
+                return
+            
+            # Format the schedule
+            schedule = await format_esports_schedule(mcp_result)
+            
+            # Create embed
+            embed = nextcord.Embed(
+                title="Upcoming LoL Esports Matches",
+                description=schedule,
+                color=nextcord.Color.purple()
+            )
+            embed.timestamp = nextcord.utils.utcnow()
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in /opgg_esports_schedule: {e}")
+            await interaction.followup.send(
+                f"❌ An error occurred while retrieving the schedule: {str(e)}",
+                ephemeral=True
+            )
+
+    @nextcord.slash_command(name='opgg_standings', description="View League of Legends esports team standings", guild_ids=[GUILD_ID])
+    async def opgg_standings(
+        self,
+        interaction: nextcord.Interaction,
+        league: str = nextcord.SlashOption(
+            name="league",
+            description="League to view standings for",
+            choices={
+                "LCK": "lck",
+                "LPL": "lpl",
+                "LEC": "lec",
+                "LCS": "lcs",
+                "LJL": "ljl",
+                "VCS": "vcs",
+                "CBLOL": "cblol",
+                "LCL": "lcl",
+                "LLA": "lla",
+                "TCL": "tcl",
+                "PCS": "pcs",
+                "LCO": "lco",
+                "MSI": "msi",
+                "Worlds": "worlds"
+            }
+        )
+    ):
+        """Get team standings for a League of Legends esports league"""
+        await interaction.response.defer()
+        
+        try:
+            # Call MCP tool
+            tool_args = {
+                "short_name": league.lower()
+            }
+            
+            mcp_result = await call_opgg_mcp_tool("lol_esports_list_team_standings", tool_args)
+            
+            if not mcp_result:
+                await interaction.followup.send(
+                    f"❌ Failed to retrieve standings for {league.upper()}. The service may be temporarily unavailable.",
+                    ephemeral=True
+                )
+                return
+            
+            # Check for errors
+            if isinstance(mcp_result, dict) and "error" in mcp_result:
+                error_msg = mcp_result.get("error", {}).get("message", "Unknown error")
+                await interaction.followup.send(
+                    f"❌ Error retrieving standings: {error_msg}",
+                    ephemeral=True
+                )
+                return
+            
+            # Format the standings
+            standings = await format_team_standings(mcp_result, league)
+            
+            # Create embed
+            embed = nextcord.Embed(
+                title=f"{league.upper()} Team Standings",
+                description=standings,
+                color=nextcord.Color.green()
+            )
+            embed.timestamp = nextcord.utils.utcnow()
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in /opgg_standings: {e}")
+            await interaction.followup.send(
+                f"❌ An error occurred while retrieving the standings: {str(e)}",
+                ephemeral=True
+            )
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: nextcord.RawReactionActionEvent):
@@ -636,17 +1844,107 @@ Please respond to the user's reply in context of the previous conversation."""
                 return
             
             try:
-                # Generate response using enhanced Gemini with web search
-                loop = asyncio.get_event_loop()
-                api_response_content = await loop.run_in_executor(
-                    None, 
-                    generate_notes, 
-                    context_prompt,
-                    True  # Enable web search
-                )
+                # Check if this is a summoner search query
+                summoner_name, extracted_tagline = extract_summoner_info(context_prompt)
+                has_valid_summoner_format = summoner_name is not None and extracted_tagline is not None
+                
+                # Check if query mentions summoner-related keywords (even without proper format)
+                summoner_keywords = ['summoner', 'player', 'stats for', 'match history', 'game history', 'champs has', 'champions has']
+                has_summoner_keyword = any(keyword in context_prompt.lower() for keyword in summoner_keywords)
+                
+                # Determine if this is a League of Legends query and route accordingly
+                query_method = await decide_query_method(context_prompt)
+                
+                if query_method == 'mcp':
+                    # Use OP.GG MCP tools for LoL-specific queries
+                    print(f"Using OP.GG MCP tools for query: {context_prompt[:50]}...")
+                    
+                    # If this looks like a summoner search but doesn't have the required tagline format, prompt user
+                    if has_summoner_keyword and not has_valid_summoner_format:
+                        # Send error message requiring tagline format
+                        embed = nextcord.Embed(
+                            description=f"❌ **Summoner Format Required**\n\n"
+                                      f"For summoner searches, you must include the summoner name and tagline in **quotation marks** using the format: **\"Name#Tagline\"**\n\n"
+                                      f"**Examples:**\n"
+                                      f"• `What champs has \"JJ3571#NA1\" been playing?`\n"
+                                      f"• `Show me stats for \"PlayerName#EUW1\"`\n"
+                                      f"• `Search for summoner \"Username With Spaces#KR1\"`\n\n"
+                                      f"**Note:** Quotation marks are required to properly identify the summoner name, especially if it contains spaces.\n\n"
+                                      f"Common taglines: NA1, EUW1, EUNE1, KR1, BR1, etc.",
+                            color=nextcord.Color.red()
+                        )
+                        
+                        bot_user = self.bot.user
+                        embed.set_author(
+                            name=f"{bot_user.display_name} [OP.GG]", 
+                            icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                        )
+                        
+                        embed.set_footer(
+                            text="Please include the tagline in your query",
+                            icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                        )
+                        embed.timestamp = nextcord.utils.utcnow()
+                        
+                        await message.reply(embed=embed, mention_author=False)
+                        return
+                    
+                    # Use extracted tagline if available, otherwise let the function handle it
+                    try:
+                        api_response_content = await handle_lol_query_with_mcp(context_prompt, summoner_name=summoner_name, tagline=extracted_tagline)
+                    except Exception as e:
+                        print(f"Error in handle_lol_query_with_mcp: {e}")
+                        api_response_content = f"❌ An error occurred while processing your League of Legends query: {str(e)}. Please try again or use a slash command like `/opgg_summoner`."
+                else:
+                    # Use Gemini web search for general queries
+                    print(f"Using Gemini web search for query: {context_prompt[:50]}...")
+                    try:
+                        loop = asyncio.get_event_loop()
+                        api_response_content = await loop.run_in_executor(
+                            None, 
+                            generate_notes, 
+                            context_prompt,
+                            True  # Enable web search
+                        )
+                    except Exception as e:
+                        print(f"Error in generate_notes: {e}")
+                        api_response_content = f"❌ An error occurred while processing your query: {str(e)}. Please try again."
 
                 if not api_response_content:
                     print(f"No response generated for {trigger_type}: \"{content_to_process[:50]}...\"")
+                    # Send a helpful error message
+                    error_embed = nextcord.Embed(
+                        description="❌ I couldn't generate a response for your query. Please try rephrasing or use a specific command.",
+                        color=nextcord.Color.red()
+                    )
+                    error_embed.set_footer(text="Tip: For League of Legends data, try /opgg_summoner or /opgg_matchup")
+                    try:
+                        await message.reply(embed=error_embed, mention_author=False)
+                    except:
+                        pass
+                    return
+                
+                # Check if response is an error message (starts with ❌)
+                if api_response_content.startswith("❌"):
+                    # Create error embed for better visibility
+                    error_embed = nextcord.Embed(
+                        description=api_response_content,
+                        color=nextcord.Color.red()
+                    )
+                    bot_user = self.bot.user
+                    error_embed.set_author(
+                        name=f"{bot_user.display_name} [OP.GG]", 
+                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                    )
+                    error_embed.set_footer(
+                        text="Tip: Use /opgg_summoner for summoner analysis or /opgg_matchup for matchup guides",
+                        icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                    )
+                    error_embed.timestamp = nextcord.utils.utcnow()
+                    try:
+                        await message.reply(embed=error_embed, mention_author=False)
+                    except:
+                        pass
                     return
 
                 # Create embed response
@@ -658,26 +1956,31 @@ Please respond to the user's reply in context of the previous conversation."""
                 elif is_reply_to_bot and referenced_message:
                     embed_description += f"\n\n[In reply to this message]({message.reference.jump_url})"
 
+                # Choose embed color based on data source
+                embed_color = nextcord.Color.gold() if query_method == 'mcp' else nextcord.Color.blue()
+
                 embed = nextcord.Embed(
                     description=embed_description,
-                    color=nextcord.Color.blue()
+                    color=embed_color
                 )
 
                 # Set the bot as the author for these responses
                 bot_user = self.bot.user
+                author_name = f"{bot_user.display_name} [OP.GG]" if query_method == 'mcp' else bot_user.display_name
                 embed.set_author(
-                    name=bot_user.display_name, 
+                    name=author_name, 
                     icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
                 )
                 
-                # Add footer to indicate trigger method
+                # Add footer to indicate trigger method and data source
                 user_display_avatar_url = message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                data_source = "OP.GG MCP" if query_method == 'mcp' else "Web Search"
                 if is_reply_with_mention:
-                    footer_text = f"Triggered by {message.author.display_name}'s mention in reply"
+                    footer_text = f"Triggered by {message.author.display_name}'s mention in reply • {data_source}"
                 elif bot_mentioned:
-                    footer_text = f"Triggered by {message.author.display_name}'s mention"
+                    footer_text = f"Triggered by {message.author.display_name}'s mention • {data_source}"
                 else:
-                    footer_text = f"Triggered by {message.author.display_name}'s reply"
+                    footer_text = f"Triggered by {message.author.display_name}'s reply • {data_source}"
                 
                 embed.set_footer(
                     text=footer_text, 
