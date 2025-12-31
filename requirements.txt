@@ -18,6 +18,10 @@ google-genai==1.10.0
 # Image Processing
 Pillow==11.1.0
 
+# Music/Audio Libraries
+yt-dlp==2024.8.6  # Audio extraction from YouTube, SoundCloud, etc.
+PyNaCl==1.5.0  # Voice support for Discord
+
 # Note: The following are built-in Python modules and don't need to be installed:
 # - asyncio (built-in since Python 3.4)
 # - sqlite3 (built-in)

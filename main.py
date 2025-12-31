@@ -21,7 +21,7 @@ intents.guilds=True
 intents.reactions=True
 # intents.presences=True 
 intents.emojis_and_stickers=True
-# intents.voice_states=True
+intents.voice_states=True  # Required for music/voice functionality
 intents.guild_messages=True
 intents.guild_reactions=True
 

@@ -174,3 +174,5 @@ cython_debug/
 server_configs/config_template.py
 server_configs/cogs_config_template.py
 /server_configs
+
+/local_music
