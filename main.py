@@ -31,7 +31,6 @@ bot = commands.Bot(
     application_id=APPLICATION_ID
 )
 
-
 # - - - - - - - - Load Cogs (Generic from Cogs folder)- - - - - - - -
 # def load_extensions():
 #     for filename in os.listdir('./cogs'):
@@ -53,7 +52,7 @@ async def load_extensions(directory: str):
 @bot.event
 async def on_ready():
     try:
-        await load_extensions('production')
+        await load_extensions('testing')
         await bot.sync_application_commands(guild_id=GUILD_ID)
         print('Bot is ready and running.')
     except nextcord.HTTPException as e:
@@ -66,4 +65,4 @@ if __name__ == "__main__":
         bot.close()
         print("Bot has been stopped.")
     except Exception as e:
-        print(f"An error occurred: {e}")
+                print(f"An error occurred: {e}")

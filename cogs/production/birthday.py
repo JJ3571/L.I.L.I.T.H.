@@ -74,6 +74,11 @@ class Birthday(commands.Cog):
                                 await member.add_roles(role)
                             else:
                                 print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
+                            
+                            # Grant 20-hour executive pardon for birthday
+                            await self.grant_birthday_executive_pardon(member.id)
+                            print(f"[DEBUG] Granted 20-hour executive pardon for birthday user {user_id}")
+                            
                             await self.store_birthday_message(message.id, user_id, pacific_date_to_check_str)
                             print(f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
                         else:
@@ -106,7 +111,16 @@ class Birthday(commands.Cog):
                 for message_tuple in messages_to_cleanup:
                     user_id_str, message_id, birthday_str = message_tuple
                     
-                    birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
+                    # Skip if birthday_str is empty or None
+                    if not birthday_str or birthday_str.strip() == '':
+                        print(f"[DEBUG] Skipping cleanup for user {user_id_str} - empty birthday string")
+                        continue
+                    
+                    try:
+                        birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
+                    except ValueError as e:
+                        print(f"[ERROR] Invalid date format for user {user_id_str}: '{birthday_str}' - {e}")
+                        continue
 
                     if today_pacific_date > birthday_date_obj:
                         try:
@@ -174,6 +188,19 @@ class Birthday(commands.Cog):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM birthday_messages WHERE strftime('%m-%d', birthday) = ?", (birthday_mm_dd,))
             await db.commit()
+    
+    async def grant_birthday_executive_pardon(self, user_id):
+        """Grant a 20-hour executive pardon for a user's birthday"""
+        try:
+            # Try to get the waterboard cog to grant the pardon
+            waterboard_cog = self.bot.get_cog('WaterboardCog')
+            if waterboard_cog and hasattr(waterboard_cog, 'executive_pardon'):
+                await waterboard_cog.executive_pardon(user_id, 20)  # 20 hours
+                print(f"[DEBUG] Successfully granted 20-hour executive pardon to user {user_id} via WaterboardCog")
+            else:
+                print(f"[ERROR] WaterboardCog or executive_pardon method not found - cannot grant birthday pardon to user {user_id}")
+        except Exception as e:
+            print(f"[ERROR] Failed to grant birthday executive pardon to user {user_id}: {e}")
 
     @nextcord.slash_command(name="bday", description="Shows upcoming birthdays, or can be used with an @ to see specific birthdays.", guild_ids=[GUILD_ID])
     async def bday(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):
@@ -197,7 +224,10 @@ class Birthday(commands.Cog):
                     can_update = interaction.user.id in admin_user_ids or interaction.user.id == user_id
                     
                     display_name = member.mention
-                    formatted_birthday = datetime.strptime(result[0], "%Y-%m-%d").strftime("%m/%d")
+                    try:
+                        formatted_birthday = datetime.strptime(result[0], "%Y-%m-%d").strftime("%m/%d")
+                    except ValueError:
+                        formatted_birthday = "Invalid Date"
                     
                     if can_update:
                         view = UpdateBirthdayView(self.db_path, member.display_name, str(user_id), interaction.user.id == user_id)
@@ -222,17 +252,27 @@ class Birthday(commands.Cog):
             embed = nextcord.Embed(title="Upcoming Birthdays", color=0x00ff00)
 
             if this_month_birthdays:
-                this_month_value = "\n".join(
-                    f"{interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'} : {datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')}"
-                    for user_id, username, birthday in this_month_birthdays
-                )
+                this_month_list = []
+                for user_id, username, birthday in this_month_birthdays:
+                    try:
+                        formatted_date = datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')
+                    except ValueError:
+                        formatted_date = "Invalid Date"
+                    member_mention = interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'
+                    this_month_list.append(f"{member_mention} : {formatted_date}")
+                this_month_value = "\n".join(this_month_list)
                 embed.add_field(name="This Month", value=this_month_value, inline=False)
 
             if next_month_birthdays:
-                next_month_value = "\n".join(
-                    f"{interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'} : {datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')}"
-                    for user_id, username, birthday in next_month_birthdays
-                )
+                next_month_list = []
+                for user_id, username, birthday in next_month_birthdays:
+                    try:
+                        formatted_date = datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')
+                    except ValueError:
+                        formatted_date = "Invalid Date"
+                    member_mention = interaction.guild.get_member(int(user_id)).mention if interaction.guild.get_member(int(user_id)) else f'<@{user_id}>'
+                    next_month_list.append(f"{member_mention} : {formatted_date}")
+                next_month_value = "\n".join(next_month_list)
                 embed.add_field(name="Next Month", value=next_month_value, inline=False)
 
             if this_month_birthdays or next_month_birthdays:

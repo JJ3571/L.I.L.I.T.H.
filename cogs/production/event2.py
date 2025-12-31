@@ -5,16 +5,20 @@ import os
 import time, datetime
 import pytz
 import re
+import asyncio
 
 from server_configs.config import GUILD_ID
+from server_configs.cogs_config import admin_user_ids
 from server_configs.database_config import DATABASE_PATHS
 
 class Event(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["event"]
+        # Reminders are sent only to the original channel where the command was used
         # Initialize database when cog loads
         self.bot.loop.create_task(self.create_tables())
+        self.bot.loop.create_task(self.start_reminder_check_task())
 
     async def create_tables(self):
         async with aiosqlite.connect(self.db_path) as conn:
@@ -42,6 +46,31 @@ class Event(commands.Cog):
                         status TEXT DEFAULT 'confirmed',
                         PRIMARY KEY (event_id, user_id),
                         FOREIGN KEY (event_id) REFERENCES events (event_id) ON DELETE CASCADE
+                    )
+                ''')
+
+                # Reminders table
+                await cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        reminder_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        creator_id INTEGER NOT NULL,
+                        reminder_text TEXT NOT NULL,
+                        reminder_time TIMESTAMP NOT NULL,
+                        original_channel_id INTEGER NOT NULL,
+                        message_id INTEGER,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'active'
+                    )
+                ''')
+                
+                # Reminder subscribers table
+                await cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS reminder_subscribers (
+                        reminder_id INTEGER NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (reminder_id, user_id),
+                        FOREIGN KEY (reminder_id) REFERENCES reminders (reminder_id) ON DELETE CASCADE
                     )
                 ''')
             await conn.commit()
@@ -228,7 +257,7 @@ class Event(commands.Cog):
     async def event_command(self, interaction: nextcord.Interaction):
         pass  # This will be the parent command
 
-    @event_command.subcommand(name="create", description="Create a new event")
+    @event_command.subcommand(name="create", description="Create a new event. (Opens as a Discord pop-up.)")
     async def create_event_command(self, interaction: nextcord.Interaction):
         """Create a new event using a modal"""
         modal = EventCreationModal(cog=self)
@@ -304,6 +333,12 @@ class Event(commands.Cog):
 
         await interaction.followup.send(embed=embed, view=view)
 
+    @nextcord.slash_command(name="reminder", description="Create a reminder for yourself and others. (Opens as a Discord pop-up.)", guild_ids=[GUILD_ID])
+    async def remind_command(self, interaction: nextcord.Interaction):
+        """Create a reminder using a modal"""
+        modal = ReminderCreationModal(cog=self)
+        await interaction.response.send_modal(modal)
+
     def parse_datetime_string(self, datetime_str: str):
         """
         Parse flexible datetime strings like:
@@ -315,17 +350,17 @@ class Event(commands.Cog):
         # Remove extra whitespace and normalize
         datetime_str = ' '.join(datetime_str.split())
         
-        # Timezone mapping
+        # Timezone mapping (including shorthand versions)
         timezone_map = {
-            'PST': 'US/Pacific', 'PDT': 'US/Pacific',
-            'EST': 'US/Eastern', 'EDT': 'US/Eastern',
-            'CST': 'US/Central', 'CDT': 'US/Central',
-            'MST': 'US/Mountain', 'MDT': 'US/Mountain',
+            'PST': 'US/Pacific', 'PDT': 'US/Pacific', 'PT': 'US/Pacific',
+            'EST': 'US/Eastern', 'EDT': 'US/Eastern', 'ET': 'US/Eastern',
+            'CST': 'US/Central', 'CDT': 'US/Central', 'CT': 'US/Central',
+            'MST': 'US/Mountain', 'MDT': 'US/Mountain', 'MT': 'US/Mountain',
             'UTC': 'UTC', 'GMT': 'GMT'
         }
         
-        # Extract timezone from end of string
-        timezone_pattern = r'\b(PST|PDT|EST|EDT|CST|CDT|MST|MDT|UTC|GMT)\b$'
+        # Extract timezone from end of string (including shorthand versions)
+        timezone_pattern = r'\b(PST|PDT|PT|EST|EDT|ET|CST|CDT|CT|MST|MDT|MT|UTC|GMT)\b$'
         tz_match = re.search(timezone_pattern, datetime_str, re.IGNORECASE)
         
         if tz_match:
@@ -333,8 +368,9 @@ class Event(commands.Cog):
             tz_name = timezone_map[tz_abbr]
             datetime_str = datetime_str[:tz_match.start()].strip()
         else:
-            tz_abbr = 'UTC'
-            tz_name = 'UTC'
+            # Default to PST if no timezone is specified
+            tz_abbr = 'PST'
+            tz_name = 'US/Pacific'
         
         # Parse time with AM/PM support
         time_patterns = [
@@ -361,8 +397,10 @@ class Event(commands.Cog):
         # Parse the time
         hour, minute, is_pm = self.parse_time(time_str)
         
-        # Parse the date
-        year, month, day = self.parse_date(date_str)
+        # Parse the date (pass timezone for current day calculation)
+        tz = pytz.timezone(tz_name)
+        is_time_only = not date_str.strip()  # True if no date was provided (time-only input)
+        year, month, day = self.parse_date(date_str, tz, is_time_only)
         
         # Create datetime object
         naive_dt = datetime.datetime(year, month, day, hour, minute)
@@ -405,9 +443,19 @@ class Event(commands.Cog):
         
         return hour, minute, is_pm
     
-    def parse_date(self, date_str: str):
+    def parse_date(self, date_str: str, tz=None, is_time_only=False):
         """Parse date string and return year, month, day"""
         date_str = date_str.strip()
+        
+        # If date_str is empty or only whitespace, return current day in the timezone
+        if not date_str:
+            if tz:
+                now_in_tz = datetime.datetime.now(tz=tz)
+                return now_in_tz.year, now_in_tz.month, now_in_tz.day
+            else:
+                now = nextcord.utils.utcnow()
+                return now.year, now.month, now.day
+        
         current_year = nextcord.utils.utcnow().year
         
         # Date patterns: M/DD, MM/DD, MM/DD/YYYY, YYYY/MM/DD
@@ -428,14 +476,271 @@ class Event(commands.Cog):
                     month, day = int(match.group(1)), int(match.group(2))
                     year = current_year
                     
-                    # If the date is in the past this year, assume next year
-                    test_date = datetime.date(year, month, day)
-                    if test_date < nextcord.utils.utcnow().date():
-                        year += 1
+                    # Only bump to next year if user explicitly provided a date that's in the past
+                    # Don't bump if this is from time-only input (defaulting to today)
+                    if not is_time_only:
+                        test_date = datetime.date(year, month, day)
+                        # Compare against current date in the same timezone if provided
+                        if tz:
+                            current_date_in_tz = datetime.datetime.now(tz=tz).date()
+                        else:
+                            current_date_in_tz = nextcord.utils.utcnow().date()
+                        
+                        if test_date < current_date_in_tz:
+                            year += 1
                 
                 return year, month, day
         
         raise ValueError(f"Invalid date format: {date_str}")
+
+    # ============== REMINDER METHODS ==============
+    
+    async def create_reminder(self, creator_id: int, reminder_text: str, reminder_time: str, original_channel_id: int, message_id: int = None):
+        """Create a new reminder and return the reminder_id"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    INSERT INTO reminders (creator_id, reminder_text, reminder_time, original_channel_id, message_id)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (creator_id, reminder_text, reminder_time, original_channel_id, message_id))
+                await conn.commit()
+                return cursor.lastrowid
+
+    async def get_reminder(self, reminder_id: int):
+        """Get reminder details by reminder_id"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    SELECT reminder_id, creator_id, reminder_text, reminder_time, 
+                           original_channel_id, message_id, created_at, status
+                    FROM reminders WHERE reminder_id = ?
+                ''', (reminder_id,))
+                return await cursor.fetchone()
+
+    async def subscribe_to_reminder(self, reminder_id: int, user_id: int):
+        """Subscribe a user to a reminder"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                try:
+                    await cursor.execute('''
+                        INSERT INTO reminder_subscribers (reminder_id, user_id)
+                        VALUES (?, ?)
+                    ''', (reminder_id, user_id))
+                    await conn.commit()
+                    return True
+                except aiosqlite.IntegrityError:
+                    # User already subscribed
+                    return False
+
+    async def unsubscribe_from_reminder(self, reminder_id: int, user_id: int):
+        """Unsubscribe a user from a reminder"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    DELETE FROM reminder_subscribers 
+                    WHERE reminder_id = ? AND user_id = ?
+                ''', (reminder_id, user_id))
+                await conn.commit()
+                return cursor.rowcount > 0
+
+    async def get_reminder_subscribers(self, reminder_id: int):
+        """Get all subscribers for a reminder"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    SELECT user_id, subscribed_at
+                    FROM reminder_subscribers 
+                    WHERE reminder_id = ?
+                    ORDER BY subscribed_at ASC
+                ''', (reminder_id,))
+                return await cursor.fetchall()
+
+    async def is_user_subscribed(self, reminder_id: int, user_id: int):
+        """Check if a user is subscribed to a reminder"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    SELECT 1 FROM reminder_subscribers 
+                    WHERE reminder_id = ? AND user_id = ?
+                ''', (reminder_id, user_id))
+                return await cursor.fetchone() is not None
+
+    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: str):
+        """Update an existing reminder"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    UPDATE reminders
+                    SET reminder_text = ?, reminder_time = ?
+                    WHERE reminder_id = ?
+                ''', (reminder_text, reminder_time, reminder_id))
+                await conn.commit()
+                return cursor.rowcount > 0
+
+    async def delete_reminder(self, reminder_id: int):
+        """Delete a reminder by reminder_id"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    DELETE FROM reminders
+                    WHERE reminder_id = ?
+                ''', (reminder_id,))
+                await conn.commit()
+                return cursor.rowcount > 0
+
+    async def get_due_reminders(self):
+        """Get all reminders that are due now"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                # Get current UTC time in ISO format to match stored reminder_time format
+                current_time = nextcord.utils.utcnow().isoformat()
+                print(f"[DEBUG] get_due_reminders() - Current time: {current_time}")
+                
+                await cursor.execute('''
+                    SELECT reminder_id, creator_id, reminder_text, reminder_time, 
+                           original_channel_id, message_id, created_at, status
+                    FROM reminders 
+                    WHERE status = 'active' AND reminder_time <= ?
+                ''', (current_time,))
+                results = await cursor.fetchall()
+                
+                print(f"[DEBUG] get_due_reminders() - SQL query found {len(results)} results")
+                for result in results:
+                    reminder_id = result[0]
+                    reminder_time = result[3]
+                    print(f"[DEBUG]   -> Reminder ID {reminder_id} with time {reminder_time}")
+                
+                return results
+
+    async def mark_reminder_completed(self, reminder_id: int):
+        """Mark a reminder as completed"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    UPDATE reminders
+                    SET status = 'completed'
+                    WHERE reminder_id = ?
+                ''', (reminder_id,))
+                await conn.commit()
+                return cursor.rowcount > 0
+
+    async def start_reminder_check_task(self):
+        """Start the background task to check for due reminders"""
+        await self.bot.wait_until_ready()
+        print("Reminder check task started - checking every minute for due reminders")
+        while not self.bot.is_closed():
+            try:
+                await self.check_and_send_reminders()
+            except Exception as e:
+                print(f"Error in reminder check task: {e}")
+            await asyncio.sleep(30)  # Check every 30 seconds for debugging
+
+    async def check_and_send_reminders(self):
+        """Check for due reminders and send them"""
+        current_time = nextcord.utils.utcnow()
+        current_time_iso = current_time.isoformat()
+        
+        print(f"[DEBUG] Checking for due reminders at {current_time_iso}")
+        
+        # First, let's see all active reminders in the database
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute('''
+                    SELECT reminder_id, creator_id, reminder_text, reminder_time, status
+                    FROM reminders 
+                    WHERE status = 'active'
+                    ORDER BY reminder_time ASC
+                ''')
+                all_active = await cursor.fetchall()
+                
+                print(f"[DEBUG] Found {len(all_active)} active reminders in database:")
+                for reminder in all_active:
+                    reminder_id, creator_id, reminder_text, reminder_time, status = reminder
+                    print(f"[DEBUG]   ID {reminder_id}: '{reminder_text[:50]}...' due at {reminder_time} (status: {status})")
+                    
+                    # Check if this reminder is due
+                    is_due = reminder_time <= current_time_iso
+                    print(f"[DEBUG]   -> Is due? {is_due} (reminder_time <= current_time: {reminder_time} <= {current_time_iso})")
+        
+        due_reminders = await self.get_due_reminders()
+        
+        print(f"[DEBUG] get_due_reminders() returned {len(due_reminders)} reminders")
+        
+        if due_reminders:
+            print(f"[DEBUG] Processing {len(due_reminders)} due reminders")
+        else:
+            print(f"[DEBUG] No due reminders to process")
+        
+        for reminder_data in due_reminders:
+            reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
+            
+            print(f"[DEBUG] Processing reminder ID {reminder_id}: '{reminder_text[:50]}...'")
+            
+            try:
+                # Get subscribers
+                subscribers = await self.get_reminder_subscribers(reminder_id)
+                
+                print(f"[DEBUG] Reminder {reminder_id} has {len(subscribers)} subscribers")
+                
+                if not subscribers:
+                    # No subscribers, just mark as completed
+                    print(f"[DEBUG] No subscribers for reminder {reminder_id}, marking as completed")
+                    await self.mark_reminder_completed(reminder_id)
+                    continue
+                
+                # Create mentions string
+                mentions = []
+                for user_id, _ in subscribers:
+                    mentions.append(f"<@{user_id}>")
+                    print(f"[DEBUG] Will mention user {user_id}")
+                
+                mentions_text = " ".join(mentions)
+                
+                print(f"[DEBUG] Creating embed for reminder {reminder_id}")
+                
+                # Create reminder notification embed
+                embed = nextcord.Embed(
+                    title="⏰ Reminder",
+                    description=reminder_text,
+                    color=nextcord.Color.yellow(),
+                    timestamp=nextcord.utils.utcnow()
+                )
+                
+                creator = self.bot.get_user(creator_id)
+                if creator:
+                    embed.set_author(
+                        name=creator.display_name,
+                        icon_url=creator.display_avatar.url
+                    )
+                    print(f"[DEBUG] Set embed author to {creator.display_name}")
+                else:
+                    embed.set_author(name=f"User {creator_id}")
+                    print(f"[DEBUG] Creator user {creator_id} not found, using fallback name")
+                
+                embed.set_footer(text=f"Reminder ID: {reminder_id}")
+                
+                # Send to original channel only
+                original_channel = self.bot.get_channel(original_channel_id)
+                
+                print(f"[DEBUG] Attempting to send reminder {reminder_id} to channel {original_channel_id}")
+                
+                if original_channel:
+                    try:
+                        await original_channel.send(content=mentions_text, embed=embed)
+                        print(f"[DEBUG] ✅ Successfully sent reminder {reminder_id} to channel {original_channel_id}")
+                    except Exception as e:
+                        print(f"[DEBUG] ❌ Failed to send reminder {reminder_id} to original channel {original_channel_id}: {e}")
+                else:
+                    print(f"[DEBUG] ❌ Could not find original channel {original_channel_id} for reminder {reminder_id}")
+                
+                # Mark as completed regardless of send success
+                print(f"[DEBUG] Marking reminder {reminder_id} as completed")
+                await self.mark_reminder_completed(reminder_id)
+                
+            except Exception as e:
+                print(f"[DEBUG] ❌ Error processing reminder {reminder_id}: {e}")
+                # Mark as completed to prevent infinite retries
+                await self.mark_reminder_completed(reminder_id)
 
 
 # Event UI View Class
@@ -821,7 +1126,7 @@ class EventCreationModal(nextcord.ui.Modal):
         
         self.event_datetime = nextcord.ui.TextInput(
             label="Date & Time",
-            placeholder="e.g., 6/29 11:00am PST, 12/25 14:30 EST, 2025/06/29 23:45 UTC",
+            placeholder="(6/29 11:00am PST  |  12/25 14:30 EST  |  2025/06/29 23:45 UTC)",
             required=True,
             max_length=50
         )
@@ -889,7 +1194,7 @@ class EventCreationModal(nextcord.ui.Modal):
                 value=f"{nextcord.utils.format_dt(event_datetime_utc, style='F')}\n{nextcord.utils.format_dt(event_datetime_utc, style='R')}", 
                 inline=False
             )
-            embed.add_field(name="🌍 Timezone", value=f"{tz_abbr} ({tz_name})", inline=True)
+            embed.add_field(name="🌍 Timezone", value=tz_abbr, inline=True)
             embed.add_field(name="👤 Created by", value=interaction.user.mention, inline=True)
             embed.add_field(name="👥 Attendees", value="0", inline=True)
             
@@ -908,8 +1213,337 @@ class EventCreationModal(nextcord.ui.Modal):
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
 
+
+# ============== REMINDER UI COMPONENTS ==============
+
+class ReminderView(nextcord.ui.View):
+    def __init__(self, reminder_id: int, cog):
+        super().__init__(timeout=None)
+        self.reminder_id = reminder_id
+        self.cog = cog
+
+    @nextcord.ui.button(label="⏰ Remind me too", style=nextcord.ButtonStyle.blurple)
+    async def subscribe_reminder(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Handle user subscribing to the reminder"""
+        # Check if reminder exists and is active
+        reminder_data = await self.cog.get_reminder(self.reminder_id)
+        if not reminder_data:
+            await interaction.response.send_message("❌ This reminder no longer exists!", ephemeral=True)
+            return
+        
+        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
+        
+        if status != 'active':
+            await interaction.response.send_message("❌ This reminder is no longer active!", ephemeral=True)
+            return
+        
+        # Check if reminder time has passed
+        reminder_datetime = datetime.datetime.fromisoformat(reminder_time.replace('Z', '+00:00'))
+        if reminder_datetime <= nextcord.utils.utcnow():
+            await interaction.response.send_message("❌ This reminder time has already passed!", ephemeral=True)
+            return
+        
+        # Check if user is already subscribed
+        if await self.cog.is_user_subscribed(self.reminder_id, interaction.user.id):
+            await interaction.response.send_message("❌ You're already subscribed to this reminder!", ephemeral=True)
+            return
+        
+        # Subscribe to the reminder
+        success = await self.cog.subscribe_to_reminder(self.reminder_id, interaction.user.id)
+        if success:
+            await interaction.response.send_message(f"✅ {interaction.user.mention} subscribed to the reminder!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Failed to subscribe to the reminder!", ephemeral=True)
+
+    @nextcord.ui.button(label="⚙️", style=nextcord.ButtonStyle.secondary)
+    async def manage_reminder(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Handle reminder management (edit/delete)"""
+        # Check if reminder exists
+        reminder_data = await self.cog.get_reminder(self.reminder_id)
+        if not reminder_data:
+            await interaction.response.send_message("❌ This reminder no longer exists!", ephemeral=True)
+            return
+        
+        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
+        
+        # Check if user has permission (creator or admin)
+        if interaction.user.id != creator_id and interaction.user.id not in admin_user_ids:
+            await interaction.response.send_message("❌ Only the reminder creator or server admins can manage this reminder!", ephemeral=True)
+            return
+        
+        # Show management modal
+        view = ReminderManagementView(reminder_id=self.reminder_id, cog=self.cog, reminder_data=reminder_data)
+        
+        embed = nextcord.Embed(
+            title="⚙️ Reminder Management",
+            description=f"**Reminder:** {reminder_text[:100]}{'...' if len(reminder_text) > 100 else ''}",
+            color=nextcord.Color.orange()
+        )
+        embed.add_field(name="✏️ Edit the reminder", value="", inline=False)
+        embed.add_field(name="🗑️ Delete the reminder", value="", inline=False)
+
+        embed.set_footer(text=f"Reminder ID: {reminder_id}")
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class ReminderManagementView(nextcord.ui.View):
+    def __init__(self, reminder_id: int, cog, reminder_data):
+        super().__init__(timeout=300)
+        self.reminder_id = reminder_id
+        self.cog = cog
+        self.reminder_data = reminder_data
+
+    @nextcord.ui.button(label="✏️ Edit Reminder", style=nextcord.ButtonStyle.blurple)
+    async def edit_reminder(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Edit the reminder"""
+        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = self.reminder_data
+        
+        modal = ReminderEditModal(
+            cog=self.cog,
+            reminder_id=self.reminder_id,
+            current_text=reminder_text,
+            current_time=reminder_time
+        )
+        await interaction.response.send_modal(modal)
+
+    @nextcord.ui.button(label="🗑️ Delete Reminder", style=nextcord.ButtonStyle.red)
+    async def delete_reminder(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Delete the reminder"""
+        # Confirm deletion
+        confirm_view = ReminderDeleteConfirmView(reminder_id=self.reminder_id, cog=self.cog)
+        
+        embed = nextcord.Embed(
+            title="⚠️ Confirm Deletion",
+            description="Are you sure you want to delete this reminder?\n\n**This action cannot be undone!**",
+            color=nextcord.Color.red()
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=confirm_view)
+
+
+class ReminderDeleteConfirmView(nextcord.ui.View):
+    def __init__(self, reminder_id: int, cog):
+        super().__init__(timeout=60)
+        self.reminder_id = reminder_id
+        self.cog = cog
+
+    @nextcord.ui.button(label="❌ Cancel", style=nextcord.ButtonStyle.secondary)
+    async def cancel_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Cancel the deletion"""
+        embed = nextcord.Embed(
+            title="✅ Deletion Cancelled",
+            description="The reminder was not deleted.",
+            color=nextcord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @nextcord.ui.button(label="🗑️ Confirm Delete", style=nextcord.ButtonStyle.red)
+    async def confirm_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Confirm the deletion"""
+        success = await self.cog.delete_reminder(self.reminder_id)
+        
+        if success:
+            embed = nextcord.Embed(
+                title="✅ Reminder Deleted",
+                description="The reminder has been successfully deleted.",
+                color=nextcord.Color.green()
+            )
+        else:
+            embed = nextcord.Embed(
+                title="❌ Deletion Failed",
+                description="Failed to delete the reminder.",
+                color=nextcord.Color.red()
+            )
+        
+        await interaction.response.edit_message(embed=embed, view=None)
+
+
+class ReminderCreationModal(nextcord.ui.Modal):
+    def __init__(self, cog):
+        super().__init__(title="Create New Reminder", timeout=300)
+        self.cog = cog
+        
+        self.reminder_text = nextcord.ui.TextInput(
+            label="Reminder Text",
+            placeholder="What would you like to be reminded about?",
+            required=True,
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=1000
+        )
+        self.add_item(self.reminder_text)
+        
+        self.reminder_datetime = nextcord.ui.TextInput(
+            label="Reminder Date & Time",
+            placeholder="(6/29 11:00am PST  |  12/25 14:30 EST  |  2025/06/29 23:45 UTC)",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.reminder_datetime)
+    
+    async def callback(self, interaction: nextcord.Interaction):
+        try:
+            # Parse the datetime string
+            reminder_datetime_utc, tz_abbr, tz_name = self.cog.parse_datetime_string(self.reminder_datetime.value)
+            
+            # Check if the reminder is in the future
+            if reminder_datetime_utc <= nextcord.utils.utcnow():
+                await interaction.response.send_message("❌ Reminder time must be in the future!", ephemeral=True)
+                return
+            
+            # Create the reminder
+            reminder_id = await self.cog.create_reminder(
+                creator_id=interaction.user.id,
+                reminder_text=self.reminder_text.value,
+                reminder_time=reminder_datetime_utc.isoformat(),
+                original_channel_id=interaction.channel.id
+            )
+            
+            # Create embed for the reminder
+            embed = nextcord.Embed(
+                title="⏰ Reminder Created",
+                description=self.reminder_text.value,
+                color=nextcord.Color.blue(),
+                timestamp=reminder_datetime_utc
+            )
+            
+            embed.set_author(
+                name=interaction.user.display_name,
+                icon_url=interaction.user.display_avatar.url
+            )
+            
+            # Use nextcord's format_dt for better time display
+            embed.add_field(
+                name="📅 Reminder Time", 
+                value=f"{nextcord.utils.format_dt(reminder_datetime_utc, style='F')}\n{nextcord.utils.format_dt(reminder_datetime_utc, style='R')}", 
+                inline=False
+            )
+            embed.add_field(name="🌍 Timezone", value=tz_abbr, inline=True)
+            embed.add_field(
+                name="� Instructions", 
+                value="• Click **⏰ Remind me too** to get notified\n• Use **⚙️** to edit or delete (creator/admin only)",
+                inline=False
+            )
+
+            
+            embed.set_footer(text=f"Reminder ID: {reminder_id}")
+            
+            # Create view with buttons
+            view = ReminderView(reminder_id=reminder_id, cog=self.cog)
+            
+            message = await interaction.response.send_message(embed=embed, view=view)
+            
+            # Update the reminder with the message ID for future reference
+            async with aiosqlite.connect(self.cog.db_path) as conn:
+                async with conn.cursor() as cursor:
+                    # Get the message ID from the response
+                    response_message = await interaction.original_message()
+                    await cursor.execute('''
+                        UPDATE reminders SET message_id = ? WHERE reminder_id = ?
+                    ''', (response_message.id, reminder_id))
+                    await conn.commit()
+            
+        except ValueError as e:
+            # Check if interaction was already responded to
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Invalid date/time format: {str(e)}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Invalid date/time format: {str(e)}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`", ephemeral=True)
+        except Exception as e:
+            # Check if interaction was already responded to
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+
+
+class ReminderEditModal(nextcord.ui.Modal):
+    def __init__(self, cog, reminder_id: int, current_text: str, current_time: str):
+        super().__init__(title="Edit Reminder", timeout=300)
+        self.cog = cog
+        self.reminder_id = reminder_id
+        
+        # Pre-fill with current values
+        self.reminder_text = nextcord.ui.TextInput(
+            label="Reminder Text",
+            placeholder="What would you like to be reminded about?",
+            required=True,
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=1000,
+            default=current_text
+        )
+        self.add_item(self.reminder_text)
+        
+        # Convert ISO time back to readable format for editing
+        try:
+            current_dt = datetime.datetime.fromisoformat(current_time.replace('Z', '+00:00'))
+            current_formatted = current_dt.strftime("%m/%d/%Y %H:%M UTC")
+        except:
+            current_formatted = current_time
+        
+        self.reminder_datetime = nextcord.ui.TextInput(
+            label="Reminder Date & Time",
+            placeholder="(6/29 11:00am PST  |  12/25 14:30 EST  |  2025/06/29 23:45 UTC)",
+            required=True,
+            max_length=50,
+            default=current_formatted
+        )
+        self.add_item(self.reminder_datetime)
+    
+    async def callback(self, interaction: nextcord.Interaction):
+        try:
+            # Parse the datetime string
+            reminder_datetime_utc, tz_abbr, tz_name = self.cog.parse_datetime_string(self.reminder_datetime.value)
+            
+            # Check if the reminder is in the future
+            if reminder_datetime_utc <= nextcord.utils.utcnow():
+                await interaction.response.send_message("❌ Reminder time must be in the future!", ephemeral=True)
+                return
+            
+            # Update the reminder
+            success = await self.cog.update_reminder(
+                reminder_id=self.reminder_id,
+                reminder_text=self.reminder_text.value,
+                reminder_time=reminder_datetime_utc.isoformat()
+            )
+            
+            if success:
+                embed = nextcord.Embed(
+                    title="✅ Reminder Updated",
+                    description="Reminder has been successfully updated!",
+                    color=nextcord.Color.green()
+                )
+                embed.add_field(name="📝 New Text", value=self.reminder_text.value, inline=False)
+                embed.add_field(
+                    name="📅 New Time", 
+                    value=f"{nextcord.utils.format_dt(reminder_datetime_utc, style='F')}\n{nextcord.utils.format_dt(reminder_datetime_utc, style='R')}", 
+                    inline=False
+                )
+            else:
+                embed = nextcord.Embed(
+                    title="❌ Update Failed",
+                    description="Failed to update the reminder.",
+                    color=nextcord.Color.red()
+                )
+            
+            await interaction.response.edit_message(embed=embed, view=None)
+            
+        except ValueError as e:
+            # Check if interaction was already responded to
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Invalid date/time format: {str(e)}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ Invalid date/time format: {str(e)}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`", ephemeral=True)
+        except Exception as e:
+            # Check if interaction was already responded to
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ An error occurred: {str(e)}", ephemeral=True)
+
 async def setup(bot):
     cog = Event(bot)
     await cog.create_tables()
     bot.add_cog(cog)
+    print("EventCog has been added to the bot.")
 
