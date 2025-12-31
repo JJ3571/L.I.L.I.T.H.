@@ -23,6 +23,16 @@ COMMUNITY_NOTES_REACTION_EMOJI
 # OP.GG MCP Server endpoint
 OPGG_MCP_ENDPOINT = "https://mcp-api.op.gg/mcp"
 
+# Data Dragon endpoints for champion data
+DDragon_VERSION_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
+DDragon_CHAMPION_URL = "https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"
+
+# Cached champion list (format: {display_name: internal_name})
+_champion_cache = None
+_champion_cache_timestamp = 0
+_cache_refresh_task = None  # Track ongoing refresh to avoid duplicate fetches
+CACHE_DURATION = 86400  # 24 hours in seconds
+
 class ComplementaryColorView(nextcord.ui.View):
     def __init__(self, original_hex: str, comp_hex: str):
         super().__init__(timeout=300)  # 5 minute timeout
@@ -350,6 +360,479 @@ def extract_summoner_info(query: str) -> tuple[str, str | None]:
     
     # No valid format found - return None to indicate format requirement not met
     return None, None
+
+def truncate_embed_description(text: str, max_length: int = 4096) -> str:
+    """
+    Truncate text to fit within Discord embed description limit.
+    
+    Args:
+        text: Text to truncate
+        max_length: Maximum length (default 4096 for Discord embeds)
+        
+    Returns:
+        Truncated text with ellipsis if needed
+    """
+    if len(text) <= max_length:
+        return text
+    
+    # Leave room for truncation indicator
+    truncate_at = max_length - 3
+    return text[:truncate_at] + "..."
+
+def clean_numeric_ids(text: str) -> str:
+    """
+    Remove numeric IDs in parentheses that appear after rune/item names.
+    These are Riot API IDs (e.g., "First Strike (8369)" -> "First Strike").
+    
+    Args:
+        text: Text that may contain numeric IDs
+        
+    Returns:
+        Text with numeric IDs removed
+    """
+    cleaned = text
+    
+    # Pattern 1: Remove IDs after bold text: **Name (1234)** -> **Name**
+    cleaned = re.sub(r'\*\*([^*]+?)\s*\((\d{4,5})\)\*\*', r'**\1**', cleaned)
+    
+    # Pattern 2: Remove IDs after regular text: Name (1234) -> Name
+    # Only match if it's a 4-5 digit number (Riot API IDs are typically 4-5 digits)
+    # Match words/names followed by space and ID in parentheses
+    cleaned = re.sub(r'([A-Za-z][A-Za-z\s\']+?)\s*\((\d{4,5})\)', r'\1', cleaned)
+    
+    # Pattern 3: Remove standalone IDs in parentheses after colons
+    # "• Runes: (8304)" -> "• Runes:"
+    cleaned = re.sub(r'(:\s*)\((\d{4,5})\)', r'\1', cleaned)
+    
+    # Pattern 4: Remove IDs that appear after "Runes:" or similar labels (more specific)
+    # "Runes: Magical Footwear (8304)" -> "Runes: Magical Footwear"
+    cleaned = re.sub(r'(Runes?:\s*[A-Za-z][A-Za-z\s\']+?)\s*\((\d{4,5})\)', r'\1', cleaned)
+    
+    # Pattern 5: Handle cases like "**First Strike (8369)" without closing **
+    cleaned = re.sub(r'\*\*([^*]+?)\s*\((\d{4,5})\)', r'**\1', cleaned)
+    
+    return cleaned
+
+def convert_table_to_list_format(header_row: list, data_rows: list, has_separator: bool) -> str:
+    """
+    Convert a table with long content to a more readable list format.
+    This preserves all information without truncation.
+    
+    Args:
+        header_row: List of header cell values
+        data_rows: List of data rows (each is a list of cells)
+        has_separator: Whether the table had a separator row
+        
+    Returns:
+        Formatted string in list format
+    """
+    if not header_row or not data_rows:
+        return ""
+    
+    formatted_lines = []
+    
+    # Use the first column as the main identifier, rest as details
+    # This works well for tables like: Item | Description | Reason
+    for row in data_rows:
+        if not row or not any(cell.strip() for cell in row):
+            continue
+        
+        # First cell is usually the key/item name
+        main_item = str(row[0]).strip() if len(row) > 0 and row[0] else ""
+        
+        if not main_item:
+            # If first cell is empty, try to use the row as a whole
+            main_item = " • ".join(str(cell).strip() for cell in row[:2] if cell and str(cell).strip())
+        
+        # Remaining cells are details
+        details = []
+        for i in range(1, min(len(row), len(header_row))):
+            header_name = str(header_row[i]).strip() if i < len(header_row) else ""
+            cell_value = str(row[i]).strip() if i < len(row) else ""
+            
+            # Skip empty cells
+            if not cell_value:
+                continue
+            
+            # Clean up header name (remove markdown formatting)
+            header_clean = re.sub(r'\*\*|\*|`|_', '', header_name)
+            
+            # Format as "Header: Value" with proper spacing
+            if header_clean:
+                details.append(f"**{header_clean}:** {cell_value}")
+            else:
+                details.append(cell_value)
+        
+        # Build the formatted line
+        if main_item:
+            if details:
+                formatted_lines.append(f"**{main_item}**\n" + "\n".join(f"  • {detail}" for detail in details))
+            else:
+                formatted_lines.append(f"**{main_item}**")
+        elif details:
+            # No main item, just show details
+            formatted_lines.append("\n".join(f"  • {detail}" for detail in details))
+    
+    return "\n\n".join(formatted_lines)
+
+def format_table_for_discord(text: str) -> str:
+    """
+    Convert markdown tables to Discord-friendly format.
+    For tables with long content, converts to list format instead of truncating.
+    Based on the PHP Discord table builder pattern.
+    
+    Args:
+        text: Text that may contain markdown tables
+        
+    Returns:
+        Text with tables formatted for Discord
+    """
+    # Pattern to match markdown tables - more flexible
+    # Matches: lines starting with |, with optional separator rows containing + or -
+    # Allows for separator rows between table rows
+    # Pattern: at least 2 pipe-separated rows, with optional separator rows in between
+    table_pattern = r'((?:^|\n)(?:\|[^\n]+\|(?:\n|$)|[\|\+\-:\s]+(?:\n|$)){2,})'
+    
+    def format_table(match):
+        table_text = match.group(1).strip()
+        
+        # Skip if this is already in a code block (has backticks)
+        if table_text.count('`') >= 2:
+            # Check if it's a complete code block
+            if '```' in table_text or (table_text.startswith('`') and table_text.endswith('`')):
+                return match.group(0)
+        
+        lines = [line.strip() for line in table_text.split('\n') if line.strip()]
+        
+        # Filter to only lines that look like table rows
+        # Either: starts/ends with |, or is a separator with + or - characters
+        table_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Check if it's a pipe-separated row
+            if stripped.startswith('|') and stripped.endswith('|'):
+                table_lines.append(('pipe', stripped))
+            # Check if it's a separator row - handle various formats
+            # Format 1: |---|---| or |:---|:---:|---:|
+            # Format 2: |---|---+---| (with + separators)
+            # Format 3: Just dashes like -----------------------+------------------------
+            elif (('+' in stripped and ('|' in stripped or stripped.count('-') > 5)) or
+                  (stripped.count('-') >= 3 and '|' in stripped) or
+                  (re.match(r'^[\|\+\-:\s]+$', stripped) and (stripped.count('-') > 2 or '+' in stripped))):
+                # This is a separator row
+                table_lines.append(('separator', stripped))
+        
+        if len(table_lines) < 2:
+            return match.group(0)  # Not a valid table, return as-is
+        
+        # Parse table rows - only process pipe-separated rows
+        rows = []
+        has_separator = False
+        
+        for line_info in table_lines:
+            if line_info[0] == 'pipe':
+                line = line_info[1]
+                # Remove leading/trailing | and split by |
+                cells = [cell.strip() for cell in line.strip('|').split('|')]
+                if cells:  # Only add non-empty rows
+                    rows.append(cells)
+            elif line_info[0] == 'separator':
+                # Mark that we have a separator (typically after header)
+                if len(rows) == 1:  # Separator right after header
+                    has_separator = True
+        
+        if not rows or len(rows) < 2:
+            return match.group(0)
+        
+        # Determine column widths
+        header_row = rows[0]
+        num_cols = len(header_row)
+        
+        # Find data rows (skip separator rows)
+        # If we detected a separator, it's typically after the header, so data starts at index 2
+        # Otherwise, data starts at index 1
+        data_start = 2 if has_separator and len(rows) > 2 else 1
+        data_rows = rows[data_start:] if data_start < len(rows) else rows[1:]
+        
+        if not data_rows:
+            return match.group(0)  # No data rows, return as-is
+        
+        # Normalize all rows to have the same number of columns
+        # Pad shorter rows with empty strings
+        all_rows = [header_row] + data_rows
+        max_cols = max(len(row) for row in all_rows) if all_rows else num_cols
+        num_cols = max(num_cols, max_cols)
+        
+        # Normalize rows
+        normalized_header = header_row + [''] * (num_cols - len(header_row))
+        normalized_data = [row + [''] * (num_cols - len(row)) for row in data_rows]
+        
+        # Calculate column widths (include all rows for accurate sizing)
+        # Set maximum cell width to prevent table breaking (Discord code blocks don't wrap well)
+        MAX_CELL_WIDTH = 45  # Maximum characters per cell to keep tables readable
+        MAX_TOTAL_TABLE_WIDTH = 120  # Maximum total table width (Discord has ~80 char width in embeds)
+        
+        col_widths = [0] * num_cols
+        has_long_cells = False
+        total_width = 0
+        
+        for row in [normalized_header] + normalized_data:
+            for i in range(num_cols):
+                cell_text = str(row[i]) if i < len(row) else ""
+                # Remove markdown formatting for width calculation but preserve content
+                cell_text_clean = re.sub(r'\*\*([^*]+)\*\*', r'\1', cell_text)  # Remove bold
+                cell_text_clean = re.sub(r'\*([^*]+)\*', r'\1', cell_text_clean)  # Remove italic
+                cell_text_clean = re.sub(r'`([^`]+)`', r'\1', cell_text_clean)  # Remove code
+                cell_text_clean = re.sub(r'_([^_]+)_', r'\1', cell_text_clean)  # Remove underline
+                cell_len = len(cell_text_clean)
+                
+                # Track if we have cells that are too long
+                if cell_len > MAX_CELL_WIDTH:
+                    has_long_cells = True
+                    # Cap the width to MAX_CELL_WIDTH
+                    col_widths[i] = max(col_widths[i], MAX_CELL_WIDTH)
+                else:
+                    col_widths[i] = max(col_widths[i], cell_len)
+        
+        # Calculate total table width (sum of column widths + separators)
+        total_width = sum(col_widths) + (num_cols - 1) * 3  # 3 chars for " | "
+        
+        # If table has long cells or is too wide, convert to list format instead of truncating
+        if has_long_cells or total_width > MAX_TOTAL_TABLE_WIDTH:
+            # Convert to list format to preserve all information
+            return "\n" + convert_table_to_list_format(normalized_header, normalized_data, has_separator)
+        
+        # Ensure minimum width of 1
+        col_widths = [max(1, w) for w in col_widths]
+        
+        # Build formatted table (for tables that fit)
+        formatted_lines = []
+        
+        # Header row - preserve markdown formatting
+        header_parts = []
+        for i in range(num_cols):
+            cell = str(normalized_header[i]) if i < len(normalized_header) else ""
+            cell_clean = cell.strip()
+            header_parts.append(cell_clean.ljust(col_widths[i]))
+        formatted_lines.append("`" + " | ".join(header_parts) + "`")
+        
+        # Separator (if we detected one after header)
+        if has_separator:
+            separator_parts = []
+            for i in range(num_cols):
+                separator_parts.append("-" * col_widths[i])
+            formatted_lines.append("`" + "-+-".join(separator_parts) + "`")
+        
+        # Data rows - preserve markdown formatting
+        for row in normalized_data:
+            row_parts = []
+            for i in range(num_cols):
+                cell = str(row[i]) if i < len(row) else ""
+                cell_clean = cell.strip()
+                row_parts.append(cell_clean.ljust(col_widths[i]))
+            formatted_lines.append("`" + " | ".join(row_parts) + "`")
+        
+        return "\n" + "\n".join(formatted_lines)
+    
+    # Replace all tables in the text
+    result = re.sub(table_pattern, format_table, text, flags=re.MULTILINE)
+    return result
+
+def split_response_into_sections(text: str, max_length: int = 4000) -> list[str]:
+    """
+    Split a long response into sections based on numbered lists or headers.
+    Each section will be a separate embed to prevent truncation.
+    
+    Args:
+        text: The full response text
+        max_length: Maximum length per section (default 4000 to leave room for formatting)
+        
+    Returns:
+        List of text sections
+    """
+    # If text is short enough, return as single section
+    if len(text) <= max_length:
+        return [text]
+    
+    sections = []
+    
+    # Try to split by numbered sections (1., 2., 3., etc.) or major headers
+    # Pattern: Lines starting with number followed by period, or lines with emoji + bold text
+    section_pattern = r'(?:\n\n|^)(?:\d+\.\s+[^\n]+|#{1,3}\s+[^\n]+|🦅|🌟|🛠️|📈|⚔️|🎯|💡|📊|🔮|⚡|🛡️|🗡️|🏹|🎪|🎨|🎭|🎬|🎯|💎|🔧|⚙️|🎲|🎰|🎮|🎯)'
+    
+    # Find potential split points
+    matches = list(re.finditer(section_pattern, text, re.MULTILINE))
+    
+    if not matches:
+        # No clear sections, split by paragraphs
+        paragraphs = text.split('\n\n')
+        current_section = ""
+        
+        for para in paragraphs:
+            if len(current_section) + len(para) + 2 > max_length:
+                if current_section:
+                    sections.append(current_section.strip())
+                current_section = para
+            else:
+                current_section += "\n\n" + para if current_section else para
+        
+        if current_section:
+            sections.append(current_section.strip())
+        
+        return sections if sections else [text]
+    
+    # Split by sections
+    current_section = text[:matches[0].start()].strip() if matches else ""
+    
+    for i, match in enumerate(matches):
+        section_start = match.start()
+        
+        # If we have accumulated text and adding this section would exceed limit
+        if current_section and len(current_section) + (section_start - (matches[i-1].end() if i > 0 else 0)) > max_length:
+            sections.append(current_section.strip())
+            current_section = ""
+        
+        # Get section end (next match or end of text)
+        section_end = matches[i+1].start() if i+1 < len(matches) else len(text)
+        section_text = text[section_start:section_end].strip()
+        
+        # If section itself is too long, split it further
+        if len(section_text) > max_length:
+            if current_section:
+                sections.append(current_section.strip())
+                current_section = ""
+            # Split this section by paragraphs
+            sub_sections = split_by_paragraphs(section_text, max_length)
+            sections.extend(sub_sections[:-1])
+            current_section = sub_sections[-1] if sub_sections else ""
+        else:
+            if current_section:
+                current_section += "\n\n" + section_text
+            else:
+                current_section = section_text
+    
+    if current_section:
+        sections.append(current_section.strip())
+    
+    return sections if sections else [text]
+
+def split_by_paragraphs(text: str, max_length: int) -> list[str]:
+    """Split text by paragraphs, respecting max_length"""
+    paragraphs = text.split('\n\n')
+    sections = []
+    current_section = ""
+    
+    for para in paragraphs:
+        if len(current_section) + len(para) + 2 > max_length:
+            if current_section:
+                sections.append(current_section.strip())
+            # If single paragraph is too long, truncate it
+            if len(para) > max_length:
+                sections.append(para[:max_length-3] + "...")
+                current_section = ""
+            else:
+                current_section = para
+        else:
+            current_section += "\n\n" + para if current_section else para
+    
+    if current_section:
+        sections.append(current_section.strip())
+    
+    return sections if sections else [text]
+
+async def fetch_champion_list() -> dict[str, str]:
+    """
+    Fetch champion list from Data Dragon and cache it.
+    Returns a dictionary mapping display names to internal names (UPPER_SNAKE_CASE).
+    
+    Uses stale-while-revalidate: returns cached data immediately if available,
+    and refreshes in the background if cache is expired.
+    
+    Returns:
+        Dictionary with champion display names as keys and internal names as values
+    """
+    global _champion_cache, _champion_cache_timestamp, _cache_refresh_task
+    
+    current_time = time.time()
+    cache_age = current_time - _champion_cache_timestamp if _champion_cache_timestamp > 0 else float('inf')
+    cache_is_valid = _champion_cache is not None and cache_age < CACHE_DURATION
+    
+    # If cache is valid, return it immediately
+    if cache_is_valid:
+        return _champion_cache
+    
+    # If cache exists but is expired, return stale cache immediately and refresh in background
+    if _champion_cache is not None:
+        # Start background refresh if not already in progress
+        if _cache_refresh_task is None or _cache_refresh_task.done():
+            _cache_refresh_task = asyncio.create_task(_refresh_champion_cache())
+        # Return stale cache immediately
+        return _champion_cache
+    
+    # No cache exists - fetch synchronously (first time or after restart)
+    return await _refresh_champion_cache()
+
+async def _refresh_champion_cache() -> dict[str, str]:
+    """
+    Internal function to refresh champion cache from Data Dragon.
+    Should be called in background for stale-while-revalidate pattern.
+    """
+    global _champion_cache, _champion_cache_timestamp
+    
+    try:
+        # Get latest version
+        async with aiohttp.ClientSession() as session:
+            async with session.get(DDragon_VERSION_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    print(f"Failed to fetch Data Dragon version: {response.status}")
+                    return _champion_cache or {}
+                versions = await response.json()
+                latest_version = versions[0] if versions else None
+                
+                if not latest_version:
+                    print("No version found in Data Dragon response")
+                    return _champion_cache or {}
+            
+            # Get champion data
+            champion_url = DDragon_CHAMPION_URL.format(version=latest_version)
+            async with session.get(champion_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    print(f"Failed to fetch champion data: {response.status}")
+                    return _champion_cache or {}
+                
+                champion_data = await response.json()
+                champions = champion_data.get("data", {})
+                
+                # Build champion mapping: display_name -> internal_name (UPPER_SNAKE_CASE)
+                champion_map = {}
+                for champ_key, champ_info in champions.items():
+                    display_name = champ_info.get("name", champ_key)
+                    # Get the internal ID (e.g., "Aatrox", "LeeSin", "MonkeyKing")
+                    internal_id = champ_info.get("id", champ_key)
+                    
+                    # Convert to UPPER_SNAKE_CASE format expected by OP.GG API
+                    # Insert underscores before capital letters (except the first), then uppercase
+                    # "LeeSin" -> "LEE_SIN", "MonkeyKing" -> "MONKEY_KING"
+                    # Add underscore before capital letters (except at start)
+                    snake_case = re.sub(r'(?<!^)(?=[A-Z])', '_', internal_id)
+                    internal_name = snake_case.upper()
+                    
+                    champion_map[display_name] = internal_name
+                
+                # Update cache
+                _champion_cache = champion_map
+                _champion_cache_timestamp = time.time()
+                print(f"Loaded {len(champion_map)} champions from Data Dragon (version {latest_version})")
+                return champion_map
+                
+    except asyncio.TimeoutError:
+        print("Timeout fetching champion data from Data Dragon")
+        # Return existing cache if available, otherwise empty dict
+        return _champion_cache if _champion_cache is not None else {}
+    except Exception as e:
+        print(f"Error fetching champion list from Data Dragon: {e}")
+        # Return existing cache if available, otherwise empty dict
+        return _champion_cache if _champion_cache is not None else {}
 
 def get_region_from_tagline(tagline: str) -> str | None:
     """
@@ -1230,6 +1713,40 @@ class Say(commands.Cog):
         # Rate limiting to prevent spam
         self.user_cooldowns = {}
         self.cooldown_duration = 15  # seconds between AI responses per user
+        # Pre-fetch champion list on cog load
+        asyncio.create_task(self._initialize_champion_cache())
+    
+    async def _initialize_champion_cache(self):
+        """Pre-fetch champion list when cog loads"""
+        await fetch_champion_list()
+    
+    async def champion_autocomplete(self, interaction: nextcord.Interaction, current: str):
+        """
+        Autocomplete callback for champion name options.
+        Filters champions based on user input.
+        """
+        champion_map = await fetch_champion_list()
+        
+        if not champion_map:
+            # Fallback: return empty list if we can't fetch champions
+            return []
+        
+        # Filter champions that match the current input (case-insensitive)
+        current_lower = current.lower()
+        matching_champions = [
+            name for name in champion_map.keys()
+            if current_lower in name.lower()
+        ]
+        
+        # Sort by relevance (exact matches first, then by position of match)
+        matching_champions.sort(key=lambda name: (
+            not name.lower().startswith(current_lower),  # Exact prefix matches first
+            name.lower().find(current_lower)  # Then by position of match
+        ))
+        
+        # Return up to 25 options (Discord's limit)
+        # nextcord send_autocomplete expects a list of strings
+        return matching_champions[:25]
 
     @nextcord.slash_command(name='say', description="Send a message as a character. Costs 200 Shmeckles to use.", guild_ids=[GUILD_ID])
     async def say(self, 
@@ -1431,16 +1948,34 @@ class Say(commands.Cog):
             # Format the analysis
             analysis = await format_summoner_analysis(mcp_result, summoner_name, tagline, limit)
             
-            # Create embed
-            embed = nextcord.Embed(
-                title=f"Summoner Analysis: {summoner_name}#{tagline}",
-                description=analysis,
-                color=nextcord.Color.gold()
-            )
-            embed.set_footer(text=f"Region: {region} • {limit} recent matches")
-            embed.timestamp = nextcord.utils.utcnow()
+            # Clean up numeric IDs (Rune IDs, Item IDs, etc.)
+            analysis = clean_numeric_ids(analysis)
             
-            await interaction.followup.send(embed=embed)
+            # Format tables for Discord
+            analysis = format_table_for_discord(analysis)
+            
+            # Split into sections if needed
+            sections = split_response_into_sections(analysis, max_length=4000)
+            
+            # Send multiple embeds if needed
+            for i, section in enumerate(sections):
+                # Truncate section if still too long (safety check)
+                section = truncate_embed_description(section, max_length=4096)
+                
+                # Create embed
+                title = f"Summoner Analysis: {summoner_name}#{tagline}"
+                if len(sections) > 1:
+                    title += f" ({i+1}/{len(sections)})"
+                
+                embed = nextcord.Embed(
+                    title=title,
+                    description=section,
+                    color=nextcord.Color.gold()
+                )
+                embed.set_footer(text=f"Region: {region} • {limit} recent matches")
+                embed.timestamp = nextcord.utils.utcnow()
+                
+                await interaction.followup.send(embed=embed)
             
         except Exception as e:
             print(f"Error in /opgg_summoner: {e}")
@@ -1455,11 +1990,13 @@ class Say(commands.Cog):
         interaction: nextcord.Interaction,
         my_champion: str = nextcord.SlashOption(
             name="my_champion",
-            description="Your champion name (e.g., AHRI, LEE_SIN)"
+            description="Your champion name",
+            autocomplete=True
         ),
         opponent_champion: str = nextcord.SlashOption(
             name="opponent_champion",
-            description="Opponent champion name (e.g., YASUO, ZED)"
+            description="Opponent champion name",
+            autocomplete=True
         ),
         position: str = nextcord.SlashOption(
             name="position",
@@ -1471,9 +2008,22 @@ class Say(commands.Cog):
         await interaction.response.defer()
         
         try:
-            # Convert champion names to UPPER_SNAKE_CASE
-            my_champ_upper = my_champion.upper().replace(" ", "_")
-            opponent_champ_upper = opponent_champion.upper().replace(" ", "_")
+            # Get champion mapping to convert display names to internal names
+            champion_map = await fetch_champion_list()
+            
+            # Convert champion names to UPPER_SNAKE_CASE (internal format)
+            # Use cached mapping if available, otherwise fallback to simple conversion
+            if champion_map and my_champion in champion_map:
+                my_champ_upper = champion_map[my_champion]
+            else:
+                # Fallback: convert to UPPER_SNAKE_CASE manually
+                my_champ_upper = my_champion.upper().replace(" ", "_")
+            
+            if champion_map and opponent_champion in champion_map:
+                opponent_champ_upper = champion_map[opponent_champion]
+            else:
+                # Fallback: convert to UPPER_SNAKE_CASE manually
+                opponent_champ_upper = opponent_champion.upper().replace(" ", "_")
             
             # Call MCP tool
             tool_args = {
@@ -1504,16 +2054,34 @@ class Say(commands.Cog):
             # Format the guide
             guide = await format_matchup_guide(mcp_result, my_champion, opponent_champion, position)
             
-            # Create embed
-            embed = nextcord.Embed(
-                title=f"Matchup Guide: {my_champion} vs {opponent_champion} ({position})",
-                description=guide,
-                color=nextcord.Color.blue()
-            )
-            embed.set_footer(text=f"Position: {position.title()}")
-            embed.timestamp = nextcord.utils.utcnow()
+            # Clean up numeric IDs (Rune IDs, Item IDs, etc.)
+            guide = clean_numeric_ids(guide)
             
-            await interaction.followup.send(embed=embed)
+            # Format tables for Discord
+            guide = format_table_for_discord(guide)
+            
+            # Split into sections if needed
+            sections = split_response_into_sections(guide, max_length=4000)
+            
+            # Send multiple embeds if needed
+            for i, section in enumerate(sections):
+                # Truncate section if still too long (safety check)
+                section = truncate_embed_description(section, max_length=4096)
+                
+                # Create embed
+                title = f"Matchup Guide: {my_champion} vs {opponent_champion} ({position})"
+                if len(sections) > 1:
+                    title += f" ({i+1}/{len(sections)})"
+                
+                embed = nextcord.Embed(
+                    title=title,
+                    description=section,
+                    color=nextcord.Color.blue()
+                )
+                embed.set_footer(text=f"Position: {position.title()}")
+                embed.timestamp = nextcord.utils.utcnow()
+                
+                await interaction.followup.send(embed=embed)
             
         except Exception as e:
             print(f"Error in /opgg_matchup: {e}")
@@ -1521,6 +2089,18 @@ class Say(commands.Cog):
                 f"❌ An error occurred while retrieving the matchup guide: {str(e)}",
                 ephemeral=True
             )
+    
+    @opgg_matchup.on_autocomplete("my_champion")
+    async def my_champion_autocomplete(self, interaction: nextcord.Interaction, current: str):
+        """Autocomplete for my_champion option"""
+        choices = await self.champion_autocomplete(interaction, current)
+        await interaction.response.send_autocomplete(choices)
+    
+    @opgg_matchup.on_autocomplete("opponent_champion")
+    async def opponent_champion_autocomplete(self, interaction: nextcord.Interaction, current: str):
+        """Autocomplete for opponent_champion option"""
+        choices = await self.champion_autocomplete(interaction, current)
+        await interaction.response.send_autocomplete(choices)
 
     @nextcord.slash_command(name='opgg_esports_schedule', description="View upcoming League of Legends esports matches", guild_ids=[GUILD_ID])
     async def opgg_esports_schedule(self, interaction: nextcord.Interaction):
@@ -1549,6 +2129,9 @@ class Say(commands.Cog):
             
             # Format the schedule
             schedule = await format_esports_schedule(mcp_result)
+            
+            # Truncate if too long for Discord embed
+            schedule = truncate_embed_description(schedule)
             
             # Create embed
             embed = nextcord.Embed(
@@ -1621,6 +2204,9 @@ class Say(commands.Cog):
             
             # Format the standings
             standings = await format_team_standings(mcp_result, league)
+            
+            # Truncate if too long for Discord embed
+            standings = truncate_embed_description(standings)
             
             # Create embed
             embed = nextcord.Embed(
@@ -1927,8 +2513,9 @@ Please respond to the user's reply in context of the previous conversation."""
                 # Check if response is an error message (starts with ❌)
                 if api_response_content.startswith("❌"):
                     # Create error embed for better visibility
+                    error_description = truncate_embed_description(api_response_content)
                     error_embed = nextcord.Embed(
-                        description=api_response_content,
+                        description=error_description,
                         color=nextcord.Color.red()
                     )
                     bot_user = self.bot.user
@@ -1947,34 +2534,32 @@ Please respond to the user's reply in context of the previous conversation."""
                         pass
                     return
 
-                # Create embed response
-                embed_description = f"{api_response_content}"
+                # Clean up numeric IDs (Rune IDs, Item IDs, etc.)
+                api_response_content = clean_numeric_ids(api_response_content)
                 
-                # Add context links based on trigger type
-                if is_reply_with_mention and referenced_message:
-                    embed_description += f"\n\n[Responding to this conversation]({message.reference.jump_url})"
-                elif is_reply_to_bot and referenced_message:
-                    embed_description += f"\n\n[In reply to this message]({message.reference.jump_url})"
-
+                # Format tables for Discord
+                api_response_content = format_table_for_discord(api_response_content)
+                
+                # Split into sections if needed
+                sections = split_response_into_sections(api_response_content, max_length=3800)
+                
                 # Choose embed color based on data source
                 embed_color = nextcord.Color.gold() if query_method == 'mcp' else nextcord.Color.blue()
-
-                embed = nextcord.Embed(
-                    description=embed_description,
-                    color=embed_color
-                )
-
-                # Set the bot as the author for these responses
+                
+                # Set up common embed properties
                 bot_user = self.bot.user
                 author_name = f"{bot_user.display_name} [OP.GG]" if query_method == 'mcp' else bot_user.display_name
-                embed.set_author(
-                    name=author_name, 
-                    icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
-                )
-                
-                # Add footer to indicate trigger method and data source
                 user_display_avatar_url = message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
                 data_source = "OP.GG MCP" if query_method == 'mcp' else "Web Search"
+                
+                # Build context link text
+                context_link = ""
+                if is_reply_with_mention and referenced_message:
+                    context_link = f"\n\n[Responding to this conversation]({message.reference.jump_url})"
+                elif is_reply_to_bot and referenced_message:
+                    context_link = f"\n\n[In reply to this message]({message.reference.jump_url})"
+                
+                # Build footer text
                 if is_reply_with_mention:
                     footer_text = f"Triggered by {message.author.display_name}'s mention in reply • {data_source}"
                 elif bot_mentioned:
@@ -1982,14 +2567,44 @@ Please respond to the user's reply in context of the previous conversation."""
                 else:
                     footer_text = f"Triggered by {message.author.display_name}'s reply • {data_source}"
                 
-                embed.set_footer(
-                    text=footer_text, 
-                    icon_url=user_display_avatar_url
-                )
-                embed.timestamp = nextcord.utils.utcnow()
-
-                # Send the response
-                await message.reply(embed=embed, mention_author=False)
+                # Send multiple embeds if needed
+                for i, section in enumerate(sections):
+                    embed_description = section
+                    
+                    # Add context link only to last embed
+                    if i == len(sections) - 1:
+                        embed_description += context_link
+                    
+                    # Truncate if still too long (safety check)
+                    embed_description = truncate_embed_description(embed_description, max_length=4096)
+                    
+                    embed = nextcord.Embed(
+                        description=embed_description,
+                        color=embed_color
+                    )
+                    
+                    embed.set_author(
+                        name=author_name, 
+                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                    )
+                    
+                    # Add page number to footer if multiple sections
+                    if len(sections) > 1:
+                        footer_text_with_page = f"{footer_text} • Page {i+1}/{len(sections)}"
+                    else:
+                        footer_text_with_page = footer_text
+                    
+                    embed.set_footer(
+                        text=footer_text_with_page, 
+                        icon_url=user_display_avatar_url
+                    )
+                    embed.timestamp = nextcord.utils.utcnow()
+                    
+                    # Send the response (reply only to first embed)
+                    if i == 0:
+                        await message.reply(embed=embed, mention_author=False)
+                    else:
+                        await message.channel.send(embed=embed)
                 print(f"Sent enhanced response to {trigger_type} in #{message.channel.name}")
 
             except nextcord.Forbidden:

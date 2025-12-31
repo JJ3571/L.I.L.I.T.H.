@@ -349,16 +349,6 @@ class CounterView(nextcord.ui.View):
         self.message: nextcord.Message = None
         self.counter_cog = counter_cog
 
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        """Check if the interaction is from the counter owner."""
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "This is not your counter!",
-                ephemeral=True
-            )
-            return False
-        return True
-
     async def _update_display(self, interaction: Interaction, new_count: int):
         """Update the counter display."""
         try:
@@ -576,16 +566,6 @@ class MultiCounterView(nextcord.ui.View):
                 "Failed to reset counters. Please try again.",
                 ephemeral=True
             )
-
-    async def interaction_check(self, interaction: Interaction) -> bool:
-        """Check if the interaction is from the counter owner."""
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "This is not your counter!",
-                ephemeral=True
-            )
-            return False
-        return True
 
     async def _update_display(self, interaction: Interaction, new_counts: list):
         """Update the multi-counter display."""
