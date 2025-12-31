@@ -348,16 +348,37 @@ class CounterView(nextcord.ui.View):
         self.owner_id = owner_id
         self.message: nextcord.Message = None
         self.counter_cog = counter_cog
+        # Whether others are allowed to increment this counter
+        self.allow_others = False
 
     async def interaction_check(self, interaction: Interaction) -> bool:
-        """Check if the interaction is from the counter owner."""
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "This is not your counter!",
-                ephemeral=True
-            )
-            return False
-        return True
+        """Check if the interaction is allowed.
+
+        Owner always allowed. If `allow_others` is True, allow other users to
+        perform the increment action only. Other actions (reset, settings)
+        remain owner-only.
+        """
+        # Owner always allowed
+        if interaction.user.id == self.owner_id:
+            return True
+
+        # Determine which component was used (safe access)
+        custom_id = None
+        try:
+            custom_id = interaction.data.get('custom_id')
+        except Exception:
+            custom_id = None
+
+        # If others are allowed, permit only the increment button
+        if self.allow_others and custom_id == "increment_counter":
+            return True
+
+        # Otherwise deny
+        await interaction.response.send_message(
+            "This is not your counter!",
+            ephemeral=True
+        )
+        return False
 
     async def _update_display(self, interaction: Interaction, new_count: int):
         """Update the counter display."""
@@ -460,6 +481,8 @@ class MultiCounterView(nextcord.ui.View):
         self.message: nextcord.Message = None
         self.counter_cog = counter_cog
         self.decrement_mode = False
+        # Whether others are allowed to use the option buttons
+        self.allow_others = False
         
         # Add counter buttons dynamically
         self._add_counter_buttons()
@@ -473,6 +496,15 @@ class MultiCounterView(nextcord.ui.View):
         )
         settings_button.callback = self.settings_callback
         self.add_item(settings_button)
+        # Add allow-others toggle button (owner-only control)
+        allow_button = nextcord.ui.Button(
+            label="🔒 Owner Only",
+            style=nextcord.ButtonStyle.secondary,
+            custom_id="allow_others",
+            row=1
+        )
+        allow_button.callback = self.allow_others_callback
+        self.add_item(allow_button)
 
     def _add_counter_buttons(self):
         """Add buttons for each counter option."""
@@ -544,6 +576,13 @@ class MultiCounterView(nextcord.ui.View):
     async def settings_callback(self, interaction: Interaction):
         """Toggle between increment and decrement mode."""
         try:
+            # Only owner can change settings
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can change settings.",
+                    ephemeral=True
+                )
+                return
             self.decrement_mode = not self.decrement_mode
             self._add_counter_buttons()  # Recreate buttons with new style
             
@@ -562,6 +601,13 @@ class MultiCounterView(nextcord.ui.View):
     async def reset_all_callback(self, interaction: Interaction):
         """Reset all counters to zero."""
         try:
+            # Only owner may reset all
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can reset all counters.",
+                    ephemeral=True
+                )
+                return
             counts = [0] * len(self.labels)
             await self.counter_cog.update_multi_counter(
                 self.owner_id,
@@ -578,14 +624,69 @@ class MultiCounterView(nextcord.ui.View):
             )
 
     async def interaction_check(self, interaction: Interaction) -> bool:
-        """Check if the interaction is from the counter owner."""
-        if interaction.user.id != self.owner_id:
+        """Check if the interaction is allowed.
+
+        Owner always allowed. If `allow_others` is True, allow other users to
+        press the option buttons (custom_id starting with 'counter_'). Other
+        actions (settings, reset_all) remain owner-only.
+        """
+        # Owner always allowed
+        if interaction.user.id == self.owner_id:
+            return True
+
+        # Determine which component was used
+        custom_id = None
+        try:
+            custom_id = interaction.data.get('custom_id')
+        except Exception:
+            custom_id = None
+
+        # If others are allowed, permit only option buttons
+        if self.allow_others and custom_id and custom_id.startswith('counter_'):
+            return True
+
+        await interaction.response.send_message(
+            "This is not your counter!",
+            ephemeral=True
+        )
+        return False
+
+    async def allow_others_callback(self, interaction: Interaction):
+        """Toggle whether others can use the option buttons.
+
+        Only the owner may toggle this. The button's label/style is updated
+        to reflect the current state.
+        """
+        try:
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can change this setting.",
+                    ephemeral=True
+                )
+                return
+
+            self.allow_others = not self.allow_others
+            # Update button label/style to reflect state
+            allow_item = next((it for it in self.children if hasattr(it, 'custom_id') and it.custom_id == 'allow_others'), None)
+            if allow_item:
+                if self.allow_others:
+                    allow_item.label = "🔓 Allow Others"
+                    allow_item.style = nextcord.ButtonStyle.success
+                else:
+                    allow_item.label = "🔒 Owner Only"
+                    allow_item.style = nextcord.ButtonStyle.secondary
+
+            await interaction.response.defer()
+            await interaction.followup.edit_message(
+                message_id=self.message.id,
+                view=self
+            )
+        except Exception as e:
+            logger.error(f"Error toggling allow_others: {e}")
             await interaction.response.send_message(
-                "This is not your counter!",
+                "Failed to change setting. Please try again.",
                 ephemeral=True
             )
-            return False
-        return True
 
     async def _update_display(self, interaction: Interaction, new_counts: list):
         """Update the multi-counter display."""
