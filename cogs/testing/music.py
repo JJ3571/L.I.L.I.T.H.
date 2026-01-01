@@ -719,7 +719,7 @@ class MusicCog(commands.Cog):
         """Create a Song object from yt-dlp info dictionary"""
         try:
             url = info.get('url')
-            if not url and 'requested_formats' in info:
+            if not url and 'requested_formats' in info and info['requested_formats']:
                 url = info['requested_formats'][0].get('url')
             if not url:
                 url = info.get('webpage_url') or info.get('id')
@@ -736,7 +736,7 @@ class MusicCog(commands.Cog):
             print(f"Error creating song from info: {e}")
             return None
     
-    @nextcord.slash_command(name="music", description="Music player commands", guild_ids=None)
+    @nextcord.slash_command(name="music", description="Music player commands", guild_ids=[GUILD_ID])
     async def music(self, interaction: nextcord.Interaction):
         pass
     
@@ -788,7 +788,7 @@ class MusicCog(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Error: {str(e)}")
     
-    @nextcord.slash_command(name="jazz", description="Start jazz mode - plays random jazz tracks from local library", guild_ids=None)
+    @nextcord.slash_command(name="jazz", description="Start jazz mode - plays random jazz tracks from local library", guild_ids=[GUILD_ID])
     async def jazz(self, interaction: nextcord.Interaction):
         """Start jazz mode"""
         await interaction.response.defer()
@@ -1105,5 +1105,5 @@ class PercentageModal(nextcord.ui.Modal):
 
 
 async def setup(bot):
-    await bot.add_cog(MusicCog(bot))
+    bot.add_cog(MusicCog(bot))
     print("MusicCog has been added to the bot.")

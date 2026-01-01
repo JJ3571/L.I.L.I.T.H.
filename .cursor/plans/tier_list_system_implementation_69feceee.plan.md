@@ -373,7 +373,3 @@ Input: "Pepperoni; Mushrooms; Olives; Pineapple; Sausage"
 - [ ] Vote changing/revoting
 - [ ] Finish button (creator only)
 - [ ] Image fetching and storage
-- [ ] Composite image generation
-- [ ] View persistence after bot restart
-- [ ] Expired tier list auto-finish
-- [ ] Modal input parsing (comma, period, semicolon)
