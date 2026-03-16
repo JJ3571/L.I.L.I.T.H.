@@ -6,7 +6,7 @@ import random
 import pytz
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
+from server_configs.config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
 from server_configs.database_config import DATABASE_PATHS
 
 

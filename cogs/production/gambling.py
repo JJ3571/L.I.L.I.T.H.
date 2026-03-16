@@ -4,7 +4,7 @@ import random
 import asyncio
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import heads_emoji_id, tails_emoji_id
+from server_configs.config import heads_emoji_id, tails_emoji_id
 
 class Gambling(commands.Cog):
     def __init__(self, bot: commands.Bot):

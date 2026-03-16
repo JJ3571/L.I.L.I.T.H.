@@ -3,7 +3,7 @@ import nextcord
 from nextcord.ext import commands
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import OMDB_API_KEY, OMDB_API_URL 
+from server_configs.config import OMDB_API_KEY, OMDB_API_URL
 
 class MovieCog(commands.Cog):
     def __init__(self, bot):

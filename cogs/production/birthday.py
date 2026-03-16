@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytz
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
+from server_configs.config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
 from server_configs.database_config import DATABASE_PATHS
 
 class Birthday(commands.Cog):

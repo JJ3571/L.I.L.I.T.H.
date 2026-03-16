@@ -1,7 +1,7 @@
 import nextcord
 from nextcord.ext import commands
 
-from server_configs.cogs_config import admin_user_ids, birthday_channel_id, birthday_role_id
+from server_configs.config import admin_user_ids, birthday_channel_id, birthday_role_id
 
 class Role_Debug(commands.Cog):
     def __init__(self, bot):

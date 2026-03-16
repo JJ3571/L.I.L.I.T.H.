@@ -14,7 +14,7 @@ from google import genai
 from google.genai import types
 
 from server_configs.config import GUILD_ID, GEMINI_API_KEY
-from server_configs.cogs_config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
+from server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
 
 COST_TO_SAY = 200

@@ -6,7 +6,7 @@ import aiosqlite
 from asyncio import Semaphore
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import seen_category_id, bot_spam_id, admin_user_ids
+from server_configs.config import seen_category_id, bot_spam_id, admin_user_ids
 from cogs.production.economy import Economy
 from server_configs.database_config import DATABASE_PATHS
 

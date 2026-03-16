@@ -5,7 +5,7 @@ import asyncio
 from asyncio import Semaphore
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import watch_party_channel_id, seen_category_id, hidden_category_id
+from server_configs.config import watch_party_channel_id, seen_category_id, hidden_category_id
 
 WATCH_PARTY_CHECK_INTERVAL = 5  # In minutes
 WATCH_PARTY_EVENT_TIME = datetime.time(hour=18, minute=15)  # 6:15 PM PST

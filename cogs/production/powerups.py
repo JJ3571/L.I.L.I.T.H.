@@ -534,7 +534,7 @@ class PowerupCog(commands.Cog):
         
         # Get bot spam channel
         try:
-            from server_configs.cogs_config import bot_spam_id
+            from server_configs.config import bot_spam_id
             bot_spam_channel = self.bot.get_channel(bot_spam_id)
             if not bot_spam_channel:
                 return
@@ -786,7 +786,7 @@ class PurchaseButton(nextcord.ui.Button):
                         
                         # Send to bot spam channel if available
                         try:
-                            from server_configs.cogs_config import bot_spam_id
+                            from server_configs.config import bot_spam_id
                             bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
                             if bot_spam_channel:
                                 await bot_spam_channel.send(embed=embed)
@@ -1098,7 +1098,7 @@ class ArtRequestModal(nextcord.ui.Modal):
         
         # Send notification to bot spam channel
         try:
-            from server_configs.cogs_config import bot_spam_id
+            from server_configs.config import bot_spam_id
             bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
             if bot_spam_channel:
                 artist_user = interaction.guild.get_member(self.powerup_info["target_user_id"])

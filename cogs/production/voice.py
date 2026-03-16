@@ -5,7 +5,7 @@ import datetime, time, re, asyncio
 import unicodedata
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
+from server_configs.config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
 
 class VoiceCog(commands.Cog):
     def __init__(self, bot):

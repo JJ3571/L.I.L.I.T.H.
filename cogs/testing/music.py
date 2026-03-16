@@ -18,7 +18,7 @@ from typing import Optional, List, Dict, Set
 import re
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import admin_user_ids
+from server_configs.config import admin_user_ids
 from server_configs.database_config import DATABASE_PATHS
 
 DB_PATH = DATABASE_PATHS["music"]

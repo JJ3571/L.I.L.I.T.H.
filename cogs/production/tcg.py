@@ -4,7 +4,7 @@ import re
 import requests
 
 from server_configs.config import GUILD_ID
-from server_configs.cogs_config import MANA_SYMBOLS
+from server_configs.config import MANA_SYMBOLS
 class TCG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot

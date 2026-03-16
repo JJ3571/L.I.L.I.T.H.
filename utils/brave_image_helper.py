@@ -8,7 +8,7 @@ from typing import Optional
 import aiohttp
 from PIL import Image
 
-from server_configs.cogs_config import BRAVE_SEARCH_API_KEY
+from server_configs.config import BRAVE_SEARCH_API_KEY
 
 logger = logging.getLogger(__name__)
 
