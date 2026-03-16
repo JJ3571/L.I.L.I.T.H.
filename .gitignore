@@ -1,6 +1,5 @@
 # Personally added
 
-config.py
 cogs_config.py
 economy.db
 waterboard.db
@@ -9,6 +8,13 @@ birthday.db
 request.db
 wager.db
 *.db
+databases/*.db
+
+.cursor/
+.cursor
+.vscode/
+.vscode
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -171,8 +177,6 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-server_configs/config_template.py
-server_configs/cogs_config_template.py
-/server_configs
+
 
 /local_music
