@@ -3,24 +3,24 @@ nextcord==2.6.0  # Discord API wrapper - compatible with Python 3.8-3.11 (3.x re
 aiosqlite==0.21.0  # Async SQLite database operations
 
 # HTTP/API Libraries
-aiohttp==3.11.11
-requests==2.32.3
+aiohttp==3.11.11  # Async HTTP client for API calls
+requests==2.32.3  # Synchronous HTTP library
 
 # Timezone/Date Libraries
-pytz==2024.2
+pytz==2024.2  # Timezone calculations
 
 # Webhook Support
-discord-webhook==1.4.1
+discord-webhook==1.4.1  # Discord webhook functionality
 
 # Google AI/Gemini Integration
-google-genai==1.10.0
+google-genai==1.10.0  # Google AI/Gemini SDK
 
 # Image Processing
-Pillow==11.1.0
+Pillow==11.1.0  # Image manipulation (PIL)
 
 # Music/Audio Libraries
 yt-dlp==2024.8.6  # Audio extraction from YouTube, SoundCloud, etc.
-PyNaCl==1.5.0  # Voice support for Discord
+PyNaCl==1.5.0  # Voice support for Discord (encryption library)
 
 # Note: The following are built-in Python modules and don't need to be installed:
 # - asyncio (built-in since Python 3.4)
@@ -35,6 +35,13 @@ PyNaCl==1.5.0  # Voice support for Discord
 # - math (built-in)
 # - unicodedata (built-in)
 # - typing (built-in since Python 3.5)
+# - colorsys (built-in)
+# - io (built-in)
+# - json (built-in)
+# - html (built-in)
+# - difflib (built-in)
+# - dataclasses (built-in since Python 3.7)
+# - pathlib (built-in since Python 3.4)
 
 # Optional: Development/Environment Libraries (uncomment if needed)
 # python-dotenv  # For .env files with environment variables
