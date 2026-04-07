@@ -194,6 +194,7 @@ afk_channel_id = _get_int("AFK_CHANNEL_ID", 0)
 # Category IDs
 seen_category_id = _get_int("SEEN_CATEGORY_ID", 0)
 hidden_category_id = _get_int("HIDDEN_CATEGORY_ID", 0)
+waterboard_category_id = _get_int("WATERBOARD_CATEGORY_ID", 0)
 
 # API keys
 OMDB_API_KEY = _get_str("OMDB_API_KEY", "")
