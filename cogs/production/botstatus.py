@@ -21,7 +21,7 @@ class BotStatusCog(commands.Cog):
         self.status_cycle.cancel()
         print("BotStatusCog has been unloaded.")
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=90)
     async def status_cycle(self):
         self.current_status = next(self.status_list)
         await self.bot.change_presence(activity=nextcord.Game(name=self.current_status))
