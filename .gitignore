@@ -12,8 +12,8 @@ databases/*.db
 
 .cursor/
 .cursor
-.vscode/
-.vscode
+.vscode/*
+.vscode/tasks.json
 
 
 # Byte-compiled / optimized / DLL files

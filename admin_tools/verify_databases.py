@@ -13,7 +13,7 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server_configs.database_config import DATABASE_PATHS
+from main_bot.server_configs.database_config import DATABASE_PATHS
 
 class DatabaseVerifier:
     def __init__(self):
