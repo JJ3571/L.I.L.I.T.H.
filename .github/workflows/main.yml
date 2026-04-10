@@ -34,7 +34,7 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    # JOB-LEVEL IF: We cannot check secrets here. 
+    # JOB-LEVEL IF: We cannot check secrets here.
     # Instead, we check if the event is a 'push' to 'main'.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
@@ -42,11 +42,15 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: root
+          username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ vars.SSH_PORT || 22 }}
+          known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+          script_stop: true
           script: |
+            set -euo pipefail
             cd /home/discord_bot_v2
             sudo -u discord_bot git fetch origin
             sudo -u discord_bot git reset --hard origin/main
-            sudo -i -u discord_bot bash -c "cd /home/discord_bot_v2 && /home/discord_bot/.local/bin/uv sync --no-dev"
+            sudo -i -u discord_bot bash -c 'cd /home/discord_bot_v2 && /home/discord_bot/.local/bin/uv sync --no-dev'
             systemctl restart discord_bot_v2
