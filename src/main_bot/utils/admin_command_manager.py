@@ -1,17 +1,25 @@
 import json
 import os
 import logging
+from pathlib import Path
 from typing import Dict, Set, Optional
+
 from nextcord.ext import commands
 import nextcord
 
+from main_bot.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
+
+_DEFAULT_ADMIN_COMMANDS_PATH = PROJECT_ROOT / "server_configs" / "admin_commands.json"
+
 
 class AdminCommandManager:
     """Manages the visibility and availability of admin commands"""
-    
-    def __init__(self, config_path: str = "server_configs/admin_commands.json"):
-        self.config_path = config_path
+
+    def __init__(self, config_path: Optional[str | Path] = None):
+        # Anchor to repo root so first-run creation does not depend on process cwd (uv run, systemd, etc.).
+        self.config_path = str(_DEFAULT_ADMIN_COMMANDS_PATH if config_path is None else config_path)
         self.enabled_commands: Dict[str, Set[str]] = {}  # cog_name -> set of command names
         self.load_config()
     

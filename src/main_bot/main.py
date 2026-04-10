@@ -1,5 +1,18 @@
 """Discord bot: intents, bot instance, cog loading, and run()."""
 
+### -------------------------------------------
+# nextcord.health_check imports pkg_resources; 
+# setuptools emits UserWarning until nextcord migrates.
+# dependency version <81 is already pinned in pyproject.toml 
+
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API",
+    category=UserWarning,
+)
+### -------------------------------------------
+
 import logging
 import os
 from pathlib import Path
