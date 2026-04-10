@@ -44,8 +44,8 @@ class DependencyChecker:
         """Check if Python version is compatible"""
         print(f"🐍 Python Version: {sys.version}")
         
-        min_version = (3, 8)
-        recommended_version = (3, 9)
+        min_version = (3, 10)
+        recommended_version = (3, 11)
         
         if self.python_version < min_version:
             self.log_issue('ERROR', 'Python', f"Python {min_version[0]}.{min_version[1]}+ required, but {self.python_version[0]}.{self.python_version[1]} found")
@@ -99,7 +99,85 @@ class DependencyChecker:
             self.log_issue('ERROR', 'Requirements', f"Error reading requirements file: {e}")
         
         return requirements
-    
+
+    def _extract_dependencies_lines_from_pyproject(self, text: str):
+        """Parse [project] dependencies = [...] without requiring tomllib (Python 3.10)."""
+        import re
+
+        m = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.DOTALL)
+        if not m:
+            return []
+        block = m.group(1)
+        lines = []
+        for raw in block.splitlines():
+            line = raw.strip().rstrip(",").strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith('"') and line.endswith('"'):
+                lines.append(line[1:-1])
+            elif line.startswith("'") and line.endswith("'"):
+                lines.append(line[1:-1])
+        return lines
+
+    def parse_pyproject_dependencies(self):
+        """Read dependency pins from ``pyproject.toml`` at repo root."""
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(repo_root, "pyproject.toml")
+        if not os.path.exists(path):
+            self.log_issue("WARNING", "pyproject.toml", f"Not found: {path}")
+            return []
+        try:
+            text = open(path, encoding="utf-8").read()
+            if sys.version_info >= (3, 11):
+                import tomllib
+
+                data = tomllib.loads(text)
+                lines = data.get("project", {}).get("dependencies", [])
+            else:
+                lines = self._extract_dependencies_lines_from_pyproject(text)
+        except Exception as e:
+            self.log_issue("ERROR", "pyproject.toml", f"Could not parse: {e}")
+            return []
+        try:
+            from packaging.requirements import Requirement
+        except ImportError:
+            Requirement = None
+        requirements = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if ";" in line:
+                line = line.split(";", 1)[0].strip()
+            if not Requirement:
+                if "==" in line:
+                    name, ver = line.split("==", 1)
+                    requirements.append(
+                        {"name": name.strip(), "version": ver.strip(), "operator": "=="}
+                    )
+                elif ">=" in line:
+                    name, ver = line.split(">=", 1)
+                    requirements.append(
+                        {"name": name.strip(), "version": ver.strip(), "operator": ">="}
+                    )
+                else:
+                    requirements.append({"name": line, "version": None, "operator": None})
+                continue
+            try:
+                req = Requirement(line)
+            except Exception:
+                continue
+            name = req.name
+            ver, op = None, None
+            for spec in req.specifier:
+                op, ver = spec.operator, spec.version
+                break
+            if ver is None:
+                requirements.append({"name": name, "version": None, "operator": None})
+            else:
+                requirements.append({"name": name, "version": ver, "operator": op})
+        return requirements
+
     def check_package_installation(self, package_name: str, required_version: str = None, operator: str = None):
         """Check if a package is installed and meets version requirements"""
         self.packages_checked += 1
@@ -121,6 +199,16 @@ class DependencyChecker:
             elif package_name.lower() == 'pillow':
                 import PIL
                 installed_version = PIL.__version__
+            elif package_name.lower() == 'pynacl':
+                import nacl
+                installed_version = nacl.__version__
+            elif package_name.lower() == 'audioop-lts':
+                import audioop
+                try:
+                    from importlib.metadata import version as dist_version
+                    installed_version = dist_version('audioop-lts')
+                except Exception:
+                    installed_version = getattr(audioop, '__version__', '0')
             else:
                 # Generic import attempt
                 module = importlib.import_module(package_name.replace('-', '_'))
@@ -246,22 +334,21 @@ class DependencyChecker:
         missing_packages = [i for i in self.issues_found if 'not installed' in i['message']]
         if missing_packages:
             print("To install missing packages:")
+            print("  uv sync")
             for issue in missing_packages:
-                print(f"  pip install {issue['package']}")
+                print(f"  # or: uv add {issue['package']}")
             print()
         
         version_issues = [i for i in self.issues_found if 'version' in i['message'].lower()]
         if version_issues:
             print("To fix version issues:")
-            for issue in version_issues:
-                print(f"  pip install --upgrade {issue['package']}")
+            print("  uv lock --upgrade-package <name>")
+            print("  uv sync")
             print()
         
         if any('virtual environment' in i['message'] for i in self.issues_found):
-            print("To create a virtual environment:")
-            print("  python -m venv .venv")
-            print("  source .venv/bin/activate  # On Linux/Mac")
-            print("  .venv\\Scripts\\activate     # On Windows")
+            print("To use the project virtual environment:")
+            print("  uv sync")
             print()
     
     def run_full_check(self):
@@ -278,18 +365,17 @@ class DependencyChecker:
         # Check critical imports
         self.check_critical_imports()
         
-        # Check requirements.txt
-        print("📋 Checking requirements.txt...")
-        requirements = self.parse_requirements_file('requirements.txt')
+        # Check pyproject.toml dependencies
+        print("📋 Checking pyproject.toml dependencies...")
+        requirements = self.parse_pyproject_dependencies()
         
         if requirements:
             for req in requirements:
                 self.check_package_installation(req['name'], req['version'], req['operator'])
         else:
-            print("No requirements.txt found, checking known dependencies...")
-            # Fallback to known dependencies
+            print("No dependencies parsed from pyproject.toml, checking known dependencies...")
             known_deps = [
-                {'name': 'nextcord', 'version': '3.1.1', 'operator': '=='},
+                {'name': 'nextcord', 'version': '2.6.0', 'operator': '=='},
                 {'name': 'aiosqlite', 'version': '0.21.0', 'operator': '=='},
                 {'name': 'aiohttp', 'version': '3.11.11', 'operator': '=='},
                 {'name': 'requests', 'version': '2.32.3', 'operator': '=='},

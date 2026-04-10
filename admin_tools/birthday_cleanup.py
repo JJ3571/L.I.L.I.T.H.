@@ -12,7 +12,7 @@ import sys
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server_configs.database_config import DATABASE_PATHS
+from main_bot.server_configs.database_config import DATABASE_PATHS
 
 async def cleanup_birthday_database():
     """Clean up invalid date entries in birthday database"""

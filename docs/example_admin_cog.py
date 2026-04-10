@@ -1,8 +1,8 @@
 import nextcord
 from nextcord.ext import commands
 from nextcord import slash_command, SlashOption
-from utils.admin_command_manager import admin_command_manager
-from server_configs.config import GUILD_ID
+from main_bot.utils.admin_command_manager import admin_command_manager
+from main_bot.server_configs.config import GUILD_ID
 
 def conditional_slash_command(*args, **kwargs):
     """Decorator that conditionally registers slash commands based on admin settings"""

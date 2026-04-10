@@ -2,7 +2,7 @@ import nextcord
 from nextcord.ext import commands
 import json
 import aiohttp
-from server_configs.config import GUILD_ID
+from main_bot.server_configs.config import GUILD_ID
 
 # OP.GG MCP Server endpoint
 OPGG_MCP_ENDPOINT = "https://mcp-api.op.gg/mcp"

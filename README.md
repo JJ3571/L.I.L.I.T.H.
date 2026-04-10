@@ -1,9 +1,19 @@
-# Discord Bot Sandbox - Command Reference
+# discord_bot - Command Reference
 
-Welcome to the Discord Bot Sandbox! This bot provides a comprehensive set of features including economy, gaming, utilities, and entertainment commands. Below is a complete reference of all available slash commands.
+HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a complete reference of all available slash commands.
+
+**Run locally (after [uv](https://docs.astral.sh/uv/) is installed):** from the repo root, `uv sync` then `uv run python -m main_bot` or `uv run bot`. Use Python **3.10–3.13** (see `pyproject.toml`; Nextcord 2.6 is not compatible with 3.14 yet). With [Doppler](https://www.doppler.com/), use `doppler run -- uv run python -m main_bot`. A simple Cron job can be setup to keep this bot running on a vps (with restart failure & scheduled daily bot restarts).
+
+#### Secrets & Env Variables
+This bot is intended to be used with a single server/guild. All IDs, channels, roles, etc. are hardcoded as env variables. 
+
+(*If you're not using Doppler, there is an .env template in /src/main_bot/server_configs that you will need to populate with secrets. This will not be loaded automatically, and will require an edit in main.py or similar .env injection!*)
+
+
 
 ## 📋 Table of Contents
 
+- [📁 Project layout](#project-layout)
 - [🎮 Entertainment & Games](#-entertainment--games)
 - [💰 Economy System](#-economy-system)
 - [🏆 Gambling & Betting](#-gambling--betting)
@@ -12,6 +22,42 @@ Welcome to the Discord Bot Sandbox! This bot provides a comprehensive set of fea
 - [📊 Information](#-information)
 - [⚙️ Administration](#️-administration)
 - [🧪 Testing Commands](#-testing-commands)
+
+---
+
+## 📁 Project layout
+
+Overview of how the repository is organized. Paths marked *optional* or *local* may be missing on a fresh clone or are excluded from version control (see [.gitignore](.gitignore)).
+
+```text
+discord_bot/                    # clone URL may still show Discord-Bot-Sandbox until renamed
+├── pyproject.toml              # Dependencies (uv); lockfile: uv.lock
+├── main.py                     # Thin entrypoint → main_bot.main.run()
+├── opgg_mcp_test.py            # Local MCP / tooling experiment
+├── README.md
+├── admin_tools/                # One-off maintenance & verification scripts
+│   ├── README.md
+│   ├── birthday_cleanup.py
+│   ├── check_dependencies.py
+│   ├── db_helper.py
+│   ├── file_renamer.py
+│   └── verify_databases.py
+├── databases/                  # *local* SQLite databases (*.db gitignored)
+├── docs/                       # Guides, env key notes, example snippets
+├── scripts/                    # Optional helpers (e.g. run_bot.sh)
+├── src/
+│   └── main_bot/               # Installable package (uv run python -m main_bot)
+│       ├── cogs/
+│       │   ├── archived/
+│       │   ├── debugging/
+│       │   ├── production/
+│       │   └── testing/
+│       ├── server_configs/
+│       └── utils/
+└── local_music/                # *optional* bundled audio (gitignored)
+```
+
+**Not shown (typical machine-local):** `.venv/` or other virtualenvs, `.env` / editor env files, `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and audio under `local_music/` as needed when running the bot.
 
 ---
 
@@ -242,6 +288,7 @@ List all active bug reports.
 ---
 
 ## 💪 Powerups System
+Powerups are hardcoded functions & features that users can buy! Currently, they're limited to cosmetic name color changes (through a discord role) or other cog features (such as a defense against /waterboard).
 
 ### `/powerups purchase`
 Browse and purchase powerups from the shop using coins.
@@ -308,12 +355,13 @@ Coins can be spent on:
 
 ## 🆘 Support
 
-If you encounter any issues or have suggestions:
+There are built in /bug and /feature commands that allow server/guild users to make suggestions or flag potential bugs. 
 1. Use `/bug report` for technical problems
 2. Use `/feature request` for new feature ideas
 3. Contact server administrators for urgent matters
 
+* If you have bugs/suggestions for this main branch, please add them to the Github form!*
 ---
 
-*Last updated: September 1, 2025*
-*Bot Version: Discord-Bot-Sandbox v2.0*
+*README last updated: April 2026*
+*Project: discord_bot (package `main_bot`, UV-managed)*

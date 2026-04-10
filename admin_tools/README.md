@@ -121,7 +121,7 @@ Utility for batch file operations.
 
 The tools automatically detect your Python environment but work best when:
 - Running in a virtual environment
-- All dependencies from `requirements.txt` are installed
+- Dependencies are installed (`uv sync` from the repo root; see `pyproject.toml`)
 - Database files are accessible and not corrupted
 
 ### Exit Codes
