@@ -57,7 +57,7 @@ bot = commands.Bot(
 @bot.event
 async def on_ready():
     try:
-        await load_extensions("testing") 
+        await load_extensions("production") 
         await bot.sync_application_commands(guild_id=GUILD_ID)
         print("Bot is ready and running.")
     except nextcord.HTTPException as e:
