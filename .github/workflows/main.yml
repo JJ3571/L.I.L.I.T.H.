@@ -6,75 +6,47 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Map the secret to an ENV variable here so the steps can see it
     env:
-      # These placeholders prevent your Python 'config.py' from crashing 
-      # during imports if it looks for these variables.
-      ENVIRONMENT: development
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
       DISCORD_BOT_TOKEN: ci-placeholder-token
-      GUILD_ID: "0"
-      APPLICATION_ID: "0"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true # Speeds up future runs
 
-      - name: Set up Python
-        run: uv python install
-
-      - name: Sync dependencies (including dev)
+      - name: Sync dependencies
         run: uv sync --group dev
 
       - name: Install Doppler CLI
-        uses: dopplerhq/cli-action@v1
+        # Now we check 'env' instead of 'secrets'
+        if: env.DOPPLER_TOKEN != ''
+        run: curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh | sudo sh
 
       - name: Run tests
-        # Falls back to standard pytest if DOPPLER_TOKEN isn't provided (e.g. on a PR from a fork)
-        run: |
-          if [ -n "${{ secrets.DOPPLER_TOKEN }}" ]; then
-            doppler run -- uv run pytest
-          else
-            uv run pytest
-          fi
-        env:
-          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        if: env.DOPPLER_TOKEN != ''
+        run: doppler run -- uv run pytest
 
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    # Only deploy on pushes to main and if all required secrets are present
-    if: |
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
-      secrets.SSH_PRIVATE_KEY != '' &&
-      secrets.SSH_HOST != ''
+    # JOB-LEVEL IF: We cannot check secrets here. 
+    # Instead, we check if the event is a 'push' to 'main'.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Deploy to DigitalOcean
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER || 'root' }}
+          username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true # Stops the script immediately if any command fails
           script: |
-            # 1. Setup paths and Git safety
-            git config --global --add safe.directory /home/discord_bot_v2
             cd /home/discord_bot_v2
-            
-            # 2. Update code as the bot user
             sudo -u discord_bot git fetch origin
             sudo -u discord_bot git reset --hard origin/main
-            
-            # 3. Sync dependencies as the bot user (Using the path we verified)
             sudo -i -u discord_bot bash -c "cd /home/discord_bot_v2 && /home/discord_bot/.local/bin/uv sync --no-dev"
-            
-            # 4. Restart the service
             systemctl restart discord_bot_v2
