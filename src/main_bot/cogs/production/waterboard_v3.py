@@ -970,4 +970,4 @@ async def setup(bot):
         await cog.create_tables()
         cog._tables_created = True
     bot.add_cog(cog)
-    print("WaterboardCog3 has been added.")
+    print("WaterboardCog_v3 has been added.")
