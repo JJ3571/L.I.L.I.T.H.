@@ -11,7 +11,11 @@ from main_bot.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_ADMIN_COMMANDS_PATH = PROJECT_ROOT / "server_configs" / "admin_commands.json"
+# Store next to `main_bot.server_configs` (package dir), not repo-root `server_configs/`.
+_MAIN_BOT_DIR = Path(__file__).resolve().parents[1]
+_DEFAULT_ADMIN_COMMANDS_PATH = _MAIN_BOT_DIR / "server_configs" / "admin_commands.json"
+# Older builds wrote here on first run; load and re-save to the canonical path once.
+_LEGACY_ADMIN_COMMANDS_PATH = PROJECT_ROOT / "server_configs" / "admin_commands.json"
 
 
 class AdminCommandManager:
@@ -26,8 +30,21 @@ class AdminCommandManager:
     def load_config(self):
         """Load admin command configuration from file"""
         try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
+            load_path = self.config_path
+            if not os.path.exists(load_path):
+                legacy = str(_LEGACY_ADMIN_COMMANDS_PATH)
+                if (
+                    load_path == str(_DEFAULT_ADMIN_COMMANDS_PATH)
+                    and os.path.exists(legacy)
+                ):
+                    load_path = legacy
+                    logger.info(
+                        "Migrating admin_commands.json from repo-root server_configs/ "
+                        "to main_bot/server_configs/"
+                    )
+
+            if os.path.exists(load_path):
+                with open(load_path, 'r') as f:
                     data = json.load(f)
                     # Convert lists back to sets
                     self.enabled_commands = {
@@ -35,6 +52,8 @@ class AdminCommandManager:
                         for cog_name, commands in data.items()
                     }
                 logger.info(f"Loaded admin command config: {self.enabled_commands}")
+                if load_path != self.config_path:
+                    self.save_config()
             else:
                 # Default configuration - start with admin commands disabled
                 self.enabled_commands = {

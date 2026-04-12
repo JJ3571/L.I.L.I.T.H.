@@ -60,7 +60,7 @@ Manually reloads a cog (rarely needed since enable/disable auto-reload).
 
 ## Technical Details
 
-- Configuration stored in `server_configs/admin_commands.json`
+- Configuration stored in `src/main_bot/server_configs/admin_commands.json` (next to the `server_configs` package; older installs may have a one-time file at repo-root `server_configs/admin_commands.json` that is migrated on load)
 - Uses conditional decorators to register/skip commands at load time
 - Only administrators can use `/admin_toggle` commands
 - Changes persist across bot restarts

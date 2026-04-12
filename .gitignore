@@ -1,5 +1,8 @@
 # Personally added
 
+# Admin command toggle state (created on first load; lives beside server_configs package)
+src/main_bot/server_configs/admin_commands.json
+
 cogs_config.py
 economy.db
 waterboard.db

@@ -1,8 +1,9 @@
 """
-Waterboard3: Rate-limit-friendly implementation using a prepopulated Waterboard category.
+What changed with v3: Rate-limit-friendly implementation using a prepopulated Waterboard category.
 - No channel creation/deletion - category is hidden/shown instead
 - /waterboard, /enhanced-waterboard, /waterboard-party use premade channels
 - /waterboard-party uses only first 4 channels with rotating distribution
+ - - Still needs some work... Maybe only two channels and shuffling people between them a few times. 
 """
 import nextcord
 from nextcord.ext import commands, tasks
