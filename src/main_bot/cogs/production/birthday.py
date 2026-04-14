@@ -1,3 +1,4 @@
+import calendar
 import nextcord
 from nextcord.ext import commands, tasks
 import aiosqlite
@@ -279,6 +280,57 @@ class Birthday(commands.Cog):
                 await interaction.response.send_message(embed=embed)
             else:
                 await interaction.response.send_message("No upcoming birthdays found.", ephemeral=True)
+
+    @staticmethod
+    def _embed_field_value_for_lines(lines: list[str]) -> str:
+        if not lines:
+            return "—"
+        out: list[str] = []
+        total = 0
+        for i, line in enumerate(lines):
+            sep_len = 1 if out else 0
+            if total + sep_len + len(line) <= 1010:
+                out.append(line)
+                total += sep_len + len(line)
+            else:
+                more = len(lines) - i
+                return "\n".join(out) + f"\n… (+{more} more)"
+        return "\n".join(out)
+
+    @nextcord.slash_command(
+        name="bday-all",
+        description="List every month and all birthdays registered in that month.",
+        guild_ids=[GUILD_ID],
+    )
+    async def bday_all(self, interaction: nextcord.Interaction):
+        guild = interaction.guild
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT user_id, username, birthday FROM birthdays "
+                "ORDER BY strftime('%m', birthday), strftime('%d', birthday)"
+            ) as cursor:
+                rows = await cursor.fetchall()
+
+        if not rows:
+            await interaction.response.send_message("No birthdays registered yet.", ephemeral=True)
+            return
+
+        by_month: dict[int, list[str]] = {m: [] for m in range(1, 13)}
+        for user_id, _username, birthday in rows:
+            try:
+                dt = datetime.strptime(birthday, "%Y-%m-%d")
+            except ValueError:
+                continue
+            member = guild.get_member(int(user_id)) if guild else None
+            mention = member.mention if member else f"<@{user_id}>"
+            by_month[dt.month].append(f"{mention} : {dt.strftime('%m/%d')}")
+
+        embed = nextcord.Embed(title="All birthdays by month", color=0x00FF00)
+        for month in range(1, 13):
+            value = self._embed_field_value_for_lines(by_month[month])
+            embed.add_field(name=calendar.month_name[month], value=value, inline=False)
+
+        await interaction.response.send_message(embed=embed)
 
 class UpdateBirthdayView(nextcord.ui.View):
     def __init__(self, db_path, username, user_id, is_self):

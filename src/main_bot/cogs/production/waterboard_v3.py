@@ -2,8 +2,7 @@
 What changed with v3: Rate-limit-friendly implementation using a prepopulated Waterboard category.
 - No channel creation/deletion - category is hidden/shown instead
 - /waterboard, /enhanced-waterboard, /waterboard-party use premade channels
-- /waterboard-party uses only first 4 channels with rotating distribution
- - - Still needs some work... Maybe only two channels and shuffling people between them a few times. 
+- /waterboard-party uses the first 2 water channels only: everyone → channel 1 → channel 2 → back to origin
 """
 import nextcord
 from nextcord.ext import commands, tasks
@@ -527,7 +526,7 @@ class WaterboardCog3(commands.Cog):
 
     @nextcord.slash_command(
         name="waterboard-party",
-        description="Waterboard everyone in a voice channel (v3 - 4-channel rotation)",
+        description="Waterboard everyone in a voice channel (v3 - 2-channel relay)",
         guild_ids=[GUILD_ID],
     )
     async def waterboard_party(self, interaction: nextcord.Interaction):
@@ -876,21 +875,27 @@ class WaterboardCog3(commands.Cog):
         target_users: list,
         original_channel: nextcord.VoiceChannel,
     ):
-        """Waterboard party: use first 4 channels only. Distribute round-robin, then rotate everyone one channel forward."""
+        """Waterboard party: first two water channels only — all targets together, then relay, then home."""
         guild = interaction.guild
         bot_spam = guild.get_channel(bot_spam_id)
         original_channel_id = original_channel.id
         session_counted = False
+        party_ids = {u.id for u in target_users}
+
+        def party_members_in(channel: nextcord.VoiceChannel) -> list:
+            return [m for m in channel.members if m.id in party_ids and not m.bot]
 
         try:
             async with self.waterboard_sessions_lock:
                 self.active_waterboard_sessions += 1
                 session_counted = True
 
-            channels = self.get_waterboard_channels(guild, count=4)
-            if len(channels) < 4:
-                print("Waterboard party needs at least 4 channels in waterboard category.")
+            channels = self.get_waterboard_channels(guild, count=2)
+            if len(channels) < 2:
+                print("Waterboard party needs at least 2 channels in waterboard category.")
                 return
+
+            ch_first, ch_second = channels[0], channels[1]
 
             await self.show_waterboard_category(guild)
             await asyncio.sleep(PHASE_DELAY_SECONDS)
@@ -899,43 +904,22 @@ class WaterboardCog3(commands.Cog):
             if not active:
                 return
 
-            # 1) Initial distribution: round-robin into Ch0, Ch1, Ch2, Ch3
-            distribution: list = [[], [], [], []]
-            for i, u in enumerate(active):
-                ch_idx = i % 4
-                distribution[ch_idx].append(u)
-
-            for ch_idx, users_in_ch in enumerate(distribution):
-                if not users_in_ch:
-                    continue
-                ch = channels[ch_idx]
-                await self.move_users_in_batches(users_in_ch, ch, batch_size=2)
-                await asyncio.sleep(1.0)
-
+            # 1) Everyone still in voice → first water channel
+            await self.move_users_in_batches(active, ch_first, batch_size=2)
             await asyncio.sleep(PHASE_DELAY_SECONDS)
 
-            # 2) Full rotation: move everyone from Ch i to Ch (i+1) % 4
-            for step in range(4):
-                ch_from = channels[step]
-                ch_to = channels[(step + 1) % 4]
-                members_in_ch = list(ch_from.members)
-                if not members_in_ch:
-                    continue
-                users_to_move = [m for m in members_in_ch if not m.bot]
-                if users_to_move:
-                    await self.move_users_in_batches(users_to_move, ch_to, batch_size=2)
-                    await asyncio.sleep(1.5)
-
+            # 2) Everyone in first channel → second water channel
+            in_first = party_members_in(ch_first)
+            if in_first:
+                await self.move_users_in_batches(in_first, ch_second, batch_size=2)
             await asyncio.sleep(PHASE_DELAY_SECONDS)
 
-            # 3) Return everyone to original channel
+            # 3) Everyone still in either relay channel → original voice channel
             orig = self.bot.get_channel(original_channel_id)
             if orig:
-                all_in_party = []
-                for ch in channels:
-                    all_in_party.extend([m for m in ch.members if not m.bot])
-                if all_in_party:
-                    await self.move_users_in_batches(all_in_party, orig, batch_size=2)
+                to_return = party_members_in(ch_first) + party_members_in(ch_second)
+                if to_return:
+                    await self.move_users_in_batches(to_return, orig, batch_size=2)
 
         except Exception as e:
             print(f"Error waterboard party: {self.s_print_static(str(e))}")
