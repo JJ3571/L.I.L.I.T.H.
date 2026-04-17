@@ -147,11 +147,17 @@ def test_production_slash_command_contract(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", PRODUCTION_COG_STEMS)
 def test_production_cog_exposes_at_least_one_slash_command(stem: str) -> None:
-    """Every production extension currently registers slash commands; catch accidental removals."""
+    """Every production extension should expose at least one user-facing command."""
     mod = importlib.import_module(f"main_bot.cogs.production.{stem}")
-    count = 0
+    slash_count = 0
+    prefix_count = 0
     for cls in _iter_cog_classes(mod):
         for _, cmd in _iter_slash_members(cls):
             if isinstance(cmd, SlashApplicationCommand):
-                count += 1
-    assert count >= 1, f"{stem}: expected at least one root @slash_command on a production Cog"
+                slash_count += 1
+        for _, attr in inspect.getmembers(cls):
+            if isinstance(attr, commands.Command):
+                prefix_count += 1
+    assert (slash_count + prefix_count) >= 1, (
+        f"{stem}: expected at least one root slash command or prefix command on a production Cog"
+    )

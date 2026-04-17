@@ -146,5 +146,5 @@ class LoggingCog(commands.Cog):
         await ctx.send(embed=embed, view=view)
 
 
-async def setup(bot: commands.Bot) -> None:
+def setup(bot: commands.Bot) -> None:
     bot.add_cog(LoggingCog(bot))
