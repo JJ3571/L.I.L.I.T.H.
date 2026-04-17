@@ -907,7 +907,7 @@ class ActivateNowButton(nextcord.ui.Button):
             self.label = "✅ Activated!"
             self.style = nextcord.ButtonStyle.secondary
             try:
-                await interaction.edit_original_response(view=self.view)
+                await interaction.edit_original_message(view=self.view)
             except:
                 pass  # In case the message can't be edited
         else:

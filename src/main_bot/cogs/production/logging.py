@@ -127,7 +127,7 @@ class LogRefreshView(nextcord.ui.View):
         await interaction.response.defer()
         body, source = await fetch_log_snippet()
         embed = _make_embed(body, source, interaction.user)
-        await interaction.edit_original_response(embed=embed, view=self)
+        await interaction.edit_original_message(embed=embed, view=self)
 
 
 class LoggingCog(commands.Cog):

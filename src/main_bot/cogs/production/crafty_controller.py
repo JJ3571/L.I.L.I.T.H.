@@ -97,7 +97,7 @@ class RestartConfirmationView(nextcord.ui.View):
         for item in self.children:
             item.disabled = True
         
-        await interaction.edit_original_response(embed=embed, view=self)
+        await interaction.edit_original_message(embed=embed, view=self)
         self.stop()
     
     @nextcord.ui.button(label="❌ Cancel", style=nextcord.ButtonStyle.secondary)
