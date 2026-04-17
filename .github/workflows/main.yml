@@ -51,6 +51,14 @@ jobs:
           script: |
             set -euo pipefail
             GIT_SSH='ssh -o StrictHostKeyChecking=accept-new'
+            # Ensure SSH key material has strict permissions before git uses it.
+            chown -R discord_bot:discord_bot /home/discord_bot/.ssh
+            chmod 750 /home/discord_bot
+            chmod 700 /home/discord_bot/.ssh
+            chmod 600 /home/discord_bot/.ssh/config
+            chmod 600 /home/discord_bot/.ssh/github_discord_bot
+            chmod 644 /home/discord_bot/.ssh/github_discord_bot.pub
+            chmod 600 /home/discord_bot/.ssh/known_hosts*
             cd /home/discord_bot_v2
             sudo -u discord_bot env GIT_SSH_COMMAND="$GIT_SSH" git fetch origin
             sudo -u discord_bot env GIT_SSH_COMMAND="$GIT_SSH" git reset --hard origin/main
