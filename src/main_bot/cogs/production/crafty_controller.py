@@ -3,7 +3,8 @@ from nextcord.ext import commands, tasks
 from nextcord import slash_command, SlashOption
 import asyncio
 import logging
-from typing import Optional
+import re
+from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 import json
 
@@ -13,6 +14,19 @@ from main_bot.utils.crafty_automation import CraftyAutomationDB, ServerAutomatio
 from main_bot.utils.admin_command_manager import admin_command_manager
 
 logger = logging.getLogger(__name__)
+
+# Java edition: 3–16 chars, [a-zA-Z0-9_]
+MINECRAFT_JAVA_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,16}$")
+
+
+def _normalize_minecraft_java_username(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    s = raw.strip()
+    if not MINECRAFT_JAVA_USERNAME_RE.match(s):
+        return None
+    return s
+
 
 def conditional_slash_command(*args, **kwargs):
     """Decorator that conditionally registers slash commands based on admin settings"""
@@ -907,7 +921,38 @@ class CraftyController(commands.Cog):
             await interaction.followup.send(embed=embed)
         else:
             await interaction.followup.send("❌ Failed to send command. Check if server is running.", ephemeral=True)
-    
+
+    async def _apply_whitelist_one_server(
+        self, server_id: str, usernames: List[str]
+    ) -> Tuple[str, str]:
+        """Run whitelist on (if needed) and whitelist add for each name on one running server."""
+        stats = await self.crafty_api.get_server_stats(server_id)
+        default_name = self._servers_cache.get(server_id, {}).get("server_name", f"Server {server_id}")
+        if stats:
+            server_name = stats.get("server_id", {}).get("server_name", default_name)
+        else:
+            server_name = default_name
+        if not stats or not stats.get("running"):
+            return server_name, "⏭️ Skipped (offline)"
+
+        parts: List[str] = []
+        ready = await self.automation_db.get_server_whitelist_ready(server_id)
+        if not ready:
+            ok = await self.crafty_api.send_command(server_id, "whitelist on")
+            if not ok:
+                return server_name, "❌ `whitelist on` failed — server not marked ready"
+            await self.automation_db.set_server_whitelist_ready(server_id, True)
+            parts.append("`whitelist on` sent")
+        if not usernames:
+            suffix = " — no names in DB to add" if parts else "No names in DB to add"
+            return server_name, (parts[0] + suffix) if parts else suffix
+
+        failed = [u for u in usernames if not await self.crafty_api.send_command(server_id, f"whitelist add {u}")]
+        if failed:
+            parts.append(f"⚠️ add failed: {', '.join(f'`{x}`' for x in failed)}")
+        else:
+            parts.append(f"✅ {len(usernames)}× whitelist add")
+        return server_name, " — ".join(parts)
 
 
     # /crafty subcommands - cleaner structure without prefixes
@@ -1003,6 +1048,191 @@ class CraftyController(commands.Cog):
         
     @crafty_command_sub.on_autocomplete("server")
     async def crafty_command_autocomplete(self, interaction: nextcord.Interaction, current: str):
+        choices = await self._get_server_choices(current)
+        await interaction.response.send_autocomplete(choices)
+
+    @crafty_parent.subcommand(
+        name="whitelist",
+        description="Shared Java whitelist names in the Crafty DB and sync to running servers",
+    )
+    async def crafty_whitelist_group(self, interaction: nextcord.Interaction):
+        """Parent for /crafty whitelist … (use a subcommand)."""
+        pass
+
+    @crafty_whitelist_group.subcommand(
+        name="add",
+        description="Add a Minecraft username to the shared list (letters, digits, underscore; 3–16 chars)",
+    )
+    async def crafty_whitelist_add(
+        self,
+        interaction: nextcord.Interaction,
+        username: str = SlashOption(description="Java username", required=True),
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        name = _normalize_minecraft_java_username(username)
+        if not name:
+            await interaction.followup.send(
+                "❌ Invalid username. Use 3–16 characters: letters, digits, and underscores only.",
+                ephemeral=True,
+            )
+            return
+        if await self.automation_db.add_whitelist_username(name):
+            await interaction.followup.send(f"✅ Added `{name}` to the shared whitelist list.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"`{name}` is already on the list.", ephemeral=True)
+
+    @crafty_whitelist_group.subcommand(name="remove", description="Remove a Minecraft username from the shared list")
+    async def crafty_whitelist_remove(
+        self,
+        interaction: nextcord.Interaction,
+        username: str = SlashOption(description="Java username", required=True),
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        name = _normalize_minecraft_java_username(username)
+        if not name:
+            await interaction.followup.send(
+                "❌ Invalid username. Use 3–16 characters: letters, digits, and underscores only.",
+                ephemeral=True,
+            )
+            return
+        if await self.automation_db.remove_whitelist_username(name):
+            await interaction.followup.send(f"✅ Removed `{name}` from the shared list.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"`{name}` was not on the list.", ephemeral=True)
+
+    @crafty_whitelist_group.subcommand(name="list", description="Show all Minecraft usernames on the shared whitelist list")
+    async def crafty_whitelist_list(self, interaction: nextcord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        names = await self.automation_db.list_whitelist_usernames()
+        embed = nextcord.Embed(
+            title="📋 Shared whitelist list",
+            color=0x0099FF,
+            timestamp=interaction.created_at,
+        )
+        if names:
+            embed.description = "\n".join(f"• `{n}`" for n in names)
+        else:
+            embed.description = "_No usernames stored yet._"
+        embed.set_footer(text="Use /crafty whitelist apply to push to running servers")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @crafty_whitelist_group.subcommand(
+        name="apply",
+        description="On each running server: whitelist on if needed, then whitelist add for every name on the list",
+    )
+    async def crafty_whitelist_apply(self, interaction: nextcord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        if not await self._refresh_servers_cache(force=True):
+            await interaction.followup.send("❌ Failed to refresh servers from Crafty.", ephemeral=True)
+            return
+        usernames = await self.automation_db.list_whitelist_usernames()
+        server_ids = list(self._servers_cache.keys())
+        tasks = [self._apply_whitelist_one_server(sid, usernames) for sid in server_ids]
+        raw = await asyncio.gather(*tasks, return_exceptions=True)
+        lines: List[str] = []
+        for item in raw:
+            if isinstance(item, BaseException):
+                logger.error(
+                    "whitelist apply task failed: %s",
+                    item,
+                    exc_info=(type(item), item, item.__traceback__),
+                )
+                lines.append(f"❌ Error: {item!s}")
+                continue
+            sname, msg = item
+            lines.append(f"**{sname}** — {msg}")
+        body = "\n".join(lines) if lines else "_No servers in Crafty._"
+        if len(body) > 3800:
+            body = body[:3797] + "…"
+        embed = nextcord.Embed(
+            title="🛡️ Whitelist apply",
+            description=body,
+            color=0x00FF99,
+            timestamp=interaction.created_at,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @crafty_whitelist_group.subcommand(
+        name="confirm",
+        description="Mark a server as whitelist-enabled without sending console commands (e.g. you turned it on manually)",
+    )
+    async def crafty_whitelist_confirm(
+        self,
+        interaction: nextcord.Interaction,
+        server: str = SlashOption(description="Select a server", autocomplete=True, required=True),
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        server_id = self._parse_server_choice(server)
+        if not server_id:
+            await interaction.followup.send("❌ Invalid server selection", ephemeral=True)
+            return
+        await self.automation_db.set_server_whitelist_ready(server_id, True)
+        await self._refresh_servers_cache()
+        name = self._servers_cache.get(server_id, {}).get("server_name", f"Server {server_id}")
+        await interaction.followup.send(
+            f"✅ **{name}** is marked as whitelist-ready (apply will skip `whitelist on` for this server).",
+            ephemeral=True,
+        )
+
+    @crafty_whitelist_group.subcommand(
+        name="unconfirm",
+        description="Forget whitelist-ready state for a server so the next apply sends whitelist on again",
+    )
+    async def crafty_whitelist_unconfirm(
+        self,
+        interaction: nextcord.Interaction,
+        server: str = SlashOption(description="Select a server", autocomplete=True, required=True),
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if not await self._check_crafty_available(interaction):
+            return
+        if not self.automation_db:
+            await interaction.followup.send("❌ Crafty database not available.", ephemeral=True)
+            return
+        server_id = self._parse_server_choice(server)
+        if not server_id:
+            await interaction.followup.send("❌ Invalid server selection", ephemeral=True)
+            return
+        had = await self.automation_db.clear_server_whitelist_ready(server_id)
+        await self._refresh_servers_cache()
+        name = self._servers_cache.get(server_id, {}).get("server_name", f"Server {server_id}")
+        if had:
+            await interaction.followup.send(
+                f"✅ Cleared whitelist-ready flag for **{name}**.", ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                f"**{name}** had no whitelist-ready flag set.", ephemeral=True
+            )
+
+    @crafty_whitelist_confirm.on_autocomplete("server")
+    @crafty_whitelist_unconfirm.on_autocomplete("server")
+    async def crafty_whitelist_server_autocomplete(self, interaction: nextcord.Interaction, current: str):
         choices = await self._get_server_choices(current)
         await interaction.response.send_autocomplete(choices)
 

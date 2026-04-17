@@ -38,6 +38,19 @@ class CraftyAutomationDB:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS minecraft_whitelist_names (
+                    username TEXT PRIMARY KEY NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS server_whitelist_ready (
+                    server_id TEXT PRIMARY KEY NOT NULL,
+                    whitelist_enabled_confirmed INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             await db.commit()
             logger.info("Crafty automation database initialized")
     
@@ -115,3 +128,67 @@ class CraftyAutomationDB:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM server_automation WHERE server_id = ?", (server_id,))
             await db.commit()
+
+    async def add_whitelist_username(self, username: str) -> bool:
+        """Add a Minecraft username to the shared list. Returns True if newly inserted."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO minecraft_whitelist_names (username) VALUES (?)",
+                (username,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def remove_whitelist_username(self, username: str) -> bool:
+        """Remove a Minecraft username from the shared list. Returns True if a row was deleted."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM minecraft_whitelist_names WHERE username = ?",
+                (username,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def list_whitelist_usernames(self) -> List[str]:
+        """All Minecraft usernames in the shared whitelist list (sorted, case-insensitive)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT username FROM minecraft_whitelist_names ORDER BY username COLLATE NOCASE"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
+
+    async def get_server_whitelist_ready(self, server_id: str) -> bool:
+        """True if this server was marked as having whitelist enabled (via successful apply or manual mark)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT whitelist_enabled_confirmed FROM server_whitelist_ready WHERE server_id = ?",
+                (server_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return bool(row[0]) if row else False
+
+    async def set_server_whitelist_ready(self, server_id: str, confirmed: bool) -> None:
+        """Persist whether whitelist is known to be enabled on this server."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO server_whitelist_ready (server_id, whitelist_enabled_confirmed, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(server_id) DO UPDATE SET
+                    whitelist_enabled_confirmed = excluded.whitelist_enabled_confirmed,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (server_id, 1 if confirmed else 0),
+            )
+            await db.commit()
+
+    async def clear_server_whitelist_ready(self, server_id: str) -> bool:
+        """Forget whitelist-ready state for a server. Returns True if a row existed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM server_whitelist_ready WHERE server_id = ?",
+                (server_id,),
+            )
+            await db.commit()
+            return cursor.rowcount > 0

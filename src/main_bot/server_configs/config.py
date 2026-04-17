@@ -221,3 +221,6 @@ character_avatars = _get_json_dict("CHARACTER_AVATARS")
 ZERONI_REACTION_EMOJI = _get_str("ZERONI_REACTION_EMOJI", "")
 COMMUNITY_NOTES_REACTION_EMOJI = _get_str("COMMUNITY_NOTES_REACTION_EMOJI", "")
 
+# Bot log viewer (.logging): optional systemd unit on Linux (e.g. discord_bot_v2), else tail BOT_LOG_FILE or nextcord.log
+BOT_LOG_JOURNAL_UNIT = _get_str("BOT_LOG_JOURNAL_UNIT", "")
+BOT_LOG_FILE = _get_str("BOT_LOG_FILE", "")
