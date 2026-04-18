@@ -9,7 +9,15 @@ import asyncio
 
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.database_config import DATABASE_PATHS
+
+
+def _dbg_print(bot, *args, **kwargs) -> None:
+    """Honors ``bot.full_debug_in_terminal`` (set in ``main_bot.main`` from ``FULL_DEBUG_IN_TERMINAL``)."""
+    if getattr(bot, "full_debug_in_terminal", False):
+        print(*args, **kwargs)
+
 
 class Event(commands.Cog):
     def __init__(self, bot):
@@ -594,7 +602,7 @@ class Event(commands.Cog):
             async with conn.cursor() as cursor:
                 # Get current UTC time in ISO format to match stored reminder_time format
                 current_time = nextcord.utils.utcnow().isoformat()
-                print(f"[DEBUG] get_due_reminders() - Current time: {current_time}")
+                _dbg_print(self.bot, f"[DEBUG] get_due_reminders() - Current time: {current_time}")
                 
                 await cursor.execute('''
                     SELECT reminder_id, creator_id, reminder_text, reminder_time, 
@@ -604,11 +612,11 @@ class Event(commands.Cog):
                 ''', (current_time,))
                 results = await cursor.fetchall()
                 
-                print(f"[DEBUG] get_due_reminders() - SQL query found {len(results)} results")
+                _dbg_print(self.bot, f"[DEBUG] get_due_reminders() - SQL query found {len(results)} results")
                 for result in results:
                     reminder_id = result[0]
                     reminder_time = result[3]
-                    print(f"[DEBUG]   -> Reminder ID {reminder_id} with time {reminder_time}")
+                    _dbg_print(self.bot, f"[DEBUG]   -> Reminder ID {reminder_id} with time {reminder_time}")
                 
                 return results
 
@@ -640,7 +648,7 @@ class Event(commands.Cog):
         current_time = nextcord.utils.utcnow()
         current_time_iso = current_time.isoformat()
         
-        print(f"[DEBUG] Checking for due reminders at {current_time_iso}")
+        _dbg_print(self.bot, f"[DEBUG] Checking for due reminders at {current_time_iso}")
         
         # First, let's see all active reminders in the database
         async with aiosqlite.connect(self.db_path) as conn:
@@ -653,38 +661,38 @@ class Event(commands.Cog):
                 ''')
                 all_active = await cursor.fetchall()
                 
-                print(f"[DEBUG] Found {len(all_active)} active reminders in database:")
+                _dbg_print(self.bot, f"[DEBUG] Found {len(all_active)} active reminders in database:")
                 for reminder in all_active:
                     reminder_id, creator_id, reminder_text, reminder_time, status = reminder
-                    print(f"[DEBUG]   ID {reminder_id}: '{reminder_text[:50]}...' due at {reminder_time} (status: {status})")
+                    _dbg_print(self.bot, f"[DEBUG]   ID {reminder_id}: '{reminder_text[:50]}...' due at {reminder_time} (status: {status})")
                     
                     # Check if this reminder is due
                     is_due = reminder_time <= current_time_iso
-                    print(f"[DEBUG]   -> Is due? {is_due} (reminder_time <= current_time: {reminder_time} <= {current_time_iso})")
+                    _dbg_print(self.bot, f"[DEBUG]   -> Is due? {is_due} (reminder_time <= current_time: {reminder_time} <= {current_time_iso})")
         
         due_reminders = await self.get_due_reminders()
         
-        print(f"[DEBUG] get_due_reminders() returned {len(due_reminders)} reminders")
+        _dbg_print(self.bot, f"[DEBUG] get_due_reminders() returned {len(due_reminders)} reminders")
         
         if due_reminders:
-            print(f"[DEBUG] Processing {len(due_reminders)} due reminders")
+            _dbg_print(self.bot, f"[DEBUG] Processing {len(due_reminders)} due reminders")
         else:
-            print(f"[DEBUG] No due reminders to process")
+            _dbg_print(self.bot, f"[DEBUG] No due reminders to process")
         
         for reminder_data in due_reminders:
             reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
             
-            print(f"[DEBUG] Processing reminder ID {reminder_id}: '{reminder_text[:50]}...'")
+            _dbg_print(self.bot, f"[DEBUG] Processing reminder ID {reminder_id}: '{reminder_text[:50]}...'")
             
             try:
                 # Get subscribers
                 subscribers = await self.get_reminder_subscribers(reminder_id)
                 
-                print(f"[DEBUG] Reminder {reminder_id} has {len(subscribers)} subscribers")
+                _dbg_print(self.bot, f"[DEBUG] Reminder {reminder_id} has {len(subscribers)} subscribers")
                 
                 if not subscribers:
                     # No subscribers, just mark as completed
-                    print(f"[DEBUG] No subscribers for reminder {reminder_id}, marking as completed")
+                    _dbg_print(self.bot, f"[DEBUG] No subscribers for reminder {reminder_id}, marking as completed")
                     await self.mark_reminder_completed(reminder_id)
                     continue
                 
@@ -692,11 +700,11 @@ class Event(commands.Cog):
                 mentions = []
                 for user_id, _ in subscribers:
                     mentions.append(f"<@{user_id}>")
-                    print(f"[DEBUG] Will mention user {user_id}")
+                    _dbg_print(self.bot, f"[DEBUG] Will mention user {user_id}")
                 
                 mentions_text = " ".join(mentions)
                 
-                print(f"[DEBUG] Creating embed for reminder {reminder_id}")
+                _dbg_print(self.bot, f"[DEBUG] Creating embed for reminder {reminder_id}")
                 
                 # Create reminder notification embed
                 embed = nextcord.Embed(
@@ -712,33 +720,33 @@ class Event(commands.Cog):
                         name=creator.display_name,
                         icon_url=creator.display_avatar.url
                     )
-                    print(f"[DEBUG] Set embed author to {creator.display_name}")
+                    _dbg_print(self.bot, f"[DEBUG] Set embed author to {creator.display_name}")
                 else:
                     embed.set_author(name=f"User {creator_id}")
-                    print(f"[DEBUG] Creator user {creator_id} not found, using fallback name")
+                    _dbg_print(self.bot, f"[DEBUG] Creator user {creator_id} not found, using fallback name")
                 
                 embed.set_footer(text=f"Reminder ID: {reminder_id}")
                 
                 # Send to original channel only
                 original_channel = self.bot.get_channel(original_channel_id)
                 
-                print(f"[DEBUG] Attempting to send reminder {reminder_id} to channel {original_channel_id}")
+                _dbg_print(self.bot, f"[DEBUG] Attempting to send reminder {reminder_id} to channel {original_channel_id}")
                 
                 if original_channel:
                     try:
                         await original_channel.send(content=mentions_text, embed=embed)
-                        print(f"[DEBUG] ✅ Successfully sent reminder {reminder_id} to channel {original_channel_id}")
+                        _dbg_print(self.bot, f"[DEBUG] ✅ Successfully sent reminder {reminder_id} to channel {original_channel_id}")
                     except Exception as e:
-                        print(f"[DEBUG] ❌ Failed to send reminder {reminder_id} to original channel {original_channel_id}: {e}")
+                        _dbg_print(self.bot, f"[DEBUG] ❌ Failed to send reminder {reminder_id} to original channel {original_channel_id}: {e}")
                 else:
-                    print(f"[DEBUG] ❌ Could not find original channel {original_channel_id} for reminder {reminder_id}")
+                    _dbg_print(self.bot, f"[DEBUG] ❌ Could not find original channel {original_channel_id} for reminder {reminder_id}")
                 
                 # Mark as completed regardless of send success
-                print(f"[DEBUG] Marking reminder {reminder_id} as completed")
+                _dbg_print(self.bot, f"[DEBUG] Marking reminder {reminder_id} as completed")
                 await self.mark_reminder_completed(reminder_id)
                 
             except Exception as e:
-                print(f"[DEBUG] ❌ Error processing reminder {reminder_id}: {e}")
+                _dbg_print(self.bot, f"[DEBUG] ❌ Error processing reminder {reminder_id}: {e}")
                 # Mark as completed to prevent infinite retries
                 await self.mark_reminder_completed(reminder_id)
 
@@ -1545,5 +1553,5 @@ async def setup(bot):
     cog = Event(bot)
     await cog.create_tables()
     bot.add_cog(cog)
-    print("EventCog has been added to the bot.")
+    boot_print("EventCog has been added to the bot.")
 

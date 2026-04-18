@@ -4,6 +4,7 @@ from nextcord.ext import commands
 import datetime, time, re, asyncio
 import unicodedata
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
 
@@ -11,7 +12,7 @@ class VoiceCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.reserved_channels = {}  # channel_id: timestamp when reservation ends
-        print("Initializing VoiceCog.")
+        boot_print("Initializing VoiceCog.")
 
     def cog_unload(self):
         print("VoiceCog has been unloaded.")
@@ -113,17 +114,19 @@ class VoiceCog(commands.Cog):
             tidied_messages.append(f"Moved {moved_to_hidden_count} standard channel(s) to hidden category.")
             print(f"Tidy_up: Moved {moved_to_hidden_count} standard channels to hidden.")
 
-        # 2. Cleanup for WaterboardCog temporary channels (Discord and DB)
-        waterboard_cog = self.bot.get_cog('WaterboardCog')
-        if waterboard_cog:
-            print("Tidy_up: Found WaterboardCog. Proceeding with waterboard channel cleanup.")
+        # 2. Legacy cleanup for v1/v2 temp waterboard channels (DB); v3 (WaterboardCog3) uses fixed channels only.
+        waterboard_cog = self.bot.get_cog('WaterboardCog3')
+        if waterboard_cog and hasattr(waterboard_cog, 'get_temp_channels') and hasattr(
+            waterboard_cog, 'delete_temp_channel'
+        ):
+            print("Tidy_up: Found waterboard cog with temp-channel DB. Proceeding with waterboard channel cleanup.")
             try:
-                # Ensure WaterboardCog has its tables created if it hasn't already
+                # Ensure the cog has its tables created if it hasn't already
                 if hasattr(waterboard_cog, 'create_tables') and not hasattr(waterboard_cog, '_tables_created'):
                      if hasattr(waterboard_cog, 'create_tables'): # Check if method exists
                         await waterboard_cog.create_tables()
                         waterboard_cog._tables_created = True # Set flag after creation
-                        print("Tidy_up: Ensured WaterboardCog tables are created.")
+                        print("Tidy_up: Ensured waterboard cog tables are created.")
 
                 temp_wb_channel_ids = await waterboard_cog.get_temp_channels()
                 deleted_wb_discord_channels = 0
@@ -156,17 +159,19 @@ class VoiceCog(commands.Cog):
                         )
                     print(f"Tidy_up: Waterboard cleanup complete. Deleted {deleted_wb_discord_channels} Discord channels, removed {deleted_wb_db_entries} DB entries.")
                 else:
-                    print("Tidy_up: No waterboard channels found in WaterboardCog's database.")
+                    print("Tidy_up: No waterboard channels found in the waterboard cog's database.")
             except Exception as e:
-                print(f"Tidy_up: An error occurred during WaterboardCog channel cleanup: {e}")
+                print(f"Tidy_up: An error occurred during waterboard channel cleanup: {e}")
                 tidied_messages.append("An error occurred during waterboard channel cleanup.")
+        elif waterboard_cog:
+            print("Tidy_up: Waterboard v3 loaded; skipping legacy temp-channel DB cleanup.")
         else:
-            print("Tidy_up: WaterboardCog not found. Skipping its specific channel cleanup.")
-            # tidied_messages.append("WaterboardCog not found for specific cleanup.")
+            print("Tidy_up: Waterboard cog not found. Skipping legacy waterboard DB cleanup.")
+            # tidied_messages.append("Waterboard cog not found for specific cleanup.")
 
 
         # 3. Original generic cleanup for channels with "💧" in their name
-        # This catches any "💧" channels missed or if WaterboardCog wasn't available.
+        # This catches any "💧" channels missed or if the waterboard cog wasn't available.
         print("Tidy_up: Proceeding with generic temporary channel cleanup by name (Channels with waterdrop emoji').")
         generic_deleted_count = 0
         # Fetch a fresh list of voice channels as some might have been deleted above
@@ -346,4 +351,4 @@ class VoiceCog(commands.Cog):
 
 async def setup(bot):
     bot.add_cog(VoiceCog(bot))
-    print("VoiceCog has been added to the bot.")
+    boot_print("VoiceCog has been added to the bot.")

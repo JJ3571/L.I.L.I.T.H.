@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import random
 import asyncio
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import heads_emoji_id, tails_emoji_id
 
@@ -545,4 +546,4 @@ class BlackjackView(nextcord.ui.View):
 # Setup function remains the same
 async def setup(bot: commands.Bot):
     bot.add_cog(Gambling(bot))
-    print("GamblingCog loaded.")
+    boot_print("GamblingCog loaded.")

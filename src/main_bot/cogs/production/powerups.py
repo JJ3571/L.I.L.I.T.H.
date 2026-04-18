@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 import pytz
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.database_config import DATABASE_PATHS
 
@@ -272,7 +273,7 @@ class PowerupCog(commands.Cog):
             return False
 
         if powerup_info["effect_type"] == "pardon":
-            waterboard_cog = self.bot.get_cog('WaterboardCog')
+            waterboard_cog = self.bot.get_cog('WaterboardCog3')
             if waterboard_cog and hasattr(waterboard_cog, 'executive_pardon'):
                 try:
                     await waterboard_cog.executive_pardon(user_id, powerup_info["duration_hours"])
@@ -281,7 +282,7 @@ class PowerupCog(commands.Cog):
                     print(f"Error calling executive_pardon: {e}")
                     return False
             else:
-                print("Error: WaterboardCog or executive_pardon method not found.")
+                print("Error: WaterboardCog3 or executive_pardon method not found.")
                 return False
         elif powerup_info["effect_type"] == "role":
             role_name = powerup_info["role_name"]
@@ -321,7 +322,7 @@ class PowerupCog(commands.Cog):
                     print(f"Error: Bot lacks permissions to remove role '{role_name}'.")
                 except nextcord.HTTPException as e:
                     print(f"Error: Failed to remove role '{role_name}': {e}")
-        # Pardon duration is managed by WaterboardCog
+        # Pardon duration is managed by WaterboardCog3
 
     # --- Slash Commands ---
     @nextcord.slash_command(name="powerups", description="Manage your powerups", guild_ids=[GUILD_ID])
@@ -1206,4 +1207,4 @@ async def setup(bot):
     cog_instance = PowerupCog(bot)
     await cog_instance.create_tables()
     bot.add_cog(cog_instance)
-    print("PowerupCog has been loaded.")
+    boot_print("PowerupCog has been loaded.")

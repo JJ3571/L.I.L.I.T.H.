@@ -1,5 +1,8 @@
 """Discord bot: intents, bot instance, cog loading, and run()."""
 
+# When True, selected cogs print verbose ``[DEBUG]`` lines to stdout (e.g. birthday and reminder loops).
+FULL_DEBUG_IN_TERMINAL = False
+
 ### -------------------------------------------
 # nextcord.health_check imports pkg_resources; 
 # setuptools emits UserWarning until nextcord migrates.
@@ -20,6 +23,7 @@ from pathlib import Path
 import nextcord
 from nextcord.ext import commands
 
+from main_bot.boot_log import boot_print
 from main_bot.paths import PROJECT_ROOT
 from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -44,8 +48,10 @@ async def load_extensions(directory: str) -> None:
     for filename in os.listdir(path):
         if filename.endswith(".py") and filename != "__init__.py":
             ext = f"main_bot.cogs.{directory}.{filename[:-3]}"
+            if ext in bot.extensions:
+                continue
             bot.load_extension(ext)
-            print(f"Loaded extension: {ext}")
+            boot_print(f"Loaded extension: {ext}")
 
 
 _setup_logging()
@@ -65,6 +71,7 @@ bot = commands.Bot(
     intents=intents,
     application_id=APPLICATION_ID,
 )
+bot.full_debug_in_terminal = FULL_DEBUG_IN_TERMINAL
 
 
 @bot.event

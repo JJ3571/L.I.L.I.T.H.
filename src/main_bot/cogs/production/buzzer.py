@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import aiosqlite
 import time
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 # Ensure this import is correct and admin_user_ids is populated
 from main_bot.server_configs.config import admin_user_ids
@@ -628,4 +629,4 @@ async def setup(bot):
     cog = Buzzer(bot)
     await cog.create_tables()
     bot.add_cog(cog)
-    print("BuzzerCog loaded.")
+    boot_print("BuzzerCog loaded.")

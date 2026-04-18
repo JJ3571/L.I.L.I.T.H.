@@ -9,6 +9,7 @@ from typing import Optional, Dict, List
 import aiosqlite
 import os
 
+from main_bot.boot_log import boot_print
 from main_bot.paths import PROJECT_ROOT
 
 # Get the GUILD_ID from config
@@ -503,4 +504,4 @@ class Trivia(commands.Cog):
 
 def setup(bot):
     bot.add_cog(Trivia(bot))
-    print("TriviaCog has been added to the bot.")
+    boot_print("TriviaCog has been added to the bot.")

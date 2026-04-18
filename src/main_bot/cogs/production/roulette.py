@@ -5,6 +5,7 @@ from nextcord.ext import commands
 import random
 import asyncio # Needed for sleep
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 # --- Roulette Wheel Configuration (European Style) ---
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
@@ -346,4 +347,4 @@ class Roulette(commands.Cog):
 async def setup(bot: commands.Bot):
     """Loads the Roulette cog."""
     bot.add_cog(Roulette(bot))
-    print("Interactive RouletteCog loaded.")
+    boot_print("Interactive RouletteCog loaded.")

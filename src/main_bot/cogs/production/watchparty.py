@@ -4,6 +4,7 @@ import datetime, pytz
 import asyncio
 from asyncio import Semaphore
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import watch_party_channel_id, seen_category_id, hidden_category_id
 
@@ -21,7 +22,7 @@ class WatchPartyCog(commands.Cog):
         self.voice_move_semaphore = Semaphore(2)  # Limit to 2 concurrent moves for safety
         self.move_delay = 0.5  # Default delay in seconds between moves
         
-        print("Initializing WatchPartyCog.")
+        boot_print("Initializing WatchPartyCog.")
         self.monitor_watch_party.start()
 
     def cog_unload(self):
@@ -329,4 +330,4 @@ class WatchPartyCog(commands.Cog):
 
 async def setup(bot):
     bot.add_cog(WatchPartyCog(bot))
-    print("WatchPartyCog has been added to the bot.")
+    boot_print("WatchPartyCog has been added to the bot.")

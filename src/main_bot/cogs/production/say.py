@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw
 from google import genai
 from google.genai import types
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID, GEMINI_API_KEY
 from main_bot.server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
@@ -2831,4 +2832,4 @@ Please respond to the user's reply in context of the previous conversation."""
 
 def setup(bot):
     bot.add_cog(Say(bot))
-    print("SayCog has been added to the bot.")
+    boot_print("SayCog has been added to the bot.")

@@ -5,6 +5,7 @@ from nextcord import Interaction, SlashOption, ChannelType
 from nextcord.ui import Button, View, Modal, TextInput
 from datetime import datetime
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 from main_bot.server_configs.database_config import DATABASE_PATHS
@@ -910,4 +911,4 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
 
 def setup(bot):
     bot.add_cog(BettingCog(bot))
-    print("WagerCog has been loaded with new event-based functionality.")
+    boot_print("WagerCog has been loaded with new event-based functionality.")

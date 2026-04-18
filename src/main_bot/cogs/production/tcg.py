@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import re
 import requests
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import MANA_SYMBOLS
 class TCG(commands.Cog):
@@ -180,4 +181,4 @@ class TCG(commands.Cog):
 
 def setup(bot):
     bot.add_cog(TCG(bot))
-    print("TCGCog has been added to the bot.")
+    boot_print("TCGCog has been added to the bot.")

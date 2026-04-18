@@ -11,6 +11,7 @@ import time
 import aiosqlite
 from asyncio import Semaphore
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID, waterboard_category_id
 from main_bot.server_configs.config import bot_spam_id, admin_user_ids
 from main_bot.cogs.production.economy import Economy
@@ -955,4 +956,4 @@ async def setup(bot):
         await cog.create_tables()
         cog._tables_created = True
     bot.add_cog(cog)
-    print("WaterboardCog_v3 has been added.")
+    boot_print("WaterboardCog_v3 has been added.")

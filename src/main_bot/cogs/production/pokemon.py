@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Tuple
 import difflib
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 from main_bot.server_configs.database_config import DATABASE_PATHS
@@ -1616,4 +1617,4 @@ class TeamDeleteConfirmView(nextcord.ui.View):
 
 def setup(bot):
     bot.add_cog(Pokemon(bot))
-    print("PokemonCog has been added to the bot.")
+    boot_print("PokemonCog has been added to the bot.")

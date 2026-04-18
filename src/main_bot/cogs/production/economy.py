@@ -5,6 +5,7 @@ import time, datetime
 import random
 import pytz
 
+from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
 from main_bot.server_configs.database_config import DATABASE_PATHS
@@ -61,12 +62,12 @@ class Economy(commands.Cog):
                 current_balance = result[0] if result else 0
                 
                 if current_balance < amount:
-                    print(f"DEBUG: Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
+                    print(f"[DEBUG] Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
                     return False
                 
                 # Deduct the amount
                 await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-                print(f"DEBUG: Successfully deducted {amount} coins from user {user_id}")
+                print(f"[DEBUG] Successfully deducted {amount} coins from user {user_id}")
             await conn.commit()
             return True
 
@@ -804,5 +805,5 @@ class ReceiveRequestView(nextcord.ui.View):
 async def setup(bot):
     cog = Economy(bot)
     await cog.create_tables()
-    bot.add_cog(Economy(bot))
-    print("EconomyCog has been added to the bot.")
+    bot.add_cog(cog)
+    boot_print("EconomyCog has been added to the bot.")
