@@ -3,10 +3,11 @@ from nextcord.ext import commands, tasks
 import itertools
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 
-class BotStatusCog(commands.Cog):
+class BotStatusCog(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.status_cycle.start()
@@ -20,7 +21,7 @@ class BotStatusCog(commands.Cog):
 
     def cog_unload(self):
         self.status_cycle.cancel()
-        print("BotStatusCog has been unloaded.")
+        self.cog_print("BotStatusCog has been unloaded.")
 
     @tasks.loop(seconds=90)
     async def status_cycle(self):
@@ -30,7 +31,7 @@ class BotStatusCog(commands.Cog):
     @status_cycle.before_loop
     async def before_status_cycle(self):
         await self.bot.wait_until_ready()
-        print("Bot is ready. Starting status_cycle loop.")
+        self.cog_print("Bot is ready. Starting status_cycle loop.")
 
     @nextcord.slash_command(name="status", description="Manage the bot's status.", guild_ids=[GUILD_ID])
     async def status(self, interaction: nextcord.Interaction):
@@ -42,21 +43,21 @@ class BotStatusCog(commands.Cog):
         await self.bot.change_presence(activity=nextcord.Game(name=status))
         self.status_cycle.cancel()  # Stop the status cycle when a custom status is set
         await interaction.response.send_message(f"Bot status updated to: {status}", ephemeral=True)
-        print(f"Bot status updated to: {status} by {interaction.user.name}")
+        self.cog_print(f"Bot status updated to: {status} by {interaction.user.name}")
 
     @status.subcommand(name="start", description="Start cycling through predefined statuses.")
     async def start_status_cycle(self, interaction: nextcord.Interaction):
 
         self.status_cycle.start()
         await interaction.response.send_message("Started cycling through predefined statuses.", ephemeral=True)
-        print(f"Started status cycle by {interaction.user.name}")
+        self.cog_print(f"Started status cycle by {interaction.user.name}")
 
     @status.subcommand(name="stop", description="Stop cycling through predefined statuses.")
     async def stop_status_cycle(self, interaction: nextcord.Interaction):
 
         self.status_cycle.cancel()
         await interaction.response.send_message("Stopped cycling through predefined statuses.", ephemeral=True)
-        print(f"Stopped status cycle by {interaction.user.name}")
+        self.cog_print(f"Stopped status cycle by {interaction.user.name}")
 
 async def setup(bot):
     bot.add_cog(BotStatusCog(bot))

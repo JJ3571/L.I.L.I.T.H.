@@ -4,10 +4,11 @@ import random
 import asyncio
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import heads_emoji_id, tails_emoji_id
 
-class Gambling(commands.Cog):
+class Gambling(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Ensure Economy cog is loaded during bot setup, checking here is good practice
@@ -346,11 +347,11 @@ class BlackjackView(nextcord.ui.View):
                 await interaction.followup.edit_message('@original', embed=embed, view=self)
             except nextcord.NotFound:
                 # Handle case where the original message might have been deleted
-                print("Error: Original message not found during dealer turn (initial reveal).")
+                self.cog.cog_print("Error: Original message not found during dealer turn (initial reveal).")
                 await self.end_game(interaction, "Error - Message Deleted") # End game gracefully
                 return
             except Exception as e:
-                print(f"Error editing message in dealer_turn (initial reveal): {e}")
+                self.cog.cog_print(f"Error editing message in dealer_turn (initial reveal): {e}")
                 # Potentially try to send a new message or end game
                 await self.end_game(interaction, "Error - Cannot Edit Message")
                 return
@@ -368,7 +369,7 @@ class BlackjackView(nextcord.ui.View):
                     self.dealer_hand.append(self.cog.deal_card(self.deck))
                 except ValueError: # Handle empty deck just in case
                     # Decide how to handle: maybe dealer stands? Or game error?
-                    print("Error: Deck became empty during dealer turn.")
+                    self.cog.cog_print("Error: Deck became empty during dealer turn.")
                     # For now, let dealer stand with current value
                     break
                 dealer_value = self.cog.calculate_hand_value(self.dealer_hand)
@@ -383,11 +384,11 @@ class BlackjackView(nextcord.ui.View):
                     # Edit using followup webhook again
                     await interaction.followup.edit_message('@original', embed=embed, view=self)
                 except nextcord.NotFound:
-                    print("Error: Original message not found during dealer turn (hit loop).")
+                    self.cog.cog_print("Error: Original message not found during dealer turn (hit loop).")
                     await self.end_game(interaction, "Error - Message Deleted")
                     return
                 except Exception as e:
-                    print(f"Error editing message in dealer_turn (hit loop): {e}")
+                    self.cog.cog_print(f"Error editing message in dealer_turn (hit loop): {e}")
                     await self.end_game(interaction, "Error - Cannot Edit Message")
                     return
 
@@ -497,12 +498,12 @@ class BlackjackView(nextcord.ui.View):
              # Fallback if the original message or interaction is lost
              await self.interaction.channel.send(embed=embed)
         except Exception as e:
-             print(f"Error editing message in end_game: {e}")
+             self.cog.cog_print(f"Error editing message in end_game: {e}")
              # Try sending a new message as a last resort
              try:
                 await self.interaction.channel.send(embed=embed)
              except Exception as final_e:
-                print(f"Failed to send final game message: {final_e}")
+                self.cog.cog_print(f"Failed to send final game message: {final_e}")
 
 
     async def on_timeout(self):
@@ -540,7 +541,7 @@ class BlackjackView(nextcord.ui.View):
              # If message was deleted or interaction expired fully
              pass # Silently fail or log
         except Exception as e:
-             print(f"Error editing message on timeout: {e}")
+             self.cog.cog_print(f"Error editing message on timeout: {e}")
 
 
 # Setup function remains the same

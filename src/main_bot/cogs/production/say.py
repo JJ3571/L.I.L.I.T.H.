@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin, cog_console_line
 from main_bot.server_configs.config import GUILD_ID, GEMINI_API_KEY
 from main_bot.server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
@@ -107,7 +108,7 @@ class ComplementaryColorView(nextcord.ui.View):
         embed.set_image(url=f"attachment://comp_color_{self.comp_hex.lstrip('#')}.png")
         
         await interaction.response.send_message(embed=embed, file=file, ephemeral=False)
-        print(f"Sent complementary color {self.comp_hex} for original {self.original_hex}")
+        cog_console_line("Say", f"Sent complementary color {self.comp_hex} for original {self.original_hex}")
     
     async def on_timeout(self):
         # Disable the button when the view times out
@@ -146,7 +147,7 @@ def generate_zeroni(input_text: str):
             response_text_parts.append(chunk.text)
         return "".join(response_text_parts)
     except Exception as e:
-        print(f"Error during Gemini API call: {e}")
+        cog_console_line("Say", f"Error during Gemini API call: {e}")
         return None
     
 def generate_notes(input_text: str, include_web_search: bool = True):
@@ -200,10 +201,10 @@ def generate_notes(input_text: str, include_web_search: bool = True):
                 response_text_parts.append(chunk.text)
         return "".join(response_text_parts)
     except Exception as e:
-        print(f"Error during Gemini API call with web search: {e}")
+        cog_console_line("Say", f"Error during Gemini API call with web search: {e}")
         # Fallback to basic version without web search
         if include_web_search:
-            print("Retrying without web search...")
+            cog_console_line("Say", "Retrying without web search...")
             return generate_notes(input_text, include_web_search=False)
         return None
 
@@ -236,15 +237,15 @@ async def list_opgg_mcp_tools() -> list:
                     elif "result" in result:
                         return result["result"]
                     elif "error" in result:
-                        print(f"MCP tools/list error: {result['error']}")
+                        cog_console_line("Say", f"MCP tools/list error: {result['error']}")
                         return None
                     return result
                 else:
                     response_text = await response.text()
-                    print(f"MCP tools/list failed with status {response.status}: {response_text}")
+                    cog_console_line("Say", f"MCP tools/list failed with status {response.status}: {response_text}")
                     return None
     except Exception as e:
-        print(f"Error listing OP.GG MCP tools: {e}")
+        cog_console_line("Say", f"Error listing OP.GG MCP tools: {e}")
         return None
 
 async def call_opgg_mcp_tool(tool_name: str, arguments: dict = None) -> dict:
@@ -289,25 +290,25 @@ async def call_opgg_mcp_tool(tool_name: str, arguments: dict = None) -> dict:
                         error_info = result['error']
                         error_code = error_info.get('code', 'unknown')
                         error_message = error_info.get('message', 'Unknown error')
-                        print(f"MCP tool error for '{tool_name}': Code {error_code}, Message: {error_message}")
+                        cog_console_line("Say", f"MCP tool error for '{tool_name}': Code {error_code}, Message: {error_message}")
                         
                         # If tool not found, try to list available tools for debugging
                         if error_code == -32601:
-                            print(f"Tool '{tool_name}' not found. Attempting to list available tools...")
+                            cog_console_line("Say", f"Tool '{tool_name}' not found. Attempting to list available tools...")
                             available_tools = await list_opgg_mcp_tools()
                             if available_tools:
                                 tool_names = [tool.get('name', 'unknown') for tool in available_tools if isinstance(tool, dict)]
-                                print(f"Available tools: {', '.join(tool_names[:10])}...")  # Show first 10
+                                cog_console_line("Say", f"Available tools: {', '.join(tool_names[:10])}...")  # Show first 10
                         
                         # Return error dict for better error handling upstream
                         return {"error": {"code": error_code, "message": error_message}}
                     return result
                 else:
                     response_text = await response.text()
-                    print(f"MCP tool call failed with status {response.status}: {response_text}")
+                    cog_console_line("Say", f"MCP tool call failed with status {response.status}: {response_text}")
                     return None
     except Exception as e:
-        print(f"Error calling OP.GG MCP tool {tool_name}: {e}")
+        cog_console_line("Say", f"Error calling OP.GG MCP tool {tool_name}: {e}")
         return None
 
 def extract_summoner_info(query: str) -> tuple[str, str | None]:
@@ -785,20 +786,20 @@ async def _refresh_champion_cache() -> dict[str, str]:
         async with aiohttp.ClientSession() as session:
             async with session.get(DDragon_VERSION_URL, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
-                    print(f"Failed to fetch Data Dragon version: {response.status}")
+                    cog_console_line("Say", f"Failed to fetch Data Dragon version: {response.status}")
                     return _champion_cache or {}
                 versions = await response.json()
                 latest_version = versions[0] if versions else None
                 
                 if not latest_version:
-                    print("No version found in Data Dragon response")
+                    cog_console_line("Say", "No version found in Data Dragon response")
                     return _champion_cache or {}
             
             # Get champion data
             champion_url = DDragon_CHAMPION_URL.format(version=latest_version)
             async with session.get(champion_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
-                    print(f"Failed to fetch champion data: {response.status}")
+                    cog_console_line("Say", f"Failed to fetch champion data: {response.status}")
                     return _champion_cache or {}
                 
                 champion_data = await response.json()
@@ -823,15 +824,15 @@ async def _refresh_champion_cache() -> dict[str, str]:
                 # Update cache
                 _champion_cache = champion_map
                 _champion_cache_timestamp = time.time()
-                print(f"Loaded {len(champion_map)} champions from Data Dragon (version {latest_version})")
+                cog_console_line("Say", f"Loaded {len(champion_map)} champions from Data Dragon (version {latest_version})")
                 return champion_map
                 
     except asyncio.TimeoutError:
-        print("Timeout fetching champion data from Data Dragon")
+        cog_console_line("Say", "Timeout fetching champion data from Data Dragon")
         # Return existing cache if available, otherwise empty dict
         return _champion_cache if _champion_cache is not None else {}
     except Exception as e:
-        print(f"Error fetching champion list from Data Dragon: {e}")
+        cog_console_line("Say", f"Error fetching champion list from Data Dragon: {e}")
         # Return existing cache if available, otherwise empty dict
         return _champion_cache if _champion_cache is not None else {}
 
@@ -976,7 +977,7 @@ Respond with ONLY one word: "mcp" if OP.GG MCP tools would provide better data, 
         else:
             return 'web_search'
     except Exception as e:
-        print(f"Error in decide_query_method: {e}")
+        cog_console_line("Say", f"Error in decide_query_method: {e}")
         # Default to MCP for LoL queries if decision fails
         return 'mcp' if is_lol_related_query(query) else 'web_search'
 
@@ -1037,10 +1038,10 @@ async def handle_lol_query_with_mcp(query: str, summoner_name: str = None, tagli
                     'properties': properties,
                     'required': required
                 }
-        print(f"Discovered {len(available_tools)} MCP tools from server")
+        cog_console_line("Say", f"Discovered {len(available_tools)} MCP tools from server")
     else:
         # Fallback to known tools if discovery fails
-        print("Could not discover tools from server, using fallback list")
+        cog_console_line("Say", "Could not discover tools from server, using fallback list")
         available_tools = {
             # Match history and summoner tools (using actual tool names from documentation)
             'lol_list_summoner_matches': 'Returns recent match history with per-game stats for the target summoner',
@@ -1179,12 +1180,12 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
             
             # Validate that the selected tool exists
             if tool_name not in available_tools:
-                print(f"Warning: Selected tool '{tool_name}' not in available tools. Available: {list(available_tools.keys())[:5]}...")
+                cog_console_line("Say", f"Warning: Selected tool '{tool_name}' not in available tools. Available: {list(available_tools.keys())[:5]}...")
                 # Try to find a similar tool
                 for available_name in available_tools.keys():
                     if 'champion' in tool_name.lower() and 'champion' in available_name.lower():
                         tool_name = available_name
-                        print(f"Using similar tool: {tool_name}")
+                        cog_console_line("Say", f"Using similar tool: {tool_name}")
                         break
             
             # Validate and fill in required parameters
@@ -1203,20 +1204,20 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                     if param in tool_args:
                         # If the value is too long (likely the entire query), replace it
                         if len(str(tool_args[param])) > len(summoner_name) + 10:
-                            print(f"Overriding incorrect {param} value '{tool_args[param][:50]}...' with '{summoner_name}'")
+                            cog_console_line("Say", f"Overriding incorrect {param} value '{tool_args[param][:50]}...' with '{summoner_name}'")
                             tool_args[param] = summoner_name
                         # Also check if it doesn't match our extracted name
                         elif str(tool_args[param]).upper() != summoner_name.upper():
                             # If it's close but not exact, use our extracted name
                             if summoner_name.lower() not in str(tool_args[param]).lower():
-                                print(f"Overriding {param} value '{tool_args[param]}' with '{summoner_name}'")
+                                cog_console_line("Say", f"Overriding {param} value '{tool_args[param]}' with '{summoner_name}'")
                                 tool_args[param] = summoner_name
                 
                 # Also set it if the parameter exists in the schema but wasn't set
                 for param in name_params:
                     if param in properties and param not in tool_args:
                         tool_args[param] = summoner_name
-                        print(f"Added missing {param} parameter with value '{summoner_name}'")
+                        cog_console_line("Say", f"Added missing {param} parameter with value '{summoner_name}'")
             
             # Override tag_line if we have a tagline
             if tagline:
@@ -1224,18 +1225,18 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                 for param in tagline_params:
                     if param in tool_args:
                         if str(tool_args[param]).upper() != tagline.upper():
-                            print(f"Overriding {param} value '{tool_args[param]}' with '{tagline}'")
+                            cog_console_line("Say", f"Overriding {param} value '{tool_args[param]}' with '{tagline}'")
                             tool_args[param] = tagline
                     elif param in properties:
                         tool_args[param] = tagline
-                        print(f"Added missing {param} parameter with value '{tagline}'")
+                        cog_console_line("Say", f"Added missing {param} parameter with value '{tagline}'")
                 
                 # Auto-add region if tool requires it and we can derive it from tagline
                 if 'region' in properties and 'region' not in tool_args:
                     region = get_region_from_tagline(tagline)
                     if region:
                         tool_args['region'] = region
-                        print(f"Auto-added region '{region}' from tagline '{tagline}'")
+                        cog_console_line("Say", f"Auto-added region '{region}' from tagline '{tagline}'")
             
             # Check for missing required parameters and add defaults
             if tool_name in tool_schemas:
@@ -1265,7 +1266,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                             # Try to extract champion name from query if not provided
                             if not tool_args.get(param):
                                 # This is a fallback - ideally Gemini should extract it
-                                print(f"Warning: Champion name not provided for required parameter '{param}'")
+                                cog_console_line("Say", f"Warning: Champion name not provided for required parameter '{param}'")
                         elif enum_values:
                             # Use first enum value as default
                             tool_args[param] = enum_values[0]
@@ -1279,7 +1280,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                             elif param_type == 'boolean':
                                 tool_args[param] = False
                         
-                        print(f"Added default value for required parameter '{param}': {tool_args[param]}")
+                        cog_console_line("Say", f"Added default value for required parameter '{param}': {tool_args[param]}")
                 
                 # Validate enum values
                 for param, value in tool_args.items():
@@ -1287,11 +1288,11 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                         param_info = properties[param]
                         enum_values = param_info.get('enum', [])
                         if enum_values and value not in enum_values:
-                            print(f"Warning: Value '{value}' for parameter '{param}' not in enum {enum_values}, using first enum value")
+                            cog_console_line("Say", f"Warning: Value '{value}' for parameter '{param}' not in enum {enum_values}, using first enum value")
                             tool_args[param] = enum_values[0]
         except json.JSONDecodeError:
             # Fallback: try to extract tool name from text
-            print(f"Failed to parse tool decision JSON: {response_text}")
+            cog_console_line("Say", f"Failed to parse tool decision JSON: {response_text}")
             # Try to find a reasonable default based on query
             if 'champion' in query.lower() and 'win' in query.lower():
                 # Find a champion-related tool
@@ -1299,7 +1300,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                     if 'champion' in tool_name_check.lower():
                         tool_name = tool_name_check
                         tool_args = {}
-                        print(f"Using fallback tool: {tool_name}")
+                        cog_console_line("Say", f"Using fallback tool: {tool_name}")
                         break
                 else:
                     tool_name = list(available_tools.keys())[0] if available_tools else None
@@ -1312,7 +1313,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
             return "Sorry, I couldn't determine which tool to use for your query. Please try rephrasing your question."
         
         # Call the MCP tool
-        print(f"Calling MCP tool: {tool_name} with arguments: {tool_args}")
+        cog_console_line("Say", f"Calling MCP tool: {tool_name} with arguments: {tool_args}")
         mcp_result = await call_opgg_mcp_tool(tool_name, tool_args)
         
         if not mcp_result:
@@ -1366,7 +1367,7 @@ Please format this data into a clear, helpful response that directly answers the
         return formatted_response.strip() if formatted_response else str(mcp_result)
         
     except Exception as e:
-        print(f"Error in handle_lol_query_with_mcp: {e}")
+        cog_console_line("Say", f"Error in handle_lol_query_with_mcp: {e}")
         return f"Sorry, I encountered an error while processing your League of Legends query: {str(e)}"
 
 async def format_summoner_analysis(mcp_result: dict, summoner_name: str, tagline: str, limit: int = 10) -> str:
@@ -1422,7 +1423,7 @@ Be concise but informative. Format the response in a clear, readable way."""
         
         return analysis_response.strip() if analysis_response else "Unable to generate analysis."
     except Exception as e:
-        print(f"Error formatting summoner analysis: {e}")
+        cog_console_line("Say", f"Error formatting summoner analysis: {e}")
         return f"Match history retrieved, but analysis failed: {str(e)}"
 
 async def format_matchup_guide(mcp_result: dict, my_champion: str, opponent_champion: str, position: str) -> str:
@@ -1478,7 +1479,7 @@ Make it easy to read and actionable."""
         
         return guide_response.strip() if guide_response else "Unable to generate matchup guide."
     except Exception as e:
-        print(f"Error formatting matchup guide: {e}")
+        cog_console_line("Say", f"Error formatting matchup guide: {e}")
         return f"Matchup data retrieved, but formatting failed: {str(e)}"
 
 async def format_esports_schedule(mcp_result: dict) -> str:
@@ -1529,7 +1530,7 @@ Make it easy to scan and understand when matches are happening."""
         
         return schedule_response.strip() if schedule_response else "Unable to generate schedule."
     except Exception as e:
-        print(f"Error formatting esports schedule: {e}")
+        cog_console_line("Say", f"Error formatting esports schedule: {e}")
         return f"Schedule data retrieved, but formatting failed: {str(e)}"
 
 async def format_team_standings(mcp_result: dict, league: str) -> str:
@@ -1581,7 +1582,7 @@ Make it easy to read and compare teams."""
         
         return standings_response.strip() if standings_response else "Unable to generate standings."
     except Exception as e:
-        print(f"Error formatting team standings: {e}")
+        cog_console_line("Say", f"Error formatting team standings: {e}")
         return f"Standings data retrieved, but formatting failed: {str(e)}"
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -1708,7 +1709,7 @@ def get_gradient_midpoint_color(hex_color1: str, hex_color2: str) -> str:
     mid_color = interpolate_color((r1, g1, b1), (r2, g2, b2), 0.5)
     return rgb_to_hex(*mid_color)
 
-class Say(commands.Cog):
+class Say(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         # Rate limiting to prevent spam
@@ -1809,7 +1810,7 @@ class Say(commands.Cog):
                     await interaction.followup.send(f"I'm forbidden from creating a webhook in {final_target_channel_obj.mention}. Please check my permissions.", ephemeral=True)
                     return
                 except Exception as e:
-                    print(f"Error creating webhook: {e}")
+                    self.cog_print(f"Error creating webhook: {e}")
                     await interaction.followup.send("An error occurred while trying to create a webhook for the specified channel.", ephemeral=True)
                     return
             else:
@@ -1839,14 +1840,14 @@ class Say(commands.Cog):
                 await interaction.followup.send(f"Message sent as {character} {channel_mention_str}.", ephemeral=True)
                 # For logging, get updated balance
                 new_balance = await economy_cog.get_user_balance(user_id)
-                print(f"Message sent as {character} by {interaction.user.name} ({user_id}) {channel_mention_str}: {message}. Cost: {COST_TO_SAY}. Balance remaining: {new_balance}")
+                self.cog_print(f"Message sent as {character} by {interaction.user.name} ({user_id}) {channel_mention_str}: {message}. Cost: {COST_TO_SAY}. Balance remaining: {new_balance}")
             else:
                 # Do not deduct if sending failed
                 await interaction.followup.send(f"Failed to send message. Webhook response: {response.status_code} - {response.text}", ephemeral=True)
-                print(f"Failed to send message as {character} by {interaction.user.name} ({user_id}): {response.status_code} - {response.text}")
+                self.cog_print(f"Failed to send message as {character} by {interaction.user.name} ({user_id}): {response.status_code} - {response.text}")
 
         except Exception as e:
-            print(f"An error occurred in /say command: {e}")
+            self.cog_print(f"An error occurred in /say command: {e}")
             await interaction.followup.send("An unexpected error occurred. Please try again later.", ephemeral=True)
         
         finally:
@@ -1855,7 +1856,7 @@ class Say(commands.Cog):
                     await temp_webhook_obj.delete(reason="Cleanup after /say command")
                 except Exception as e:
                     webhook_id_for_log = temp_webhook_obj.id if temp_webhook_obj else "Unknown ID"
-                    print(f"Error deleting temporary webhook {webhook_id_for_log}: {e}")
+                    self.cog_print(f"Error deleting temporary webhook {webhook_id_for_log}: {e}")
 
     @nextcord.slash_command(name='opgg_summoner', description="Analyze a League of Legends summoner's recent performance", guild_ids=[GUILD_ID])
     async def opgg_summoner(
@@ -1979,7 +1980,7 @@ class Say(commands.Cog):
                 await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            print(f"Error in /opgg_summoner: {e}")
+            self.cog_print(f"Error in /opgg_summoner: {e}")
             await interaction.followup.send(
                 f"❌ An error occurred while analyzing the summoner: {str(e)}",
                 ephemeral=True
@@ -2085,7 +2086,7 @@ class Say(commands.Cog):
                 await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            print(f"Error in /opgg_matchup: {e}")
+            self.cog_print(f"Error in /opgg_matchup: {e}")
             await interaction.followup.send(
                 f"❌ An error occurred while retrieving the matchup guide: {str(e)}",
                 ephemeral=True
@@ -2145,7 +2146,7 @@ class Say(commands.Cog):
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            print(f"Error in /opgg_esports_schedule: {e}")
+            self.cog_print(f"Error in /opgg_esports_schedule: {e}")
             await interaction.followup.send(
                 f"❌ An error occurred while retrieving the schedule: {str(e)}",
                 ephemeral=True
@@ -2220,7 +2221,7 @@ class Say(commands.Cog):
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            print(f"Error in /opgg_standings: {e}")
+            self.cog_print(f"Error in /opgg_standings: {e}")
             await interaction.followup.send(
                 f"❌ An error occurred while retrieving the standings: {str(e)}",
                 ephemeral=True
@@ -2238,7 +2239,7 @@ class Say(commands.Cog):
             try:
                 user = await self.bot.fetch_user(payload.user_id)
             except nextcord.NotFound:
-                print(f"[REACTION DEBUG] User {payload.user_id} not found.")
+                self.cog_print(f"[REACTION DEBUG] User {payload.user_id} not found.")
                 return
         
         if user.bot: # Check again after fetching, just in case
@@ -2255,13 +2256,13 @@ class Say(commands.Cog):
 
             message = await channel.fetch_message(payload.message_id)
         except nextcord.NotFound:
-            print(f"[REACTION DEBUG] Message or Channel not found for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
+            self.cog_print(f"[REACTION DEBUG] Message or Channel not found for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
             return
         except nextcord.Forbidden:
-            print(f"[REACTION DEBUG] Bot lacks permissions to fetch message/channel for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
+            self.cog_print(f"[REACTION DEBUG] Bot lacks permissions to fetch message/channel for reaction (Msg ID: {payload.message_id}, Chan ID: {payload.channel_id}).")
             return
         except Exception as e:
-            print(f"[REACTION DEBUG] Error fetching message/channel: {e}")
+            self.cog_print(f"[REACTION DEBUG] Error fetching message/channel: {e}")
             return
 
         generator_function = None
@@ -2269,13 +2270,13 @@ class Say(commands.Cog):
         response_prefix = None
 
         if str(payload.emoji) == ZERONI_REACTION_EMOJI and message.content:
-            print(f"'{ZERONI_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+            self.cog_print(f"'{ZERONI_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
             generator_function = generate_zeroni
             character_name = "Madame Zeroni"
             response_prefix = "Madame Zeroni (via raw reaction)"
 
         elif str(payload.emoji) == COMMUNITY_NOTES_REACTION_EMOJI and message.content:
-            print(f"'{COMMUNITY_NOTES_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+            self.cog_print(f"'{COMMUNITY_NOTES_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
             generator_function = lambda text: generate_notes(text, True)  # Enable web search for reactions too
             character_name = "Community Note"
             response_prefix = "Community Note (via raw reaction)"
@@ -2287,7 +2288,7 @@ class Say(commands.Cog):
             api_response_content = await loop.run_in_executor(None, generator_function, message.content)
 
             if not api_response_content:
-                print(f"{response_prefix} had no response for: \"{message.content[:50]}...\"")
+                self.cog_print(f"{response_prefix} had no response for: \"{message.content[:50]}...\"")
                 return
 
             embed_description = f"{api_response_content}\n\n[Jump to original message]({message.jump_url})"
@@ -2314,14 +2315,14 @@ class Say(commands.Cog):
 
             # Send the embed to the channel where the reaction occurred
             await channel.send(embed=embed)
-            print(f"Sent {character_name} embed response to #{channel.name} for message ID {message.id}")
+            self.cog_print(f"Sent {character_name} embed response to #{channel.name} for message ID {message.id}")
 
         except nextcord.Forbidden:
-            print(f"Bot lacks 'Send Messages' or 'Embed Links' permission in {channel.name} for {character_name} reaction response.")
+            self.cog_print(f"Bot lacks 'Send Messages' or 'Embed Links' permission in {channel.name} for {character_name} reaction response.")
             # You might want to notify the user or log this more formally
             # await message.reply(f"I can't post {character_name}'s response here. I might be missing 'Send Messages' or 'Embed Links' permissions in {channel.mention}.", delete_after=30)
         except Exception as e:
-            print(f"An error occurred in on_raw_reaction_add for {character_name}: {e}")
+            self.cog_print(f"An error occurred in on_raw_reaction_add for {character_name}: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message):
@@ -2398,7 +2399,7 @@ class Say(commands.Cog):
             else:
                 trigger_type = "reply"
             
-            print(f"Bot {trigger_type} detected from {message.author.name} in #{message.channel.name}: {message.content[:100]}...")
+            self.cog_print(f"Bot {trigger_type} detected from {message.author.name} in #{message.channel.name}: {message.content[:100]}...")
             
             # Process the message content with context
             content_to_process = message.content
@@ -2444,7 +2445,7 @@ Please respond to the user's reply in context of the previous conversation."""
                 
                 if query_method == 'mcp':
                     # Use OP.GG MCP tools for LoL-specific queries
-                    print(f"Using OP.GG MCP tools for query: {context_prompt[:50]}...")
+                    self.cog_print(f"Using OP.GG MCP tools for query: {context_prompt[:50]}...")
                     
                     # If this looks like a summoner search but doesn't have the required tagline format, prompt user
                     if has_summoner_keyword and not has_valid_summoner_format:
@@ -2480,11 +2481,11 @@ Please respond to the user's reply in context of the previous conversation."""
                     try:
                         api_response_content = await handle_lol_query_with_mcp(context_prompt, summoner_name=summoner_name, tagline=extracted_tagline)
                     except Exception as e:
-                        print(f"Error in handle_lol_query_with_mcp: {e}")
+                        self.cog_print(f"Error in handle_lol_query_with_mcp: {e}")
                         api_response_content = f"❌ An error occurred while processing your League of Legends query: {str(e)}. Please try again or use a slash command like `/opgg_summoner`."
                 else:
                     # Use Gemini web search for general queries
-                    print(f"Using Gemini web search for query: {context_prompt[:50]}...")
+                    self.cog_print(f"Using Gemini web search for query: {context_prompt[:50]}...")
                     try:
                         loop = asyncio.get_event_loop()
                         api_response_content = await loop.run_in_executor(
@@ -2494,11 +2495,11 @@ Please respond to the user's reply in context of the previous conversation."""
                             True  # Enable web search
                         )
                     except Exception as e:
-                        print(f"Error in generate_notes: {e}")
+                        self.cog_print(f"Error in generate_notes: {e}")
                         api_response_content = f"❌ An error occurred while processing your query: {str(e)}. Please try again."
 
                 if not api_response_content:
-                    print(f"No response generated for {trigger_type}: \"{content_to_process[:50]}...\"")
+                    self.cog_print(f"No response generated for {trigger_type}: \"{content_to_process[:50]}...\"")
                     # Send a helpful error message
                     error_embed = nextcord.Embed(
                         description="❌ I couldn't generate a response for your query. Please try rephrasing or use a specific command.",
@@ -2606,17 +2607,17 @@ Please respond to the user's reply in context of the previous conversation."""
                         await message.reply(embed=embed, mention_author=False)
                     else:
                         await message.channel.send(embed=embed)
-                print(f"Sent enhanced response to {trigger_type} in #{message.channel.name}")
+                self.cog_print(f"Sent enhanced response to {trigger_type} in #{message.channel.name}")
 
             except nextcord.Forbidden:
-                print(f"Bot lacks permissions to respond to {trigger_type} in {message.channel.name}")
+                self.cog_print(f"Bot lacks permissions to respond to {trigger_type} in {message.channel.name}")
                 try:
                     # Try to react with an emoji to indicate we saw the message but can't respond
                     await message.add_reaction("👀")
                 except:
                     pass  # If we can't even react, just silently fail
             except Exception as e:
-                print(f"An error occurred processing {trigger_type}: {e}")
+                self.cog_print(f"An error occurred processing {trigger_type}: {e}")
 
     async def _handle_hex_colors(self, message: nextcord.Message, hex_colors: list[str]):
         """Handle hex color detection and display color information"""
@@ -2628,18 +2629,18 @@ Please respond to the user's reply in context of the previous conversation."""
                 await self._handle_gradient_colors(message, hex_colors[0], hex_colors[1])
             
         except nextcord.Forbidden:
-            print(f"Bot lacks permissions to respond with color info in {message.channel.name}")
+            self.cog_print(f"Bot lacks permissions to respond with color info in {message.channel.name}")
             try:
                 await message.add_reaction("🎨")
             except:
                 pass
         except Exception as e:
-            print(f"An error occurred processing hex colors {hex_colors}: {e}")
+            self.cog_print(f"An error occurred processing hex colors {hex_colors}: {e}")
 
     async def _handle_single_color(self, message: nextcord.Message, hex_color: str):
         """Handle single hex color display"""
         hex_color = hex_color.upper()
-        print(f"Hex color {hex_color} detected from {message.author.name} in #{message.channel.name}")
+        self.cog_print(f"Hex color {hex_color} detected from {message.author.name} in #{message.channel.name}")
         
         # Convert to various color formats
         r, g, b = hex_to_rgb(hex_color)
@@ -2705,13 +2706,13 @@ Please respond to the user's reply in context of the previous conversation."""
         embed.set_image(url=f"attachment://color_{hex_color.lstrip('#')}.png")
         
         await message.reply(embed=embed, file=file, view=view, mention_author=False)
-        print(f"Sent color information for {hex_color} in #{message.channel.name}")
+        self.cog_print(f"Sent color information for {hex_color} in #{message.channel.name}")
 
     async def _handle_gradient_colors(self, message: nextcord.Message, hex_color1: str, hex_color2: str):
         """Handle gradient between two hex colors"""
         hex_color1 = hex_color1.upper()
         hex_color2 = hex_color2.upper()
-        print(f"Gradient {hex_color1} → {hex_color2} detected from {message.author.name} in #{message.channel.name}")
+        self.cog_print(f"Gradient {hex_color1} → {hex_color2} detected from {message.author.name} in #{message.channel.name}")
         
         # Get color information for both colors
         r1, g1, b1 = hex_to_rgb(hex_color1)
@@ -2785,7 +2786,7 @@ Please respond to the user's reply in context of the previous conversation."""
         embed.set_image(url=f"attachment://{filename}")
         
         await message.reply(embed=embed, file=file, mention_author=False)
-        print(f"Sent gradient information for {hex_color1} → {hex_color2} in #{message.channel.name}")
+        self.cog_print(f"Sent gradient information for {hex_color1} → {hex_color2} in #{message.channel.name}")
 
     def _get_color_name(self, r: int, g: int, b: int) -> str:
         """Get a basic color name based on RGB values"""

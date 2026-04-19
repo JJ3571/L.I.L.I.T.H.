@@ -5,6 +5,7 @@ import asyncio
 from asyncio import Semaphore
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import watch_party_channel_id, seen_category_id, hidden_category_id
 
@@ -12,7 +13,7 @@ WATCH_PARTY_CHECK_INTERVAL = 5  # In minutes
 WATCH_PARTY_EVENT_TIME = datetime.time(hour=18, minute=15)  # 6:15 PM PST
 WATCH_PARTY_AUTO_HIDE_TIMEOUT = datetime.timedelta(hours=3)  # 3 hours
 
-class WatchPartyCog(commands.Cog):
+class WatchPartyCog(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.reserved_channels = {}
@@ -22,24 +23,24 @@ class WatchPartyCog(commands.Cog):
         self.voice_move_semaphore = Semaphore(2)  # Limit to 2 concurrent moves for safety
         self.move_delay = 0.5  # Default delay in seconds between moves
         
-        boot_print("Initializing WatchPartyCog.")
+        self.cog_print("Initializing WatchPartyCog.")
         self.monitor_watch_party.start()
 
     def cog_unload(self):
         self.monitor_watch_party.cancel()
-        print("WatchPartyCog has been unloaded.")
+        self.cog_print("WatchPartyCog has been unloaded.")
 
     @tasks.loop(minutes=WATCH_PARTY_CHECK_INTERVAL)
     async def monitor_watch_party(self):
-        print("Running monitor_watch_party task.")
+        self.cog_print("Running monitor_watch_party task.")
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
-            print(f"Guild with ID {GUILD_ID} not found.")
+            self.cog_print(f"Guild with ID {GUILD_ID} not found.")
             return
 
         watch_party_channel = guild.get_channel(watch_party_channel_id)
         if not watch_party_channel:
-            print(f"Watch Party channel with ID {watch_party_channel_id} not found in guild '{guild.name}'.")
+            self.cog_print(f"Watch Party channel with ID {watch_party_channel_id} not found in guild '{guild.name}'.")
             return
 
         current_time = datetime.datetime.now(pytz.timezone('US/Pacific'))
@@ -50,10 +51,10 @@ class WatchPartyCog(commands.Cog):
             overwrites = watch_party_channel.overwrites
             overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=True)
             await watch_party_channel.edit(overwrites=overwrites)
-            print(f"Watch Party channel '{watch_party_channel.name}' moved to seen category for the event and reserved until {self.reservation_end_time}.")
+            self.cog_print(f"Watch Party channel '{watch_party_channel.name}' moved to seen category for the event and reserved until {self.reservation_end_time}.")
 
         if self.reservation_end_time and current_time < self.reservation_end_time:
-            print(f"Watch Party channel '{watch_party_channel.name}' is reserved until {self.reservation_end_time}.")
+            self.cog_print(f"Watch Party channel '{watch_party_channel.name}' is reserved until {self.reservation_end_time}.")
             return
 
         if len(watch_party_channel.members) == 0:
@@ -65,12 +66,12 @@ class WatchPartyCog(commands.Cog):
             if last_message_time and (datetime.datetime.now(pytz.utc) - last_message_time) > WATCH_PARTY_AUTO_HIDE_TIMEOUT:
                 hidden_category = guild.get_channel(hidden_category_id)
                 await watch_party_channel.edit(category=hidden_category)
-                print(f"Watch Party channel '{watch_party_channel.name}' moved back to hidden category due to inactivity.")
+                self.cog_print(f"Watch Party channel '{watch_party_channel.name}' moved back to hidden category due to inactivity.")
 
     @monitor_watch_party.before_loop
     async def before_monitor_watch_party(self):
         await self.bot.wait_until_ready()
-        print("Bot is ready. Starting monitor_watch_party loop.")
+        self.cog_print("Bot is ready. Starting monitor_watch_party loop.")
 
     async def move_user_with_rate_limit(self, user: nextcord.Member, target_channel: nextcord.VoiceChannel, max_retries: int = 3):
         """
@@ -85,19 +86,19 @@ class WatchPartyCog(commands.Cog):
                 except nextcord.errors.HTTPException as e:
                     if e.status == 429:  # Rate limited
                         wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
-                        print(f"Rate limited moving {user.display_name}, waiting {wait_time}s (attempt {attempt + 1})")
+                        self.cog_print(f"Rate limited moving {user.display_name}, waiting {wait_time}s (attempt {attempt + 1})")
                         await asyncio.sleep(wait_time)
                     elif e.status == 400:  # User likely disconnected
-                        print(f"User {user.display_name} likely disconnected during move")
+                        self.cog_print(f"User {user.display_name} likely disconnected during move")
                         return False
                     else:
-                        print(f"HTTP error moving {user.display_name}: {e}")
+                        self.cog_print(f"HTTP error moving {user.display_name}: {e}")
                         return False
                 except Exception as e:
-                    print(f"Unexpected error moving {user.display_name}: {e}")
+                    self.cog_print(f"Unexpected error moving {user.display_name}: {e}")
                     return False
             
-            print(f"Failed to move {user.display_name} after {max_retries} attempts")
+            self.cog_print(f"Failed to move {user.display_name} after {max_retries} attempts")
             return False
 
     async def vacate_users_with_rate_limit(self, users: list, target_channel: nextcord.VoiceChannel):
@@ -110,25 +111,25 @@ class WatchPartyCog(commands.Cog):
         successful_moves = []
         failed_moves = []
         
-        print(f"Starting vacate operation: moving {len(users)} users to {target_channel.name}")
+        self.cog_print(f"Starting vacate operation: moving {len(users)} users to {target_channel.name}")
         
         for i, user in enumerate(users, 1):
             # Check if user is still in a voice channel before attempting move
             if not user.voice or not user.voice.channel:
-                print(f"User {user.display_name} is no longer in a voice channel, skipping...")
+                self.cog_print(f"User {user.display_name} is no longer in a voice channel, skipping...")
                 failed_moves.append(user)
                 continue
                 
-            print(f"Moving user {i}/{len(users)}: {user.display_name}")
+            self.cog_print(f"Moving user {i}/{len(users)}: {user.display_name}")
             
             move_success = await self.move_user_with_rate_limit(user, target_channel)
             
             if move_success:
                 successful_moves.append(user)
-                print(f"✅ Successfully moved {user.display_name} to {target_channel.name}")
+                self.cog_print(f"✅ Successfully moved {user.display_name} to {target_channel.name}")
             else:
                 failed_moves.append(user)
-                print(f"❌ Failed to move {user.display_name}")
+                self.cog_print(f"❌ Failed to move {user.display_name}")
         
         return successful_moves, failed_moves
 
@@ -320,13 +321,13 @@ class WatchPartyCog(commands.Cog):
         guild = channel.guild
         hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
         if not hidden_category:
-            print(f"Hidden category not found in guild '{guild.name}'.")
+            self.cog_print(f"Hidden category not found in guild '{guild.name}'.")
             return
 
         overwrites = channel.overwrites
         overwrites[guild.default_role] = nextcord.PermissionOverwrite(view_channel=False)
         await channel.edit(category=hidden_category, overwrites=overwrites)
-        print(f"Moved '{channel.name}' to hidden category and updated permissions.")
+        self.cog_print(f"Moved '{channel.name}' to hidden category and updated permissions.")
 
 async def setup(bot):
     bot.add_cog(WatchPartyCog(bot))

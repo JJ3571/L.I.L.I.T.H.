@@ -6,6 +6,7 @@ from nextcord.ui import Button, View, Modal, TextInput
 from datetime import datetime
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 from main_bot.server_configs.database_config import DATABASE_PATHS
@@ -417,7 +418,7 @@ class ActiveWagersListView(View):
                                                 cog_instance=self.cog))
 
 
-class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
+class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed for clarity
     def __init__(self, bot):
         self.bot = bot
         # self.db_path = "betting_events.db" # Defined globally for helper
@@ -443,7 +444,7 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
                                                          # Proper persistent views often involve storing view structure or re-sending.
                                                          # For now, this just makes the view listen if custom_ids match.
         conn.close()
-        print("Attempted to re-add persistent views for betting events.")
+        self.cog_print("Attempted to re-add persistent views for betting events.")
 
 
     def create_tables(self):
@@ -791,26 +792,26 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
         
         if not event_data or not event_data['message_id'] or not event_data['channel_id']:
             conn.close()
-            print(f"Event {event_id} missing message_id or channel_id for update.")
+            self.cog_print(f"Event {event_id} missing message_id or channel_id for update.")
             return
 
         try:
             guild = self.bot.get_guild(event_data['guild_id'])
             if not guild:
-                print(f"Guild {event_data['guild_id']} not found for event {event_id}.")
+                self.cog_print(f"Guild {event_data['guild_id']} not found for event {event_id}.")
                 conn.close()
                 return 
             
             channel = guild.get_channel(event_data['channel_id'])
             if not channel:
-                print(f"Channel {event_data['channel_id']} not found in guild {guild.id} for event {event_id}.")
+                self.cog_print(f"Channel {event_data['channel_id']} not found in guild {guild.id} for event {event_id}.")
                 conn.close()
                 return
             
             target_message = await channel.fetch_message(event_data['message_id'])
             
             if not target_message: # Should be caught by fetch_message's NotFound exception, but good practice
-                print(f"Could not fetch message {event_data['message_id']} from channel {channel.id} for event {event_id}.")
+                self.cog_print(f"Could not fetch message {event_data['message_id']} from channel {channel.id} for event {event_id}.")
                 conn.close()
                 return
 
@@ -835,9 +836,9 @@ class BettingCog(commands.Cog, name="BettingEvents"): # Renamed for clarity
             await target_message.edit(embed=embed) # view=new_view if needed
 
         except nextcord.NotFound:
-            print(f"Message {event_data['message_id']} for event {event_id} not found for update.")
+            self.cog_print(f"Message {event_data['message_id']} for event {event_id} not found for update.")
         except Exception as e:
-            print(f"Error updating event message for {event_id}: {e}")
+            self.cog_print(f"Error updating event message for {event_id}: {e}")
         finally:
             conn.close()
 

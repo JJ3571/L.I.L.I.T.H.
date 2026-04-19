@@ -4,12 +4,13 @@ from nextcord import slash_command, SlashOption
 import logging
 from typing import Optional
 
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.utils.admin_command_manager import admin_command_manager
 
 logger = logging.getLogger(__name__)
 
-class AdminCommandToggle(commands.Cog):
+class AdminCommandToggle(commands.Cog, CogLogMixin):
     """Manage visibility of admin commands"""
     
     def __init__(self, bot):
@@ -239,7 +240,7 @@ class AdminCommandToggle(commands.Cog):
     async def command_autocomplete(self, interaction: nextcord.Interaction, current: str):
         """Autocomplete for command names"""
         try:
-            print(f"[AUTOCOMPLETE] Function called with current: '{current}'")
+            self.cog_print(f"[AUTOCOMPLETE] Function called with current: '{current}'")
             
             # Get the cog parameter from the interaction options
             cog_name = "CraftyController"  # Default
@@ -249,12 +250,12 @@ class AdminCommandToggle(commands.Cog):
                         cog_name = option['value']
                         break
             
-            print(f"[AUTOCOMPLETE] Using cog: {cog_name}")
+            self.cog_print(f"[AUTOCOMPLETE] Using cog: {cog_name}")
             logger.info(f"Autocomplete requested for cog: {cog_name}, current input: '{current}'")
             
             # Get all available commands
             all_commands = admin_command_manager.get_all_admin_commands(cog_name)
-            print(f"[AUTOCOMPLETE] Available commands: {all_commands}")
+            self.cog_print(f"[AUTOCOMPLETE] Available commands: {all_commands}")
             logger.info(f"Available commands for {cog_name}: {all_commands}")
             
             # Filter commands based on current input
@@ -264,7 +265,7 @@ class AdminCommandToggle(commands.Cog):
                     # The choice needs to return the actual command name, not the display name
                     choices.append(cmd)
             
-            print(f"[AUTOCOMPLETE] Sending choices: {choices}")
+            self.cog_print(f"[AUTOCOMPLETE] Sending choices: {choices}")
             logger.info(f"Autocomplete choices: {choices}")
             
             # Limit to 25 choices (Discord's limit)
@@ -272,7 +273,7 @@ class AdminCommandToggle(commands.Cog):
                 await interaction.response.send_autocomplete(choices[:25])
             
         except Exception as e:
-            print(f"[AUTOCOMPLETE] Error: {e}")
+            self.cog_print(f"[AUTOCOMPLETE] Error: {e}")
             logger.error(f"Error in command_autocomplete: {e}")
             # Send empty list on error to prevent command failure
             if not interaction.response.is_done():

@@ -12,6 +12,7 @@ import aiosqlite
 from asyncio import Semaphore
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID, waterboard_category_id
 from main_bot.server_configs.config import bot_spam_id, admin_user_ids
 from main_bot.cogs.production.economy import Economy
@@ -38,7 +39,7 @@ ENHANCED_WATERBOARD_GRACE_SECONDS = 10
 PHASE_DELAY_SECONDS = 1.0
 
 
-class WaterboardCog3(commands.Cog):
+class WaterboardCog3(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["waterboard"]
@@ -129,7 +130,7 @@ class WaterboardCog3(commands.Cog):
             )
             return True
         except Exception as e:
-            print(f"Error showing waterboard category: {WaterboardCog3.s_print_static(str(e))}")
+            self.cog_print(f"Error showing waterboard category: {WaterboardCog3.s_print_static(str(e))}")
             return False
 
     async def hide_waterboard_category(self, guild):
@@ -145,7 +146,7 @@ class WaterboardCog3(commands.Cog):
             )
             return True
         except Exception as e:
-            print(f"Error hiding waterboard category: {WaterboardCog3.s_print_static(str(e))}")
+            self.cog_print(f"Error hiding waterboard category: {WaterboardCog3.s_print_static(str(e))}")
             return False
 
     async def move_user_with_rate_limit(
@@ -161,27 +162,27 @@ class WaterboardCog3(commands.Cog):
                 except nextcord.errors.HTTPException as e:
                     if e.status == 429:
                         wait_time = (2**attempt) * 0.5
-                        print(
+                        self.cog_print(
                             f"Rate limited moving {self.s_print_static(user.name)}, waiting {wait_time}s (attempt {attempt + 1})"
                         )
                         await asyncio.sleep(wait_time)
                     elif e.status == 400:
-                        print(
+                        self.cog_print(
                             f"User {self.s_print_static(user.name)} likely disconnected during move"
                         )
                         return False
                     else:
-                        print(
+                        self.cog_print(
                             f"HTTP error moving {self.s_print_static(user.name)}: {e}"
                         )
                         return False
                 except Exception as e:
-                    print(
+                    self.cog_print(
                         f"Unexpected error moving {self.s_print_static(user.name)}: {e}"
                     )
                     return False
 
-            print(
+            self.cog_print(
                 f"Failed to move {self.s_print_static(user.name)} after {max_retries} attempts"
             )
             return False
@@ -200,20 +201,20 @@ class WaterboardCog3(commands.Cog):
                 results = await asyncio.gather(*move_tasks, return_exceptions=True)
                 for user, result in zip(batch, results):
                     if isinstance(result, Exception):
-                        print(
+                        self.cog_print(
                             f"Exception moving {self.s_print_static(user.name)}: {result}"
                         )
                     elif result is True:
                         successful_moves.append(user)
-                        print(
+                        self.cog_print(
                             f"Successfully moved {self.s_print_static(user.name)} to {self.s_print_static(channel.name)}"
                         )
                     else:
-                        print(
+                        self.cog_print(
                             f"Failed to move {self.s_print_static(user.name)} to {self.s_print_static(channel.name)}"
                         )
             except Exception as e:
-                print(f"Batch move error: {e}")
+                self.cog_print(f"Batch move error: {e}")
             if i + batch_size < len(users):
                 await asyncio.sleep(0.8)
         return successful_moves
@@ -439,7 +440,7 @@ class WaterboardCog3(commands.Cog):
         name="waterboard", description="Waterboard a user (v3 - premade channels)", guild_ids=[GUILD_ID]
     )
     async def waterboard(self, interaction: nextcord.Interaction, user: nextcord.Member):
-        print(f"User {interaction.user.id} used waterboard on {user.name}.")
+        self.cog_print(f"User {interaction.user.id} used waterboard on {user.name}.")
         cost, next_cost, err = await self._common_waterboard_purchase_flow(
             interaction, user
         )
@@ -486,7 +487,7 @@ class WaterboardCog3(commands.Cog):
     async def enhanced_waterboard(
         self, interaction: nextcord.Interaction, user: nextcord.Member
     ):
-        print(f"User {interaction.user.id} used enhanced-waterboard on {user.name}.")
+        self.cog_print(f"User {interaction.user.id} used enhanced-waterboard on {user.name}.")
         cost, next_cost, err = await self._common_waterboard_purchase_flow(
             interaction, user, cost_multiplier=1.5
         )
@@ -531,7 +532,7 @@ class WaterboardCog3(commands.Cog):
         guild_ids=[GUILD_ID],
     )
     async def waterboard_party(self, interaction: nextcord.Interaction):
-        print(f"User {interaction.user.id} used waterboard-party.")
+        self.cog_print(f"User {interaction.user.id} used waterboard-party.")
         if not interaction.user.voice or not interaction.user.voice.channel:
             await interaction.response.send_message(
                 embed=nextcord.Embed(
@@ -713,11 +714,11 @@ class WaterboardCog3(commands.Cog):
             async with self.waterboard_sessions_lock:
                 self.active_waterboard_sessions += 1
                 session_counted = True
-            print(f"Waterboard session started for {self.s_print_static(user.name)}. Active: {self.active_waterboard_sessions}")
+            self.cog_print(f"Waterboard session started for {self.s_print_static(user.name)}. Active: {self.active_waterboard_sessions}")
 
             channels = self.get_waterboard_channels(guild, count=10)
             if len(channels) < 10:
-                print(
+                self.cog_print(
                     f"Waterboard category has only {len(channels)} channels. Need 10. Run .create_water_channels"
                 )
                 return
@@ -726,7 +727,7 @@ class WaterboardCog3(commands.Cog):
             await asyncio.sleep(PHASE_DELAY_SECONDS)
 
             if not user.voice or not user.voice.channel:
-                print(f"{self.s_print_static(user.name)} left voice before waterboard.")
+                self.cog_print(f"{self.s_print_static(user.name)} left voice before waterboard.")
                 return
 
             for ch in channels:
@@ -745,7 +746,7 @@ class WaterboardCog3(commands.Cog):
                     await self.move_user_with_rate_limit(user, orig)
 
         except Exception as e:
-            print(f"Error waterboarding {self.s_print_static(user.name)}: {self.s_print_static(str(e))}")
+            self.cog_print(f"Error waterboarding {self.s_print_static(user.name)}: {self.s_print_static(str(e))}")
         finally:
             if session_counted:
                 async with self.waterboard_sessions_lock:
@@ -784,11 +785,11 @@ class WaterboardCog3(commands.Cog):
             async with self.waterboard_sessions_lock:
                 self.active_waterboard_sessions += 1
                 session_counted = True
-            print(f"Enhanced waterboard started for {self.s_print_static(user.name)}")
+            self.cog_print(f"Enhanced waterboard started for {self.s_print_static(user.name)}")
 
             channels = self.get_waterboard_channels(guild, count=10)
             if len(channels) < 10:
-                print("Enhanced waterboard: need 10 channels in waterboard category.")
+                self.cog_print("Enhanced waterboard: need 10 channels in waterboard category.")
                 return
 
             if original_channel:
@@ -802,13 +803,13 @@ class WaterboardCog3(commands.Cog):
             await asyncio.sleep(PHASE_DELAY_SECONDS)
 
             if not user.voice or not user.voice.channel:
-                print(f"{self.s_print_static(user.name)} left before enhanced waterboard.")
+                self.cog_print(f"{self.s_print_static(user.name)} left before enhanced waterboard.")
                 return
 
             for ch in channels:
                 if not user.voice or not user.voice.channel:
                     # Graceful wait: user may rejoin quickly
-                    print(
+                    self.cog_print(
                         f"{self.s_print_static(user.name)} disconnected. Waiting {ENHANCED_WATERBOARD_GRACE_SECONDS}s to see if they rejoin..."
                     )
                     await asyncio.sleep(ENHANCED_WATERBOARD_GRACE_SECONDS)
@@ -831,7 +832,7 @@ class WaterboardCog3(commands.Cog):
                     await self.move_user_with_rate_limit(user, original_channel)
 
         except Exception as e:
-            print(
+            self.cog_print(
                 f"Error enhanced waterboarding {self.s_print_static(user.name)}: {self.s_print_static(str(e))}"
             )
         finally:
@@ -893,7 +894,7 @@ class WaterboardCog3(commands.Cog):
 
             channels = self.get_waterboard_channels(guild, count=2)
             if len(channels) < 2:
-                print("Waterboard party needs at least 2 channels in waterboard category.")
+                self.cog_print("Waterboard party needs at least 2 channels in waterboard category.")
                 return
 
             ch_first, ch_second = channels[0], channels[1]
@@ -923,7 +924,7 @@ class WaterboardCog3(commands.Cog):
                     await self.move_users_in_batches(to_return, orig, batch_size=2)
 
         except Exception as e:
-            print(f"Error waterboard party: {self.s_print_static(str(e))}")
+            self.cog_print(f"Error waterboard party: {self.s_print_static(str(e))}")
         finally:
             if session_counted:
                 async with self.waterboard_sessions_lock:

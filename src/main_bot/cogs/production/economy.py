@@ -6,12 +6,13 @@ import random
 import pytz
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
 from main_bot.server_configs.database_config import DATABASE_PATHS
 
 
-class Economy(commands.Cog):
+class Economy(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.voice_timers = {}
@@ -62,12 +63,12 @@ class Economy(commands.Cog):
                 current_balance = result[0] if result else 0
                 
                 if current_balance < amount:
-                    print(f"[DEBUG] Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
+                    self.cog_print(f"[DEBUG] Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
                     return False
                 
                 # Deduct the amount
                 await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-                print(f"[DEBUG] Successfully deducted {amount} coins from user {user_id}")
+                self.cog_print(f"[DEBUG] Successfully deducted {amount} coins from user {user_id}")
             await conn.commit()
             return True
 
@@ -132,17 +133,17 @@ class Economy(commands.Cog):
             if channel:
                 try:
                     await channel.send(file=nextcord.File(self.db_path))
-                    print("Backup task completed.")
+                    self.cog_print("Backup task completed.")
                 except Exception as e:
-                    print(f"Backup task failed to send file: {e}")
+                    self.cog_print(f"Backup task failed to send file: {e}")
             else:
-                print(f"Backup channel not found with ID: {backup_channel_id}. Backup failed.")
+                self.cog_print(f"Backup channel not found with ID: {backup_channel_id}. Backup failed.")
 
     @backup_task.before_loop
     async def before_backup_task(self):
         await self.bot.wait_until_ready()
         await self.create_tables()
-        print("Backup task is ready to start.")
+        self.cog_print("Backup task is ready to start.")
 
 
     @commands.Cog.listener()
@@ -177,63 +178,63 @@ class Economy(commands.Cog):
         if before.channel is None and after.channel is not None:
             if is_rewardable_channel(after.channel):
                 self.voice_timers[user_id] = time.time()
-                print(f"Economy: Started voice timer for {s_print(member.display_name)} in rewardable channel {s_print(after.channel.name)}")
+                self.cog_print(f"Economy: Started voice timer for {s_print(member.display_name)} in rewardable channel {s_print(after.channel.name)}")
             else:
-                print(f"Economy: User {s_print(member.display_name)} joined non-rewardable channel {s_print(after.channel.name)}. No timer started.")
+                self.cog_print(f"Economy: User {s_print(member.display_name)} joined non-rewardable channel {s_print(after.channel.name)}. No timer started.")
 
         # --- Scenario 2: User LEAVES a voice channel (is not in one after) ---
         elif before.channel is not None and after.channel is None:
-            print(f"Economy: User {s_print(member.display_name)} left voice channel {s_print(before.channel.name)}")
+            self.cog_print(f"Economy: User {s_print(member.display_name)} left voice channel {s_print(before.channel.name)}")
             if user_id in self.voice_timers:  # Check if a timer was active
                 if is_rewardable_channel(before.channel):  # Only process if they left a rewardable channel
                     elapsed_time = time.time() - self.voice_timers[user_id]
-                    print(f"Economy: Elapsed time for {s_print(member.display_name)} in {s_print(before.channel.name)}: {elapsed_time:.2f}s")
+                    self.cog_print(f"Economy: Elapsed time for {s_print(member.display_name)} in {s_print(before.channel.name)}: {elapsed_time:.2f}s")
                     
                     intervals_completed = int(elapsed_time / self.reward_interval)
                     if intervals_completed > 0:
                         reward_amount = intervals_completed * self.voice_reward_amount
                         await self.update_balance(user_id, reward_amount) # Added await
-                        print(f"Economy: Rewarded {reward_amount} coins to {s_print(member.display_name)} for voice activity in {s_print(before.channel.name)}.")
+                        self.cog_print(f"Economy: Rewarded {reward_amount} coins to {s_print(member.display_name)} for voice activity in {s_print(before.channel.name)}.")
                 else:
-                    print(f"Economy: User {s_print(member.display_name)} left non-rewardable channel {s_print(before.channel.name)} while timer was active. Timer cleared without reward.")
+                    self.cog_print(f"Economy: User {s_print(member.display_name)} left non-rewardable channel {s_print(before.channel.name)} while timer was active. Timer cleared without reward.")
                 del self.voice_timers[user_id]  # Clear timer regardless of reward, as they left.
-                print(f"Economy: Timer removed for {s_print(member.display_name)} (left channel).")
+                self.cog_print(f"Economy: Timer removed for {s_print(member.display_name)} (left channel).")
             else:
-                print(f"Economy: User {s_print(member.display_name)} left {s_print(before.channel.name)}, no active timer found.")
+                self.cog_print(f"Economy: User {s_print(member.display_name)} left {s_print(before.channel.name)}, no active timer found.")
 
         # --- Scenario 3: User SWITCHES voice channels ---
         elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-            print(f"Economy: User {s_print(member.display_name)} switched from {s_print(before.channel.name)} to {s_print(after.channel.name)}")
+            self.cog_print(f"Economy: User {s_print(member.display_name)} switched from {s_print(before.channel.name)} to {s_print(after.channel.name)}")
 
             # Action 1: If they had an active timer and were in a rewardable 'before' channel, process rewards.
             if user_id in self.voice_timers:
                 if is_rewardable_channel(before.channel):
                     elapsed_time = time.time() - self.voice_timers[user_id]
-                    print(f"Economy: Elapsed time for {s_print(member.display_name)} in {s_print(before.channel.name)} (switched): {elapsed_time:.2f}s")
+                    self.cog_print(f"Economy: Elapsed time for {s_print(member.display_name)} in {s_print(before.channel.name)} (switched): {elapsed_time:.2f}s")
                     
                     intervals_completed = int(elapsed_time / self.reward_interval)
                     if intervals_completed > 0:
                         reward_amount = intervals_completed * self.voice_reward_amount
                         await self.update_balance(user_id, reward_amount) # Added await
-                        print(f"Economy: Rewarded {reward_amount} coins to {s_print(member.display_name)} for activity in {s_print(before.channel.name)}.")
+                        self.cog_print(f"Economy: Rewarded {reward_amount} coins to {s_print(member.display_name)} for activity in {s_print(before.channel.name)}.")
                 else: 
-                    print(f"Economy: User {s_print(member.display_name)} switched from non-rewardable {s_print(before.channel.name)} while timer was active. Timer cleared without reward from 'before' channel.")
+                    self.cog_print(f"Economy: User {s_print(member.display_name)} switched from non-rewardable {s_print(before.channel.name)} while timer was active. Timer cleared without reward from 'before' channel.")
                 del self.voice_timers[user_id] 
-                print(f"Economy: Old timer removed for {s_print(member.display_name)} (switched).")
+                self.cog_print(f"Economy: Old timer removed for {s_print(member.display_name)} (switched).")
 
             # Action 2: If they moved TO a rewardable 'after' channel, start a new timer.
             if is_rewardable_channel(after.channel):
                 self.voice_timers[user_id] = time.time()
-                print(f"Economy: Started new voice timer for {s_print(member.display_name)} in rewardable channel {s_print(after.channel.name)} (switched).")
+                self.cog_print(f"Economy: Started new voice timer for {s_print(member.display_name)} in rewardable channel {s_print(after.channel.name)} (switched).")
             else: 
-                print(f"Economy: User {s_print(member.display_name)} switched to non-rewardable channel {s_print(after.channel.name)}. No new timer started.")
+                self.cog_print(f"Economy: User {s_print(member.display_name)} switched to non-rewardable channel {s_print(after.channel.name)}. No new timer started.")
 
     @tasks.loop(seconds=60)
     async def reward_users(self):
         await self.create_tables()
         # Process message rewards
         if self.message_counts:
-            print(f"Processing message rewards for {len(self.message_counts)} users...")
+            self.cog_print(f"Processing message rewards for {len(self.message_counts)} users...")
         for user_id, count in list(self.message_counts.items()):
             if count > 0:
                 reward_amount = count * self.message_reward_amount
@@ -241,7 +242,7 @@ class Economy(commands.Cog):
                 # print(f"Rewarded {reward_amount} coins to {user_id} for messages.") # Optional: make this debug print
         self.message_counts.clear()
         if self.message_counts:
-            print("Message counts cleared.")
+            self.cog_print("Message counts cleared.")
 
         # Note: Voice rewards are handled on voice state update (on user leaving a channel)
         # If you wanted rewards for *staying* in voice, you'd need a different timer/tracking approach here.
@@ -362,7 +363,7 @@ class Economy(commands.Cog):
             try:
                 await bot_spam_channel.send(embed=spam_embed)
             except Exception as e:
-                print(f"Failed to send 'tax' notification to bot_spam channel: {e}")
+                self.cog_print(f"Failed to send 'tax' notification to bot_spam channel: {e}")
 
     @econ.subcommand(name="request", description="Request currency from another user")
     async def receive_command(self, interaction: nextcord.Interaction, member: nextcord.Member, amount: int, reason: str = nextcord.SlashOption(required=False, description='Reason for the request')):
@@ -421,7 +422,7 @@ class Economy(commands.Cog):
             try:
                 await bot_spam_channel.send(embed=spam_embed)
             except Exception as e:
-                print(f"Failed to send 'receive' request notification to bot_spam channel: {e}")
+                self.cog_print(f"Failed to send 'receive' request notification to bot_spam channel: {e}")
        
 
 
@@ -438,10 +439,11 @@ class Economy(commands.Cog):
             await self.view.send_page(interaction) # send_page handles editing the message
 
     class LeaderboardView(nextcord.ui.View):
-        def __init__(self, bot, leaderboard_data, items_per_page):
+        def __init__(self, bot, economy_cog, leaderboard_data, items_per_page):
             # leaderboard_data is a list of (user_id, balance) tuples
             super().__init__(timeout=180) # Add a timeout
             self.bot = bot
+            self.economy_cog = economy_cog
             self.leaderboard_data = leaderboard_data # Store the raw data
             self.items_per_page = items_per_page
             self.current_page = 0
@@ -463,7 +465,7 @@ class Economy(commands.Cog):
 
         async def send_page(self, interaction: nextcord.Interaction):
             """Builds and sends/edits the embed for the current page."""
-            print(f"[DEBUG] send_page: Entered. Interaction ID: {interaction.id}, Channel ID: {interaction.channel_id}") # DEBUG
+            self.economy_cog.cog_print(f"[DEBUG] send_page: Entered. Interaction ID: {interaction.id}, Channel ID: {interaction.channel_id}") # DEBUG
             start = self.current_page * self.items_per_page
             end = start + self.items_per_page
             page_data_slice = self.leaderboard_data[start:end]
@@ -480,7 +482,7 @@ class Economy(commands.Cog):
                     except nextcord.errors.NotFound:
                         user = None
                     except Exception as e:
-                        print(f"[DEBUG] send_page: Error fetching user {user_id}: {e}") # DEBUG
+                        self.economy_cog.cog_print(f"[DEBUG] send_page: Error fetching user {user_id}: {e}") # DEBUG
                         user = None
 
                 if user:
@@ -492,44 +494,44 @@ class Economy(commands.Cog):
 
             embed = nextcord.Embed(title="Leaderboard", description=description, color=nextcord.Color.blue())
             embed.set_footer(text=f"Page {self.current_page + 1}/{self.max_page + 1} | Total Users: {self.total_items}")
-            print(f"[DEBUG] send_page: Embed created. Title: '{embed.title}', Desc length: {len(embed.description or '')}") # DEBUG
+            self.economy_cog.cog_print(f"[DEBUG] send_page: Embed created. Title: '{embed.title}', Desc length: {len(embed.description or '')}") # DEBUG
 
             try:
                 if self._message is None:
-                    print(f"[DEBUG] send_page: _message is None. Attempting interaction.followup.send(). Interaction responded: {interaction.response.is_done()}") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: _message is None. Attempting interaction.followup.send(). Interaction responded: {interaction.response.is_done()}") # DEBUG
                     self._message = await interaction.followup.send(embed=embed, view=self)
-                    print(f"[DEBUG] send_page: interaction.followup.send() successful. Message ID: {self._message.id}") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: interaction.followup.send() successful. Message ID: {self._message.id}") # DEBUG
                 else:
-                    print(f"[DEBUG] send_page: _message exists (ID: {self._message.id}). Attempting self._message.edit()") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: _message exists (ID: {self._message.id}). Attempting self._message.edit()") # DEBUG
                     await self._message.edit(embed=embed, view=self)
-                    print(f"[DEBUG] send_page: self._message.edit() successful.") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: self._message.edit() successful.") # DEBUG
             except nextcord.errors.NotFound as nf_err:
-                print(f"[DEBUG] send_page: nextcord.errors.NotFound caught: {nf_err}") # DEBUG
+                self.economy_cog.cog_print(f"[DEBUG] send_page: nextcord.errors.NotFound caught: {nf_err}") # DEBUG
                 self.stop()
             except Exception as e:
-                print(f"[DEBUG] send_page: Generic Exception caught: {type(e).__name__} - {e}") # DEBUG
+                self.economy_cog.cog_print(f"[DEBUG] send_page: Generic Exception caught: {type(e).__name__} - {e}") # DEBUG
                 import traceback
                 traceback.print_exc() # DEBUG
                 try:
-                    print(f"[DEBUG] send_page: Attempting to send ephemeral error message via followup.") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: Attempting to send ephemeral error message via followup.") # DEBUG
                     # Check if interaction is done; it should be after defer()
                     if interaction.response.is_done():
                         await interaction.followup.send("An error occurred while updating the leaderboard. Please try again.", ephemeral=True)
-                        print(f"[DEBUG] send_page: Ephemeral error message sent via followup.") # DEBUG
+                        self.economy_cog.cog_print(f"[DEBUG] send_page: Ephemeral error message sent via followup.") # DEBUG
                     else:
                         # This path is unlikely if defer() worked but included for completeness
-                        print(f"[DEBUG] send_page: Interaction not done, attempting response.send_message for error.") # DEBUG
+                        self.economy_cog.cog_print(f"[DEBUG] send_page: Interaction not done, attempting response.send_message for error.") # DEBUG
                         await interaction.response.send_message("An error occurred while updating the leaderboard. Please try again.", ephemeral=True)
-                        print(f"[DEBUG] send_page: Ephemeral error message sent via response.send_message.") # DEBUG
+                        self.economy_cog.cog_print(f"[DEBUG] send_page: Ephemeral error message sent via response.send_message.") # DEBUG
                 except Exception as e_followup:
-                    print(f"[DEBUG] send_page: Exception sending ephemeral error message: {type(e_followup).__name__} - {e_followup}") # DEBUG
+                    self.economy_cog.cog_print(f"[DEBUG] send_page: Exception sending ephemeral error message: {type(e_followup).__name__} - {e_followup}") # DEBUG
                     import traceback
                     traceback.print_exc() # DEBUG
-            print(f"[DEBUG] send_page: Exiting.") # DEBUG
+            self.economy_cog.cog_print(f"[DEBUG] send_page: Exiting.") # DEBUG
 
         async def on_timeout(self):
             """Disables buttons when the view times out."""
-            print("Leaderboard view timed out.")
+            self.economy_cog.cog_print("Leaderboard view timed out.")
             for item in self.children:
                 item.disabled = True
 
@@ -537,43 +539,43 @@ class Economy(commands.Cog):
             if self._message:
                  try:
                       await self._message.edit(view=self)
-                      print("Leaderboard message buttons disabled on timeout.")
+                      self.economy_cog.cog_print("Leaderboard message buttons disabled on timeout.")
                  except nextcord.errors.NotFound:
-                      print("Leaderboard message not found to disable buttons on timeout.")
+                      self.economy_cog.cog_print("Leaderboard message not found to disable buttons on timeout.")
                  except Exception as e:
-                      print(f"Error disabling leaderboard buttons on timeout: {e}")
+                      self.economy_cog.cog_print(f"Error disabling leaderboard buttons on timeout: {e}")
 
 
     @econ.subcommand(name="leaderboard", description="Display the leaderboard of user balances")
     async def leaderboard_command(self, interaction: nextcord.Interaction):
         """Displays the economy leaderboard with pagination."""
-        print(f"'/leaderboard' command triggered by {interaction.user.display_name}")
+        self.cog_print(f"'/leaderboard' command triggered by {interaction.user.display_name}")
         try:
             await interaction.response.defer()
-            print("Leaderboard interaction deferred.")
+            self.cog_print("Leaderboard interaction deferred.")
 
             # Get all balances from the database (efficient)
             # This returns a list of (user_id, balance) tuples, already sorted
             all_user_balances = await self.get_all_balances()
-            print(f"Fetched {len(all_user_balances)} balances from the database.")
+            self.cog_print(f"Fetched {len(all_user_balances)} balances from the database.")
 
             if not all_user_balances:
                 await interaction.followup.send("No users found in the leaderboard.", ephemeral=True)
-                print("Sent 'no users' message.")
+                self.cog_print("Sent 'no users' message.")
                 return
 
             # Create the paginated view
             # Pass the full list of (user_id, balance) tuples and the items per page
-            view = self.LeaderboardView(self.bot, all_user_balances, self.leaderboard_items_per_page)
-            print("LeaderboardView created.")
+            view = self.LeaderboardView(self.bot, self, all_user_balances, self.leaderboard_items_per_page)
+            self.cog_print("LeaderboardView created.")
 
             # Send the first page using the view's send_page method
             # This will handle fetching users for the first page and sending/editing the response
             await view.send_page(interaction)
-            print("Initial leaderboard page sent.")
+            self.cog_print("Initial leaderboard page sent.")
 
         except Exception as e:
-            print(f"An error occurred in the leaderboard command: {e}")
+            self.cog_print(f"An error occurred in the leaderboard command: {e}")
             # Use traceback for more detailed error logging in the console
             import traceback
             traceback.print_exc()
@@ -583,9 +585,9 @@ class Economy(commands.Cog):
                      await interaction.followup.send("An error occurred while generating the leaderboard.")
                 else: # Fallback just in case defer failed somehow
                      await interaction.response.send_message("An error occurred while generating the leaderboard.", ephemeral=True)
-                print("Sent error message to user.")
+                self.cog_print("Sent error message to user.")
             except Exception as send_error:
-                print(f"Failed to send error message to user: {send_error}")
+                self.cog_print(f"Failed to send error message to user: {send_error}")
 
     @econ.subcommand(name="trustfund", description="[JJ/Nut Only] Check trust fund balance or withdraw from trust fund")
     async def trustfund_command(self, interaction: nextcord.Interaction, 
@@ -722,7 +724,7 @@ class ReceiveRequestView(nextcord.ui.View):
             try:
                 await bot_spam_channel.send(embed=embed)
             except Exception as e:
-                print(f"Failed to send receive update to bot_spam: {e}")
+                self.cog.cog_print(f"Failed to send receive update to bot_spam: {e}")
 
     @nextcord.ui.button(label="Pay", style=nextcord.ButtonStyle.green, custom_id="pay_request")
     async def pay_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
@@ -796,9 +798,9 @@ class ReceiveRequestView(nextcord.ui.View):
                 await self.message.edit(embed=timeout_embed, view=self)
                 await self.send_bot_spam_update("Payment Request Timed Out", f"Request from {self.requester.mention} to {self.requestee.mention} for {self.amount} coins timed out.", nextcord.Color.greyple())
             except nextcord.errors.NotFound:
-                print(f"ReceiveRequest: Original message (ID: {self.message.id}) not found on timeout.")
+                self.cog.cog_print(f"ReceiveRequest: Original message (ID: {self.message.id}) not found on timeout.")
             except Exception as e:
-                print(f"ReceiveRequest: Error updating message on timeout: {e}")
+                self.cog.cog_print(f"ReceiveRequest: Error updating message on timeout: {e}")
         self.stop()
 
 

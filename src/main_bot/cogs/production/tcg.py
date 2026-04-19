@@ -4,9 +4,10 @@ import re
 import requests
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import MANA_SYMBOLS
-class TCG(commands.Cog):
+class TCG(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
 
@@ -174,7 +175,7 @@ class TCG(commands.Cog):
             return match.group(0)
 
         if text is None:
-            print("Warning: Mana cost text is None")
+            self.cog_print("Warning: Mana cost text is None")
             return "None"
 
         return re.sub(r'\{(.*?)\}', replace_symbol, text)

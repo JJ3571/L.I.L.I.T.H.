@@ -4,6 +4,7 @@ import aiosqlite
 import time
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 # Ensure this import is correct and admin_user_ids is populated
 from main_bot.server_configs.config import admin_user_ids
@@ -71,7 +72,7 @@ class VoteView(nextcord.ui.View):
         self.add_item(lock_btn)
 
 
-class Buzzer(commands.Cog):
+class Buzzer(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["buzzer"]
@@ -115,7 +116,7 @@ class Buzzer(commands.Cog):
                 )
             ''')
             await db.commit()
-        print("Buzzer database tables created/verified successfully.")
+        self.cog_print("Buzzer database tables created/verified successfully.")
 
 
     async def get_session_info(self, message_id):
@@ -131,14 +132,14 @@ class Buzzer(commands.Cog):
     async def update_buzzer_embed(self, interaction: nextcord.Interaction = None, message_to_update: nextcord.Message = None):
         if interaction:
             if interaction.message is None:
-                print("Error: interaction.message is None in update_buzzer_embed from interaction.")
+                self.cog_print("Error: interaction.message is None in update_buzzer_embed from interaction.")
                 # Attempt to send an ephemeral message if interaction is available but message is not.
                 try:
                     await interaction.response.send_message("Error: Could not find the original message to update.", ephemeral=True)
                 except nextcord.errors.InteractionResponded:
                     await interaction.followup.send("Error: Could not find the original message to update.", ephemeral=True)
                 except Exception as e_followup:
-                    print(f"Error sending followup for missing message in update_buzzer_embed: {e_followup}")
+                    self.cog_print(f"Error sending followup for missing message in update_buzzer_embed: {e_followup}")
                 return
             message_id = interaction.message.id
             target_message = interaction.message
@@ -146,11 +147,11 @@ class Buzzer(commands.Cog):
             message_id = message_to_update.id
             target_message = message_to_update
         else:
-            print("Error: Neither interaction nor message_to_update provided to update_buzzer_embed.")
+            self.cog_print("Error: Neither interaction nor message_to_update provided to update_buzzer_embed.")
             return
 
         if not target_message:
-            print(f"Error: Target message could not be determined for message ID {message_id}.")
+            self.cog_print(f"Error: Target message could not be determined for message ID {message_id}.")
             return
 
         session_info = await self.get_session_info(message_id)
@@ -159,9 +160,9 @@ class Buzzer(commands.Cog):
             try:
                 await target_message.edit(embed=embed, view=None) # Clear buttons
             except nextcord.NotFound:
-                print(f"Message {message_id} not found when trying to show as expired.")
+                self.cog_print(f"Message {message_id} not found when trying to show as expired.")
             except Exception as e:
-                print(f"Error editing message to show buzzer expired: {e}")
+                self.cog_print(f"Error editing message to show buzzer expired: {e}")
             return
 
         locked, first_buzz_db_time = session_info
@@ -199,9 +200,9 @@ class Buzzer(commands.Cog):
         try:
             await target_message.edit(embed=embed, view=current_view)
         except nextcord.NotFound:
-            print(f"Failed to update embed for message {message_id}: Message not found.")
+            self.cog_print(f"Failed to update embed for message {message_id}: Message not found.")
         except Exception as e:
-            print(f"Failed to update embed for message {message_id}: {e}")
+            self.cog_print(f"Failed to update embed for message {message_id}: {e}")
 
     @nextcord.slash_command(name="buzzer", description="Starts a new buzzer session with buttons.", guild_ids=[GUILD_ID])
     async def buzzer_create_subcommand(self, interaction: nextcord.Interaction):
@@ -213,22 +214,22 @@ class Buzzer(commands.Cog):
             await interaction.response.send_message(embed=embed, view=view)
             msg = await interaction.original_message() # CORRECTED LINE
             if msg is None:
-                print("Error starting buzzer: interaction.original_message() returned None")
+                self.cog_print("Error starting buzzer: interaction.original_message() returned None")
                 await interaction.followup.send("Error starting buzzer: Could not retrieve the message.", ephemeral=True)
                 return
 
         except Exception as e:
-            print(f"Error in buzzer_create_subcommand during send/original_message: {e}")
+            self.cog_print(f"Error in buzzer_create_subcommand during send/original_message: {e}")
             if not interaction.response.is_done():
                 try:
                     await interaction.response.send_message(f"Error starting buzzer: {e}", ephemeral=True)
                 except Exception as ie:
-                    print(f"Failed to send ephemeral error (initial response): {ie}")
+                    self.cog_print(f"Failed to send ephemeral error (initial response): {ie}")
             else:
                 try:
                     await interaction.followup.send(f"Error starting buzzer: {e}", ephemeral=True)
                 except Exception as ie:
-                    print(f"Failed to send ephemeral error (followup): {ie}")
+                    self.cog_print(f"Failed to send ephemeral error (followup): {ie}")
             return
 
         message_id = msg.id
@@ -246,7 +247,7 @@ class Buzzer(commands.Cog):
                 )
                 await db.commit()
         except Exception as e:
-            print(f"Database error in buzzer_create_subcommand: {e}")
+            self.cog_print(f"Database error in buzzer_create_subcommand: {e}")
             # Do not try to send a followup if the original interaction.original_message() failed,
             # as 'msg' would be None and the session wouldn't be properly initialized.
             # The error message above should have already been sent.
@@ -272,7 +273,7 @@ class Buzzer(commands.Cog):
             except nextcord.NotFound:
                 pass # Message already deleted
             except Exception as e:
-                print(f"Error clearing view on expired buzz: {e}")
+                self.cog_print(f"Error clearing view on expired buzz: {e}")
             return
 
         locked, first_buzz_db_time = session_info
@@ -394,7 +395,7 @@ class Buzzer(commands.Cog):
             message_id = message_to_update.id
             target_message = message_to_update
         else:
-            print("Error: Neither interaction nor message_to_update provided to update_vote_embed.")
+            self.cog_print("Error: Neither interaction nor message_to_update provided to update_vote_embed.")
             return
 
         session = await self.get_vote_session(message_id)
@@ -403,7 +404,7 @@ class Buzzer(commands.Cog):
             try:
                 await target_message.edit(embed=embed, view=None)
             except Exception as e:
-                print(f"Error editing message to show vote expired: {e}")
+                self.cog_print(f"Error editing message to show vote expired: {e}")
             return
 
         (num_options, locked) = session
@@ -437,7 +438,7 @@ class Buzzer(commands.Cog):
             view = VoteView(self, message_id, num_options)
             await target_message.edit(embed=embed, view=view)
         except Exception as e:
-            print(f"Failed to update vote embed for message {message_id}: {e}")
+            self.cog_print(f"Failed to update vote embed for message {message_id}: {e}")
 
     @nextcord.slash_command(name="vote", description="Start a vote for X things.", guild_ids=[GUILD_ID])
     async def vote_create_subcommand(
@@ -469,7 +470,7 @@ class Buzzer(commands.Cog):
                 await interaction.followup.send("Error starting vote: Could not retrieve the message.", ephemeral=True)
                 return
         except Exception as e:
-            print(f"Error in vote_create_subcommand during send/original_message: {e}")
+            self.cog_print(f"Error in vote_create_subcommand during send/original_message: {e}")
             if not interaction.response.is_done():
                 try:
                     await interaction.response.send_message(f"Error starting vote: {e}", ephemeral=True)
@@ -492,7 +493,7 @@ class Buzzer(commands.Cog):
                 await db.execute("INSERT INTO vote_sessions (message_id, channel_id, num_options, locked) VALUES (?, ?, ?, FALSE)", (message_id, channel_id, num_options))
                 await db.commit()
         except Exception as e:
-            print(f"Database error in vote_create_subcommand: {e}")
+            self.cog_print(f"Database error in vote_create_subcommand: {e}")
             if msg:
                 try:
                     await interaction.followup.send("Error setting up vote session in database.", ephemeral=True)
@@ -504,7 +505,7 @@ class Buzzer(commands.Cog):
             view = VoteView(self, message_id, num_options)
             await msg.edit(view=view)
         except Exception as e:
-            print(f"Failed to attach VoteView to message {message_id}: {e}")
+            self.cog_print(f"Failed to attach VoteView to message {message_id}: {e}")
 
     async def handle_vote_select(self, interaction: nextcord.Interaction, option_index: int):
         if interaction.message is None:
@@ -606,11 +607,11 @@ class Buzzer(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"{self.__class__.__name__} cog is ready.")
+        self.cog_print(f"{self.__class__.__name__} cog is ready.")
         try:
             await self.create_tables()
         except Exception as e:
-            print(f"Failed to create tables during on_ready: {e}")
+            self.cog_print(f"Failed to create tables during on_ready: {e}")
 
         # View registration logic
         # The flag _buzzer_view_added should be set on the bot instance by the setup function
@@ -622,7 +623,7 @@ class Buzzer(commands.Cog):
         # For true persistence across bot restarts (not just cog reloads),
         # the view needs to be added when the bot starts up.
         self.bot.add_view(BuzzerView(self))
-        print("Persistent BuzzerView registered/re-affirmed with the bot.")
+        self.cog_print("Persistent BuzzerView registered/re-affirmed with the bot.")
 
 
 async def setup(bot):

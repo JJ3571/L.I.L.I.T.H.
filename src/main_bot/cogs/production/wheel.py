@@ -3,6 +3,7 @@ from nextcord.ext import commands
 import random
 import asyncio
 
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 
 
@@ -46,7 +47,7 @@ class WheelModal(nextcord.ui.Modal):
             await self.parent_view.initialize_wheel(interaction, values)
             
         except Exception as e:
-            print(f"Error in WheelModal callback: {e}")
+            self.parent_view.cog.cog_print(f"Error in WheelModal callback: {e}")
             await interaction.response.send_message(
                 "An error occurred processing your values.", 
                 ephemeral=True
@@ -209,9 +210,10 @@ class WheelSpinView(nextcord.ui.View):
 
 class WheelSetupView(nextcord.ui.View):
     """Initial view for setting up the wheel."""
-    def __init__(self, user_id):
+    def __init__(self, user_id, cog):
         super().__init__(timeout=180.0)  # 3 minute timeout for setup
         self.user_id = user_id
+        self.cog = cog
 
     async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
@@ -397,7 +399,7 @@ class VoiceChannelWheelView(nextcord.ui.View):
             pass
 
 
-class Wheel(commands.Cog):
+class Wheel(commands.Cog, CogLogMixin):
     """A cog for spinning wheels with custom values."""
     def __init__(self, bot):
         self.bot = bot
@@ -421,7 +423,7 @@ class Wheel(commands.Cog):
         )
         setup_embed.set_footer(text="Click the button below to start.")
         
-        view = WheelSetupView(interaction.user.id)
+        view = WheelSetupView(interaction.user.id, self)
         await interaction.response.send_message(embed=setup_embed, view=view)
 
     @nextcord.slash_command(

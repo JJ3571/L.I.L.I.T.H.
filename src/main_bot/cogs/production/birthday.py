@@ -6,18 +6,19 @@ from datetime import datetime, timedelta
 import pytz
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
 from main_bot.server_configs.database_config import DATABASE_PATHS
 
 
-def _dbg_print(bot, *args, **kwargs) -> None:
+def _dbg_print(cog, message: str) -> None:
     """Honors ``bot.full_debug_in_terminal`` (set in ``main_bot.main`` from ``FULL_DEBUG_IN_TERMINAL``)."""
-    if getattr(bot, "full_debug_in_terminal", False):
-        print(*args, **kwargs)
+    if getattr(cog.bot, "full_debug_in_terminal", False):
+        cog.cog_print(message)
 
 
-class Birthday(commands.Cog):
+class Birthday(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["birthday"]
@@ -43,8 +44,8 @@ class Birthday(commands.Cog):
     async def check_birthdays(self):
         await self.bot.wait_until_ready()
         now_pacific = datetime.now(pytz.timezone('US/Pacific'))
-        _dbg_print(self.bot, "--------------------------------")
-        _dbg_print(self.bot, f"[DEBUG] Current time (US/Pacific): {now_pacific}")
+        _dbg_print(self, "--------------------------------")
+        _dbg_print(self, f"[DEBUG] Current time (US/Pacific): {now_pacific}")
         if now_pacific.hour >= 8: #  8 AM PST
             async with aiosqlite.connect(self.db_path) as db:
                 # Date for which we are checking birthdays, in US/Pacific
@@ -67,16 +68,16 @@ class Birthday(commands.Cog):
                               (user_id, pacific_date_to_check_str)) as cursor:
                         message_exists = await cursor.fetchone()
                     
-                    _dbg_print(self.bot, f"[DEBUG] Message exists for user {user_id} on {pacific_date_to_check_str}: {message_exists}")
+                    _dbg_print(self, f"[DEBUG] Message exists for user {user_id} on {pacific_date_to_check_str}: {message_exists}")
                     if not message_exists:
                         member = channel.guild.get_member(int(user_id))
-                        _dbg_print(self.bot, f"[DEBUG] Member object for user {user_id}: {member}")
+                        _dbg_print(self, f"[DEBUG] Member object for user {user_id}: {member}")
                         if member:
-                            _dbg_print(self.bot, f"[DEBUG] Member mention: {member.mention}")
+                            _dbg_print(self, f"[DEBUG] Member mention: {member.mention}")
                             embed = nextcord.Embed(title="🎂 **BIRTH!**", description=f"Happy Birthday {member.mention}!", color=0xFF5733)
                             embed.add_field(name='\u200B', value=f"Send {member.mention} some dabloons:", inline=False)
-                            _dbg_print(self.bot, f"[DEBUG] Embed created for user {user_id}")
-                            view = BirthdayButtonView(self.bot, birthday_user_id=member.id)
+                            _dbg_print(self, f"[DEBUG] Embed created for user {user_id}")
+                            view = BirthdayButtonView(self.bot, self, birthday_user_id=member.id)
                             message = await channel.send(embed=embed, view=view)
                             role = channel.guild.get_role(birthday_role_id)
                             if role:
@@ -86,15 +87,15 @@ class Birthday(commands.Cog):
                             
                             # Grant 20-hour executive pardon for birthday
                             await self.grant_birthday_executive_pardon(member.id)
-                            _dbg_print(self.bot, f"[DEBUG] Granted 20-hour executive pardon for birthday user {user_id}")
+                            _dbg_print(self, f"[DEBUG] Granted 20-hour executive pardon for birthday user {user_id}")
                             
                             await self.store_birthday_message(message.id, user_id, pacific_date_to_check_str)
-                            _dbg_print(self.bot, f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
+                            _dbg_print(self, f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
                         else:
                             print(f"[ERROR] Member not found for user ID {user_id}")
         else:
-            _dbg_print(self.bot, f"[DEBUG] Hour ({now_pacific.hour} US/Pacific) is before 8 AM, skipping birthday check.")
-        _dbg_print(self.bot, "--------------------------------")
+            _dbg_print(self, f"[DEBUG] Hour ({now_pacific.hour} US/Pacific) is before 8 AM, skipping birthday check.")
+        _dbg_print(self, "--------------------------------")
 
     @tasks.loop(seconds=30)
     async def cleanup_birthdays(self):
@@ -122,7 +123,7 @@ class Birthday(commands.Cog):
                     
                     # Skip if birthday_str is empty or None
                     if not birthday_str or birthday_str.strip() == '':
-                        _dbg_print(self.bot, f"[DEBUG] Skipping cleanup for user {user_id_str} - empty birthday string")
+                        _dbg_print(self, f"[DEBUG] Skipping cleanup for user {user_id_str} - empty birthday string")
                         continue
                     
                     try:
@@ -135,9 +136,9 @@ class Birthday(commands.Cog):
                         try:
                             msg = await channel.fetch_message(message_id)
                             await msg.delete()
-                            _dbg_print(self.bot, f"[DEBUG] Deleted message ID {message_id} for user ID {user_id_str}")
+                            _dbg_print(self, f"[DEBUG] Deleted message ID {message_id} for user ID {user_id_str}")
                         except nextcord.NotFound:
-                            _dbg_print(self.bot, f"[DEBUG] Message ID {message_id} not found in channel for deletion (already deleted or error).")
+                            _dbg_print(self, f"[DEBUG] Message ID {message_id} not found in channel for deletion (already deleted or error).")
                         except nextcord.Forbidden:
                             print(f"[ERROR] Bot lacks permissions to delete message ID {message_id}.")
                         except Exception as e:
@@ -150,7 +151,7 @@ class Birthday(commands.Cog):
                                     if birthday_role in member.roles:
                                         try:
                                             await member.remove_roles(birthday_role)
-                                            _dbg_print(self.bot, f"[DEBUG] Removed birthday role from user ID {user_id_str} (associated with old message {message_id})")
+                                            _dbg_print(self, f"[DEBUG] Removed birthday role from user ID {user_id_str} (associated with old message {message_id})")
                                         except nextcord.Forbidden:
                                             print(f"[ERROR] Bot lacks permissions to remove role from user ID {user_id_str}.")
                                         except Exception as e:
@@ -205,7 +206,7 @@ class Birthday(commands.Cog):
             waterboard_cog = self.bot.get_cog('WaterboardCog3')
             if waterboard_cog and hasattr(waterboard_cog, 'executive_pardon'):
                 await waterboard_cog.executive_pardon(user_id, 20)  # 20 hours
-                _dbg_print(self.bot, f"[DEBUG] Successfully granted 20-hour executive pardon to user {user_id} via WaterboardCog3")
+                _dbg_print(self, f"[DEBUG] Successfully granted 20-hour executive pardon to user {user_id} via WaterboardCog3")
             else:
                 print(f"[ERROR] WaterboardCog3 or executive_pardon method not found - cannot grant birthday pardon to user {user_id}")
         except Exception as e:
@@ -354,9 +355,10 @@ class UpdateBirthdayView(nextcord.ui.View):
         await interaction.response.send_modal(modal)
 
 class BirthdayButtonView(nextcord.ui.View):
-    def __init__(self, bot, birthday_user_id):
+    def __init__(self, bot, birthday_cog, birthday_user_id):
         super().__init__(timeout=None)
         self.bot = bot
+        self.birthday_cog = birthday_cog
         self.birthday_user_id = birthday_user_id
 
     @nextcord.ui.button(label="🪙 100", style=nextcord.ButtonStyle.primary)
@@ -391,7 +393,7 @@ class BirthdayButtonView(nextcord.ui.View):
         reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)
         if reaction_channel:
             emoji = self.bot.get_emoji(birthday_emoji_id)
-            _dbg_print(self.bot, f"[DEBUG] Emoji: {emoji}")
+            _dbg_print(self.birthday_cog, f"[DEBUG] Emoji: {emoji}")
             if reaction_type == "emoji":
                 embed = nextcord.Embed(description=f"{emoji}{emoji}{emoji}", color=0x574BCD)
                 embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url)

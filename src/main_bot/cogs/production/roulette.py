@@ -6,6 +6,7 @@ import random
 import asyncio # Needed for sleep
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 # --- Roulette Wheel Configuration (European Style) ---
 RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
@@ -49,7 +50,7 @@ class NumberBetModal(nextcord.ui.Modal):
         except ValueError:
             await interaction.response.send_message("Invalid input. Please enter a whole number.", ephemeral=True)
         except Exception as e:
-            print(f"Error in modal callback: {e}")
+            self.parent_view.cog.cog_print(f"Error in modal callback: {e}")
             await interaction.response.send_message("An error occurred processing your bet.", ephemeral=True)
 
 
@@ -219,7 +220,7 @@ class RouletteBetView(nextcord.ui.View):
                  pass # Message might have been deleted
 
 # --- Main Cog ---
-class Roulette(commands.Cog):
+class Roulette(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -300,9 +301,9 @@ class Roulette(commands.Cog):
         try:
             await interaction.followup.edit_message('@original', embed=final_embed, view=None) # Remove view after spin
         except nextcord.NotFound:
-            print("Error: Original message not found when trying to display final roulette result.")
+            self.cog_print("Error: Original message not found when trying to display final roulette result.")
         except Exception as e:
-            print(f"Error editing final roulette result: {e}")
+            self.cog_print(f"Error editing final roulette result: {e}")
 
 
     @nextcord.slash_command(name="roulette", description="Play an interactive game of European roulette.",guild_ids=[GUILD_ID])

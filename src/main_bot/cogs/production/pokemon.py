@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Tuple
 import difflib
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 from main_bot.server_configs.database_config import DATABASE_PATHS
@@ -96,7 +97,7 @@ class FriendCodePaginationView(nextcord.ui.View):
         for item in self.children:
             item.disabled = True
 
-class Pokemon(commands.Cog):
+class Pokemon(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["pokemon"]
@@ -611,7 +612,7 @@ class Pokemon(commands.Cog):
         if self.cache_last_updated and datetime.now() - self.cache_last_updated < timedelta(hours=6):
             return  # Cache is still fresh
         
-        print("Building Pokemon name cache...")
+        self.cog_print("Building Pokemon name cache...")
         self.pokemon_name_cache = {}
         self.pokemon_name_list = []
         
@@ -657,11 +658,11 @@ class Pokemon(commands.Cog):
                             self.pokemon_name_list.append((name, pokemon_id))
                         
                         self.cache_last_updated = datetime.now()
-                        print(f"Pokemon name cache built with {len(self.pokemon_name_cache)} Pokemon")
+                        self.cog_print(f"Pokemon name cache built with {len(self.pokemon_name_cache)} Pokemon")
                     else:
-                        print(f"Failed to build Pokemon cache: HTTP {response.status}")
+                        self.cog_print(f"Failed to build Pokemon cache: HTTP {response.status}")
         except Exception as e:
-            print(f"Error building Pokemon name cache: {e}")
+            self.cog_print(f"Error building Pokemon name cache: {e}")
 
     async def get_pokemon_suggestions(self, current_input: str, generation: Optional[int] = None, limit: int = 25) -> List[Tuple[str, int]]:
         """Get Pokemon name suggestions for autocomplete"""
@@ -736,7 +737,7 @@ class Pokemon(commands.Cog):
             return [nextcord.SlashOption(name=f"{name} (#{pokemon_id})", value=str(pokemon_id)) 
                    for name, pokemon_id in suggestions]
         except Exception as e:
-            print(f"Error in pokemon_autocomplete: {e}")
+            self.cog_print(f"Error in pokemon_autocomplete: {e}")
             return []
 
     @nextcord.slash_command(name="pkgo", description="Parent command for Pokemon Go related commands", guild_ids=[GUILD_ID])
@@ -1344,7 +1345,7 @@ class Pokemon(commands.Cog):
     async def on_ready(self):
         """Initialize Pokemon name cache when bot is ready"""
         if not self.cache_task:
-            print("Initializing Pokemon name cache...")
+            self.cog_print("Initializing Pokemon name cache...")
             self.cache_task = asyncio.create_task(self.build_pokemon_name_cache())
 
     @pokemon_command.subcommand(name="team-add-menu", description="Add a Pokemon to your team using an interactive menu")

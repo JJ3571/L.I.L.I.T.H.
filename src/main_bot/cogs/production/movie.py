@@ -2,10 +2,11 @@ import aiohttp
 import nextcord
 from nextcord.ext import commands
 
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import OMDB_API_KEY, OMDB_API_URL
 
-class MovieCog(commands.Cog):
+class MovieCog(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
 
@@ -16,7 +17,7 @@ class MovieCog(commands.Cog):
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{OMDB_API_URL}{OMDB_API_KEY}&t={title}") as response:
                 movie_data = await response.json()
-                print(movie_data)  # Debugging: Print the response data
+                self.cog_print(str(movie_data))  # Debugging: Print the response data
         
         if movie_data['Response'] == 'True':
             imdb_url = f"https://www.imdb.com/title/{movie_data['imdbID']}/"

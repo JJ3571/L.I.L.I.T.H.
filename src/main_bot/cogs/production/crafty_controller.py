@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 from datetime import datetime, timedelta
 import json
 
-from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import CRAFTY_BASE_URL, CRAFTY_USERNAME, CRAFTY_PASSWORD, GUILD_ID, IS_DEVELOPMENT
 from main_bot.utils.crafty_api import CraftyAPI
 from main_bot.utils.crafty_automation import CraftyAutomationDB, ServerAutomationConfig
@@ -122,7 +122,7 @@ class RestartConfirmationView(nextcord.ui.View):
         for item in self.children:
             item.disabled = True
 
-class CraftyController(commands.Cog):
+class CraftyController(commands.Cog, CogLogMixin):
     """Discord cog for managing Minecraft servers via Crafty Controller"""
     
     def __init__(self, bot):
@@ -132,14 +132,14 @@ class CraftyController(commands.Cog):
         if self.crafty_available:
             self.crafty_api = CraftyAPI(CRAFTY_BASE_URL, CRAFTY_USERNAME, CRAFTY_PASSWORD)
             self.automation_db = CraftyAutomationDB()
-            boot_print(f"[CRAFTY] Initialized with URL: {CRAFTY_BASE_URL}")
+            self.cog_print(f"[CRAFTY] Initialized with URL: {CRAFTY_BASE_URL}")
             
             # Start automation tasks
             asyncio.create_task(self._init_automation())
         else:
             self.crafty_api = None
             self.automation_db = None
-            boot_print("[CRAFTY] Not available - missing configuration")
+            self.cog_print("[CRAFTY] Not available - missing configuration")
             
         self._servers_cache = {}
         self._cache_time = None

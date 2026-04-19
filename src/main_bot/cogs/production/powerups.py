@@ -6,6 +6,7 @@ from datetime import datetime
 import pytz
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.database_config import DATABASE_PATHS
 
@@ -58,7 +59,7 @@ POWERUP_TYPES = {
     # More powerups tbd
 }
 
-class PowerupCog(commands.Cog):
+class PowerupCog(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db_path = DATABASE_PATHS["powerups"]
@@ -265,11 +266,11 @@ class PowerupCog(commands.Cog):
 
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
-            print(f"Error: Guild {GUILD_ID} not found.")
+            self.cog_print(f"Error: Guild {GUILD_ID} not found.")
             return False
         member = guild.get_member(user_id)
         if not member:
-            print(f"Error: Member {user_id} not found in guild {GUILD_ID}.")
+            self.cog_print(f"Error: Member {user_id} not found in guild {GUILD_ID}.")
             return False
 
         if powerup_info["effect_type"] == "pardon":
@@ -279,10 +280,10 @@ class PowerupCog(commands.Cog):
                     await waterboard_cog.executive_pardon(user_id, powerup_info["duration_hours"])
                     return True
                 except Exception as e:
-                    print(f"Error calling executive_pardon: {e}")
+                    self.cog_print(f"Error calling executive_pardon: {e}")
                     return False
             else:
-                print("Error: WaterboardCog3 or executive_pardon method not found.")
+                self.cog_print("Error: WaterboardCog3 or executive_pardon method not found.")
                 return False
         elif powerup_info["effect_type"] == "role":
             role_name = powerup_info["role_name"]
@@ -292,13 +293,13 @@ class PowerupCog(commands.Cog):
                     await member.add_roles(role, reason=f"Activated {powerup_info['name']} powerup")
                     return True
                 except nextcord.Forbidden:
-                    print(f"Error: Bot lacks permissions to assign role '{role_name}'.")
+                    self.cog_print(f"Error: Bot lacks permissions to assign role '{role_name}'.")
                     return False
                 except nextcord.HTTPException as e:
-                    print(f"Error: Failed to assign role '{role_name}': {e}")
+                    self.cog_print(f"Error: Failed to assign role '{role_name}': {e}")
                     return False
             else:
-                print(f"Error: Role '{role_name}' not found on server.")
+                self.cog_print(f"Error: Role '{role_name}' not found on server.")
                 return False
         return False
 
@@ -317,11 +318,11 @@ class PowerupCog(commands.Cog):
             if role and role in member.roles:
                 try:
                     await member.remove_roles(role, reason=f"{powerup_info['name']} powerup expired")
-                    print(f"Removed role '{role_name}' from {member.display_name} (Powerup expired).")
+                    self.cog_print(f"Removed role '{role_name}' from {member.display_name} (Powerup expired).")
                 except nextcord.Forbidden:
-                    print(f"Error: Bot lacks permissions to remove role '{role_name}'.")
+                    self.cog_print(f"Error: Bot lacks permissions to remove role '{role_name}'.")
                 except nextcord.HTTPException as e:
-                    print(f"Error: Failed to remove role '{role_name}': {e}")
+                    self.cog_print(f"Error: Failed to remove role '{role_name}': {e}")
         # Pardon duration is managed by WaterboardCog3
 
     # --- Slash Commands ---
@@ -497,7 +498,7 @@ class PowerupCog(commands.Cog):
             
             if expired:
                 for user_id, powerup_type in expired:
-                    print(f"Powerup {powerup_type} for user {user_id} has expired. Removing effect.")
+                    self.cog_print(f"Powerup {powerup_type} for user {user_id} has expired. Removing effect.")
                     await self.remove_powerup_effect(user_id, powerup_type)
                     await db.execute("DELETE FROM active_powerups WHERE user_id = ? AND powerup_type = ?", (user_id, powerup_type))
                 await db.commit()

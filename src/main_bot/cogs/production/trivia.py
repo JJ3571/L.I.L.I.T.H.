@@ -10,6 +10,7 @@ import aiosqlite
 import os
 
 from main_bot.boot_log import boot_print
+from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.paths import PROJECT_ROOT
 
 # Get the GUILD_ID from config
@@ -117,7 +118,7 @@ class TriviaView(nextcord.ui.View):
         except:
             pass
 
-class Trivia(commands.Cog):
+class Trivia(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self.db_path = os.fspath(PROJECT_ROOT / "databases" / "trivia.db")
@@ -156,16 +157,16 @@ class Trivia(commands.Cog):
         await self.create_tables()
         try:
             self.session = aiohttp.ClientSession()
-            print("Trivia cog: HTTP session initialized")
+            self.cog_print("Trivia cog: HTTP session initialized")
         except Exception as e:
-            print(f"Trivia cog: Failed to initialize HTTP session: {e}")
+            self.cog_print(f"Trivia cog: Failed to initialize HTTP session: {e}")
             self.session = None
     
     def cog_unload(self):
         """Clean up when cog unloads"""
         if self.session and not self.session.closed:
             asyncio.create_task(self.session.close())
-            print("Trivia cog: HTTP session closed")
+            self.cog_print("Trivia cog: HTTP session closed")
     
     async def create_tables(self):
         """Create trivia database tables"""
@@ -199,9 +200,9 @@ class Trivia(commands.Cog):
                 ''')
                 
                 await db.commit()
-                print("Trivia cog: Database tables created successfully")
+                self.cog_print("Trivia cog: Database tables created successfully")
         except Exception as e:
-            print(f"Trivia cog: Error creating database tables: {e}")
+            self.cog_print(f"Trivia cog: Error creating database tables: {e}")
     
     async def ensure_tables_exist(self):
         """Ensure database tables exist before operations"""
@@ -211,10 +212,10 @@ class Trivia(commands.Cog):
                 async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trivia_scores'") as cursor:
                     result = await cursor.fetchone()
                     if not result:
-                        print("Trivia cog: Tables missing, recreating...")
+                        self.cog_print("Trivia cog: Tables missing, recreating...")
                         await self.create_tables()
         except Exception as e:
-            print(f"Trivia cog: Error checking tables: {e}")
+            self.cog_print(f"Trivia cog: Error checking tables: {e}")
             # Try to recreate tables
             await self.create_tables()
     
@@ -238,12 +239,12 @@ class Trivia(commands.Cog):
             try:
                 self.session = aiohttp.ClientSession()
                 session_to_use = self.session
-                print("Trivia: Created new HTTP session")
+                self.cog_print("Trivia: Created new HTTP session")
             except:
                 # Use temporary session as last resort
                 session_to_use = aiohttp.ClientSession()
                 use_temp_session = True
-                print("Trivia: Using temporary HTTP session")
+                self.cog_print("Trivia: Using temporary HTTP session")
         
         try:
             async with session_to_use.get(base_url, params=params) as response:
@@ -252,13 +253,13 @@ class Trivia(commands.Cog):
                     if data["response_code"] == 0 and data["results"]:
                         return data["results"][0]
                     else:
-                        print(f"OpenTDB API returned response code: {data.get('response_code', 'unknown')}")
+                        self.cog_print(f"OpenTDB API returned response code: {data.get('response_code', 'unknown')}")
                         return None
                 else:
-                    print(f"HTTP error: {response.status}")
+                    self.cog_print(f"HTTP error: {response.status}")
                     return None
         except Exception as e:
-            print(f"Error fetching trivia question: {e}")
+            self.cog_print(f"Error fetching trivia question: {e}")
             return None
         finally:
             # Close temporary session if used
@@ -427,7 +428,7 @@ class Trivia(commands.Cog):
         try:
             stats = await self.get_user_stats(interaction.user.id)
         except Exception as e:
-            print(f"Error getting user stats: {e}")
+            self.cog_print(f"Error getting user stats: {e}")
             embed = nextcord.Embed(
                 title="❌ Error",
                 description="Sorry, I couldn't load your statistics right now. Please try again!",
@@ -465,7 +466,7 @@ class Trivia(commands.Cog):
         try:
             leaderboard = await self.get_trivia_leaderboard(10)
         except Exception as e:
-            print(f"Error getting leaderboard: {e}")
+            self.cog_print(f"Error getting leaderboard: {e}")
             embed = nextcord.Embed(
                 title="❌ Error",
                 description="Sorry, I couldn't load the leaderboard right now. Please try again!",
