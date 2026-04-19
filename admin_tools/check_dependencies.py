@@ -187,9 +187,9 @@ class DependencyChecker:
             if package_name.lower() == 'nextcord':
                 import nextcord
                 installed_version = nextcord.__version__
-            elif package_name.lower() == 'aiosqlite':
-                import aiosqlite
-                installed_version = aiosqlite.__version__
+            elif package_name.lower() == 'asyncpg':
+                import asyncpg
+                installed_version = asyncpg.__version__
             elif package_name.lower() == 'discord-webhook':
                 import discord_webhook
                 installed_version = getattr(discord_webhook, '__version__', 'unknown')
@@ -252,7 +252,7 @@ class DependencyChecker:
         
         critical_packages = [
             'nextcord',
-            'aiosqlite', 
+            'asyncpg',
             'asyncio',
             'time',
             'datetime',
@@ -376,7 +376,7 @@ class DependencyChecker:
             print("No dependencies parsed from pyproject.toml, checking known dependencies...")
             known_deps = [
                 {'name': 'nextcord', 'version': '2.6.0', 'operator': '=='},
-                {'name': 'aiosqlite', 'version': '0.21.0', 'operator': '=='},
+                {'name': 'asyncpg', 'version': '0.30.0', 'operator': '>='},
                 {'name': 'aiohttp', 'version': '3.11.11', 'operator': '=='},
                 {'name': 'requests', 'version': '2.32.3', 'operator': '=='},
                 {'name': 'pytz', 'version': '2024.2', 'operator': '=='},

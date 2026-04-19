@@ -3,8 +3,8 @@ Tests for the production Counter cog (`main_bot.cogs.production.counter`).
 
 These tests follow a layered strategy common in Discord bot codebases:
 
-1. **Data / persistence** — SQLite behavior via aiosqlite on a temporary file. This is
-   where most regressions show up (constraints, upserts, JSON columns).
+1. **Data / persistence** — PostgreSQL schema ``counter`` via ``DATABASE_URL`` (see
+   ``tests/conftest.py``): constraints, upserts, JSON columns.
 
 2. **Presentation** — Embed builders are pure given a mocked ``Interaction``; they must
    not assume live Discord state beyond ``interaction.user``.
@@ -23,12 +23,11 @@ These tests follow a layered strategy common in Discord bot codebases:
    mocked messages/responses. Buttons still rely on nextcord's view machinery; we verify
    authorization logic and DB side effects.
 
-Re-import note: this module assigns ``counter.DB_PATH`` before constructing ``Counter``
-so each test uses an isolated database file.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,18 +48,21 @@ from main_bot.cogs.production.counter import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def counter_db_path(tmp_path) -> str:
-    """Isolated SQLite path; also patches the module-level DB_PATH used by new cogs."""
-    path = str(tmp_path / "counter_test.db")
-    counter_mod.DB_PATH = path
-    return path
+@pytest.fixture(autouse=True)
+def _clean_counter_tables(pg_pool) -> None:
+    async def _run() -> None:
+        async with pg_pool.acquire() as conn:
+            await conn.execute('DELETE FROM "counter".counters')
+            await conn.execute('DELETE FROM "counter".multi_counters')
+
+    asyncio.run(_run())
 
 
 @pytest.fixture
-def counter_cog(counter_db_path: str) -> Counter:
-    cog = Counter(MagicMock())
-    return cog
+def counter_cog(pg_pool) -> Counter:
+    bot = MagicMock()
+    bot.pg_pool = pg_pool
+    return Counter(bot)
 
 
 def _make_interaction(
@@ -497,8 +499,9 @@ class TestMultiCounterView:
 
 class TestCounterSetup:
     @pytest.mark.asyncio
-    async def test_setup_registers_cog(self, counter_db_path: str) -> None:
+    async def test_setup_registers_cog(self, pg_pool) -> None:
         bot = MagicMock()
+        bot.pg_pool = pg_pool
         await counter_mod.setup(bot)
         bot.add_cog.assert_called_once()
         added = bot.add_cog.call_args[0][0]

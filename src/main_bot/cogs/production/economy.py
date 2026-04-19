@@ -1,6 +1,5 @@
 import nextcord
 from nextcord.ext import commands, tasks
-import aiosqlite
 import time, datetime
 import random
 import pytz
@@ -8,8 +7,10 @@ import pytz
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
-from main_bot.server_configs.database_config import DATABASE_PATHS
+from main_bot.server_configs.config import watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
+
+
+_SCHEMA = "economy"
 
 
 class Economy(commands.Cog, CogLogMixin):
@@ -25,125 +26,112 @@ class Economy(commands.Cog, CogLogMixin):
 
         self.leaderboard_items_per_page = 12
 
-        self.db_path = DATABASE_PATHS["economy"]
         self.reward_users.start()
-        self.backup_task.start()
-
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        balance INTEGER DEFAULT 0
-                    )
-                ''')
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS trust_fund (
-                        beneficiary_user_id INTEGER PRIMARY KEY,
-                        balance INTEGER DEFAULT 0
-                    )
-                ''')
-            await conn.commit()
+        """Schema ensured at bot startup via main_bot.db.ddl."""
+        return
 
     async def get_user_balance(self, user_id):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-                result = await cursor.fetchone()
-            return result[0] if result else 0
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT balance FROM "{_SCHEMA}".users WHERE user_id = $1', user_id
+            )
+            return int(row["balance"]) if row else 0
 
     async def deduct_user_balance(self, user_id: int, amount: int): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # First check if user has enough balance
-                await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-                result = await cursor.fetchone()
-                current_balance = result[0] if result else 0
-                
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f'SELECT balance FROM "{_SCHEMA}".users WHERE user_id = $1', user_id
+                )
+                current_balance = int(row["balance"]) if row else 0
+
                 if current_balance < amount:
                     self.cog_print(f"[DEBUG] Insufficient balance for user {user_id}. Has {current_balance}, needs {amount}")
                     return False
-                
-                # Deduct the amount
-                await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+
+                await conn.execute(
+                    f'UPDATE "{_SCHEMA}".users SET balance = balance - $1 WHERE user_id = $2',
+                    amount,
+                    user_id,
+                )
                 self.cog_print(f"[DEBUG] Successfully deducted {amount} coins from user {user_id}")
-            await conn.commit()
             return True
 
     async def update_balance(self, user_id, amount): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-                await cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-            await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f'INSERT INTO "{_SCHEMA}".users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+                    user_id,
+                )
+                await conn.execute(
+                    f'UPDATE "{_SCHEMA}".users SET balance = balance + $1 WHERE user_id = $2',
+                    amount,
+                    user_id,
+                )
 
     async def get_all_balances(self): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
-                result = await cursor.fetchall() # await fetchall
-            return result
-    
+        async with self.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'SELECT user_id, balance FROM "{_SCHEMA}".users ORDER BY balance DESC'
+            )
+            return [(r["user_id"], r["balance"]) for r in rows]
+
     # Trust Fund Methods
     async def add_to_trust_fund(self, beneficiary_user_id: int, amount: int):
         """Add money to a user's trust fund"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("INSERT OR IGNORE INTO trust_fund (beneficiary_user_id) VALUES (?)", (beneficiary_user_id,))
-                await cursor.execute("UPDATE trust_fund SET balance = balance + ? WHERE beneficiary_user_id = ?", (amount, beneficiary_user_id))
-            await conn.commit()
-    
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    f'INSERT INTO "{_SCHEMA}".trust_fund (beneficiary_user_id) VALUES ($1) '
+                    f'ON CONFLICT (beneficiary_user_id) DO NOTHING',
+                    beneficiary_user_id,
+                )
+                await conn.execute(
+                    f'UPDATE "{_SCHEMA}".trust_fund SET balance = balance + $1 WHERE beneficiary_user_id = $2',
+                    amount,
+                    beneficiary_user_id,
+                )
+
     async def get_trust_fund_balance(self, beneficiary_user_id: int):
         """Get the trust fund balance for a user"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT balance FROM trust_fund WHERE beneficiary_user_id = ?", (beneficiary_user_id,))
-                result = await cursor.fetchone()
-            return result[0] if result else 0
-    
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT balance FROM "{_SCHEMA}".trust_fund WHERE beneficiary_user_id = $1',
+                beneficiary_user_id,
+            )
+            return int(row["balance"]) if row else 0
+
     async def withdraw_from_trust_fund(self, beneficiary_user_id: int, amount: int):
         """Withdraw money from a user's trust fund to their regular balance"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # Check if trust fund has enough balance
-                await cursor.execute("SELECT balance FROM trust_fund WHERE beneficiary_user_id = ?", (beneficiary_user_id,))
-                result = await cursor.fetchone()
-                current_balance = result[0] if result else 0
-                
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f'SELECT balance FROM "{_SCHEMA}".trust_fund WHERE beneficiary_user_id = $1',
+                    beneficiary_user_id,
+                )
+                current_balance = int(row["balance"]) if row else 0
+
                 if current_balance < amount:
                     return False  # Not enough in trust fund
-                
-                # Deduct from trust fund and add to regular balance
-                await cursor.execute("UPDATE trust_fund SET balance = balance - ? WHERE beneficiary_user_id = ?", (amount, beneficiary_user_id))
-                await cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (beneficiary_user_id,))
-                await cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, beneficiary_user_id))
-            await conn.commit()
+
+                await conn.execute(
+                    f'UPDATE "{_SCHEMA}".trust_fund SET balance = balance - $1 WHERE beneficiary_user_id = $2',
+                    amount,
+                    beneficiary_user_id,
+                )
+                await conn.execute(
+                    f'INSERT INTO "{_SCHEMA}".users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+                    beneficiary_user_id,
+                )
+                await conn.execute(
+                    f'UPDATE "{_SCHEMA}".users SET balance = balance + $1 WHERE user_id = $2',
+                    amount,
+                    beneficiary_user_id,
+                )
             return True
-
-    @tasks.loop(minutes=1)
-    async def backup_task(self):
-        # Make sure datetime is used correctly if it wasn't before
-        await self.create_tables()
-        now = datetime.datetime.now(pytz.timezone('US/Pacific'))
-        if now.hour in [0, 12] and now.minute == 0:
-            await self.bot.wait_until_ready()
-            channel = self.bot.get_channel(backup_channel_id)
-            if channel:
-                try:
-                    await channel.send(file=nextcord.File(self.db_path))
-                    self.cog_print("Backup task completed.")
-                except Exception as e:
-                    self.cog_print(f"Backup task failed to send file: {e}")
-            else:
-                self.cog_print(f"Backup channel not found with ID: {backup_channel_id}. Backup failed.")
-
-    @backup_task.before_loop
-    async def before_backup_task(self):
-        await self.bot.wait_until_ready()
-        await self.create_tables()
-        self.cog_print("Backup task is ready to start.")
 
 
     @commands.Cog.listener()
@@ -731,7 +719,7 @@ class ReceiveRequestView(nextcord.ui.View):
         # interaction_check ensures this is the requestee
         await interaction.response.defer()
 
-        requestee_balance = self.cog.get_user_balance(self.requestee.id)
+        requestee_balance = await self.cog.get_user_balance(self.requestee.id)
         if requestee_balance < self.amount:
             await interaction.followup.send(f"You do not have sufficient funds ({requestee_balance} 🪙) to pay {self.amount} 🪙.", ephemeral=True)
             return # Keep the request active

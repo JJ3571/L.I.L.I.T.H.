@@ -1,32 +1,23 @@
 """
-Database configuration for Discord Bot Sandbox
-Centralized database path management. 
+Database configuration for Discord Bot Sandbox.
 
-May seem redundant, but it's good practice and allows for 
-easier maintenance and future expansion.
+Runtime: single PostgreSQL database (Neon or self-hosted), multiple schemas.
+Legacy: DATABASE_PATHS kept for one-time migration scripts reading old SQLite files.
 """
 import os
 
 from main_bot.paths import PROJECT_ROOT
 
-# Database directory relative to the project root
+# Database directory relative to the project root (legacy SQLite files)
 DB_DIR = os.fspath(PROJECT_ROOT / "databases")
 
 
 def get_db_path(db_name: str) -> str:
-    """
-    Get the full path to a database file.
-
-    Args:
-        db_name: Name of the database file (e.g., "economy.db")
-
-    Returns:
-        Full path to the database file
-    """
+    """Full path to a legacy SQLite file (migration scripts only)."""
     return os.path.join(DB_DIR, db_name)
 
 
-# Database paths for each cog
+# Legacy SQLite paths — used by scripts/migrate_sqlite_to_postgres_once.py
 DATABASE_PATHS = {
     "birthday": get_db_path("birthday.db"),
     "buzzer": get_db_path("buzzer.db"),
@@ -43,7 +34,33 @@ DATABASE_PATHS = {
     "waterboard": get_db_path("waterboard.db"),
     "music": get_db_path("music.db"),
     "tierlist": get_db_path("tierlist.db"),
+    "trivia": get_db_path("trivia.db"),
 }
 
-# Ensure database directory exists
+# Extra SQLite files not in DATABASE_PATHS keys (same folder)
+CRAFTY_AUTOMATION_SQLITE_PATH = get_db_path("crafty_automation.db")
+
+# PostgreSQL schema name per logical key (identical to dict keys; plus crafty_automation)
+DATABASE_SCHEMAS = {k: k for k in DATABASE_PATHS}
+DATABASE_SCHEMAS["crafty_automation"] = "crafty_automation"
+
+# Ordered list of schemas the bot creates (excludes unused empty keys if any)
+SCHEMA_KEYS = [
+    "birthday",
+    "buzzer",
+    "counter",
+    "coc",
+    "economy",
+    "event",
+    "greek_gods",
+    "pokemon",
+    "powerups",
+    "request",
+    "wager",
+    "waterboard",
+    "tierlist",
+    "trivia",
+    "crafty_automation",
+]
+
 os.makedirs(DB_DIR, exist_ok=True)

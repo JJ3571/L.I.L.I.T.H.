@@ -8,7 +8,6 @@ import nextcord
 from nextcord.ext import commands, tasks
 import asyncio
 import time
-import aiosqlite
 from asyncio import Semaphore
 
 from main_bot.boot_log import boot_print
@@ -16,7 +15,8 @@ from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID, waterboard_category_id
 from main_bot.server_configs.config import bot_spam_id, admin_user_ids
 from main_bot.cogs.production.economy import Economy
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_WB = "waterboard"
 
 # Default water channel names (10 channels for /waterboard and /enhanced-waterboard)
 WATER_CHANNEL_NAMES = [
@@ -42,7 +42,6 @@ PHASE_DELAY_SECONDS = 1.0
 class WaterboardCog3(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["waterboard"]
         self.cooldown_multiplier = 2
         self.waterboard_cost = 200
 
@@ -63,45 +62,26 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         return str(text_to_print)
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS waterboarded_users (
-                        user_id INTEGER PRIMARY KEY,
-                        last_waterboarded_time REAL,
-                        usage_count INTEGER DEFAULT 0,
-                        total_waterboarded INTEGER DEFAULT 0,
-                        total_coins_spent INTEGER DEFAULT 0
-                    )
-                """)
-                await cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS exempt_users (
-                        user_id INTEGER PRIMARY KEY,
-                        exempt_until REAL
-                    )
-                """)
-                await conn.commit()
+        return
 
     async def get_last_waterboarded_time(self, user_id):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    "SELECT last_waterboarded_time FROM waterboarded_users WHERE user_id = ?",
-                    (user_id,),
-                )
-                result = await cursor.fetchone()
-        return result[0] if result else None
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT last_waterboarded_time FROM "{_WB}".waterboarded_users WHERE user_id = $1',
+                user_id,
+            )
+            return row["last_waterboarded_time"] if row else None
 
     async def executive_pardon(self, user_to_pardon_id: int, duration_hours: int):
         """Grants an executive pardon to a user, exempting them from waterboarding."""
         exempt_until = time.time() + (duration_hours * 3600)
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    "INSERT OR REPLACE INTO exempt_users (user_id, exempt_until) VALUES (?, ?)",
-                    (user_to_pardon_id, exempt_until),
-                )
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO "{_WB}".exempt_users (user_id, exempt_until) VALUES ($1, $2) '
+                f'ON CONFLICT (user_id) DO UPDATE SET exempt_until = EXCLUDED.exempt_until',
+                user_to_pardon_id,
+                exempt_until,
+            )
 
     def get_waterboard_channels(self, guild, count: int = 10):
         """Get voice channels from the waterboard category, sorted by position. Returns up to `count` channels."""
@@ -338,13 +318,11 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
     @tasks.loop(minutes=10)
     async def cleanup_exempt_users(self):
         await self.bot.wait_until_ready()
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                current_time = time.time()
-                await cursor.execute(
-                    "DELETE FROM exempt_users WHERE exempt_until < ?", (current_time,)
-                )
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            current_time = time.time()
+            await conn.execute(
+                f'DELETE FROM "{_WB}".exempt_users WHERE exempt_until < $1', current_time
+            )
 
     @cleanup_exempt_users.before_loop
     async def before_cleanup_exempt_users(self):
@@ -357,13 +335,13 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         self, interaction, user, is_enhanced=False, cost_multiplier=1.0
     ):
         """Shared DB + economy logic for waterboard and enhanced-waterboard. Returns (cost, next_cost_msg, error_embed) or (cost, next_cost, None)."""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    "SELECT exempt_until FROM exempt_users WHERE user_id = ?",
-                    (user.id,),
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f'SELECT exempt_until FROM "{_WB}".exempt_users WHERE user_id = $1',
+                    user.id,
                 )
-                exempt_result = await cursor.fetchone()
+                exempt_result = (row["exempt_until"],) if row else None
                 if exempt_result and time.time() < exempt_result[0]:
                     exempt_until = exempt_result[0]
                     return (
@@ -377,16 +355,19 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                     )
 
                 current_time = time.time()
-                await cursor.execute(
-                    "SELECT last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent FROM waterboarded_users WHERE user_id = ?",
-                    (user.id,),
+                wb = await conn.fetchrow(
+                    f'SELECT last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent '
+                    f'FROM "{_WB}".waterboarded_users WHERE user_id = $1',
+                    user.id,
                 )
-                wb = await cursor.fetchone()
                 current_usage = 0
                 total_wb = 0
                 total_coins = 0
                 if wb:
-                    last_time, current_usage, total_wb, total_coins = wb
+                    last_time = wb["last_waterboarded_time"]
+                    current_usage = wb["usage_count"]
+                    total_wb = wb["total_waterboarded"]
+                    total_coins = wb["total_coins_spent"]
                     if current_time - last_time > 1800:
                         current_usage = 0
 
@@ -429,11 +410,20 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                 )
                 total_wb += 1
                 total_coins += cost
-                await cursor.execute(
-                    "INSERT OR REPLACE INTO waterboarded_users (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) VALUES (?, ?, ?, ?, ?)",
-                    (user.id, current_time, new_usage, total_wb, total_coins),
+                await conn.execute(
+                    f'INSERT INTO "{_WB}".waterboarded_users '
+                    f'(user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) '
+                    f'VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET '
+                    f'last_waterboarded_time = EXCLUDED.last_waterboarded_time, '
+                    f'usage_count = EXCLUDED.usage_count, '
+                    f'total_waterboarded = EXCLUDED.total_waterboarded, '
+                    f'total_coins_spent = EXCLUDED.total_coins_spent',
+                    user.id,
+                    current_time,
+                    new_usage,
+                    total_wb,
+                    total_coins,
                 )
-                await conn.commit()
                 return (cost, next_cost, None)
 
     @nextcord.slash_command(
@@ -591,19 +581,17 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
         exempt_users = []
         final_targets = []
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                now = time.time()
-                for u in target_users:
-                    await cursor.execute(
-                        "SELECT exempt_until FROM exempt_users WHERE user_id = ?",
-                        (u.id,),
-                    )
-                    r = await cursor.fetchone()
-                    if r and now < r[0]:
-                        exempt_users.append(u)
-                    else:
-                        final_targets.append(u)
+        async with self.bot.pg_pool.acquire() as conn:
+            now = time.time()
+            for u in target_users:
+                r = await conn.fetchrow(
+                    f'SELECT exempt_until FROM "{_WB}".exempt_users WHERE user_id = $1',
+                    u.id,
+                )
+                if r and now < r["exempt_until"]:
+                    exempt_users.append(u)
+                else:
+                    final_targets.append(u)
 
         if not final_targets:
             await interaction.response.send_message(
@@ -619,21 +607,34 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         final_cost = int(base_cost * party_multiplier * len(final_targets))
         await economy_cog.deduct_user_balance(interaction.user.id, final_cost)
 
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
+        async with self.bot.pg_pool.acquire() as conn:
+            async with conn.transaction():
                 now = time.time()
                 for u in final_targets:
-                    await cursor.execute(
-                        "SELECT total_waterboarded, total_coins_spent FROM waterboarded_users WHERE user_id = ?",
-                        (u.id,),
+                    r = await conn.fetchrow(
+                        f'SELECT total_waterboarded, total_coins_spent FROM "{_WB}".waterboarded_users WHERE user_id = $1',
+                        u.id,
                     )
-                    r = await cursor.fetchone()
-                    tw, tc = (r[0] + 1, r[1] + int(base_cost * party_multiplier)) if r else (1, int(base_cost * party_multiplier))
-                    await cursor.execute(
-                        "INSERT OR REPLACE INTO waterboarded_users (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) VALUES (?, ?, ?, ?, ?)",
-                        (u.id, now, 0, tw, tc),
+                    if r:
+                        tw = r["total_waterboarded"] + 1
+                        tc = r["total_coins_spent"] + int(base_cost * party_multiplier)
+                    else:
+                        tw = 1
+                        tc = int(base_cost * party_multiplier)
+                    await conn.execute(
+                        f'INSERT INTO "{_WB}".waterboarded_users '
+                        f'(user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) '
+                        f'VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET '
+                        f'last_waterboarded_time = EXCLUDED.last_waterboarded_time, '
+                        f'usage_count = EXCLUDED.usage_count, '
+                        f'total_waterboarded = EXCLUDED.total_waterboarded, '
+                        f'total_coins_spent = EXCLUDED.total_coins_spent',
+                        u.id,
+                        now,
+                        0,
+                        tw,
+                        tc,
                     )
-                await conn.commit()
 
         exempt_msg = f"\nExempt: {', '.join(u.mention for u in exempt_users)}" if exempt_users else ""
         await interaction.response.send_message(
@@ -668,12 +669,11 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         guild_ids=[GUILD_ID],
     )
     async def leaderboard(self, interaction: nextcord.Interaction):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    "SELECT user_id, total_waterboarded, total_coins_spent FROM waterboarded_users ORDER BY total_waterboarded DESC LIMIT 10"
-                )
-                results = await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as conn:
+            results = await conn.fetch(
+                f'SELECT user_id, total_waterboarded, total_coins_spent FROM "{_WB}".waterboarded_users '
+                f'ORDER BY total_waterboarded DESC LIMIT 10'
+            )
 
         if not results:
             await interaction.response.send_message(
@@ -691,7 +691,10 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             description="Top 10 users who have been waterboarded the most.",
             color=nextcord.Color.gold(),
         )
-        for rank, (uid, total_wb, total_coins) in enumerate(results, start=1):
+        for rank, row in enumerate(results, start=1):
+            uid = row["user_id"]
+            total_wb = row["total_waterboarded"]
+            total_coins = row["total_coins_spent"]
             user = self.bot.get_user(uid)
             name = user.name if user else f"User ID: {uid}"
             embed.add_field(

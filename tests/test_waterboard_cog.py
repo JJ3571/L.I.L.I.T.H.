@@ -1,11 +1,10 @@
 """
 Tests for ``WaterboardCog3`` (`main_bot.cogs.production.waterboard_v3`).
 
-The cog ties together SQLite (usage, exemptions), the Economy cog, and Discord voice /
+The cog ties together PostgreSQL (usage, exemptions), the Economy cog, and Discord voice /
 permission APIs. Tests are layered like ``test_counter_cog.py``:
 
-- **Persistence** — real aiosqlite on a temp DB; ``DATABASE_PATHS["waterboard"]`` is
-  redirected via ``monkeypatch`` so runs never touch your real ``databases/`` file.
+- **Persistence** — PostgreSQL schema ``waterboard`` via ``DATABASE_URL`` (see ``tests/conftest.py``).
 
 - **Pure helpers** — ``s_print_static``, channel selection from a mocked guild, category
   show/hide, and ``move_user_with_rate_limit`` with mocked ``Member.move_to``.
@@ -30,7 +29,6 @@ import inspect
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aiosqlite
 import nextcord
 import pytest
 from nextcord.application_command import SlashApplicationCommand, SlashApplicationSubcommand
@@ -38,7 +36,6 @@ from nextcord.ext import commands
 
 import main_bot.cogs.production.waterboard_v3 as waterboard_mod
 from main_bot.cogs.production.waterboard_v3 import WaterboardCog3
-from main_bot.server_configs import database_config as database_config_mod
 
 
 def _close_coro_fake_create_task(coro, *, name=None):  # noqa: ARG001
@@ -54,13 +51,6 @@ def _close_coro_fake_create_task(coro, *, name=None):  # noqa: ARG001
 
 
 @pytest.fixture
-def waterboard_db_path(tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
-    path = str(tmp_path / "waterboard_test.db")
-    monkeypatch.setitem(database_config_mod.DATABASE_PATHS, "waterboard", path)
-    return path
-
-
-@pytest.fixture
 def waterboard_bot() -> MagicMock:
     bot = MagicMock(spec=commands.Bot)
     bot.wait_until_ready = AsyncMock()
@@ -70,8 +60,19 @@ def waterboard_bot() -> MagicMock:
     return bot
 
 
+@pytest.fixture(autouse=True)
+def _clean_waterboard_tables(pg_pool) -> None:
+    async def _run() -> None:
+        async with pg_pool.acquire() as conn:
+            await conn.execute('DELETE FROM "waterboard".exempt_users')
+            await conn.execute('DELETE FROM "waterboard".waterboarded_users')
+
+    asyncio.run(_run())
+
+
 @pytest.fixture
-def waterboard_cog(waterboard_db_path: str, waterboard_bot: MagicMock) -> WaterboardCog3:
+def waterboard_cog(waterboard_bot: MagicMock, pg_pool) -> WaterboardCog3:
+    waterboard_bot.pg_pool = pg_pool
     with patch.object(WaterboardCog3.cleanup_exempt_users, "start", MagicMock()):
         return WaterboardCog3(waterboard_bot)
 
@@ -162,13 +163,13 @@ class TestWaterboardDatabase:
         now = time.time()
         with patch("time.time", return_value=now):
             await waterboard_cog.executive_pardon(77, duration_hours=2)
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
-            cur = await conn.execute(
-                "SELECT exempt_until FROM exempt_users WHERE user_id = ?", (77,)
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT exempt_until FROM "waterboard".exempt_users WHERE user_id = $1',
+                77,
             )
-            row = await cur.fetchone()
         assert row is not None
-        assert row[0] == pytest.approx(now + 7200, abs=1.0)
+        assert row["exempt_until"] == pytest.approx(now + 7200, abs=1.0)
 
     @pytest.mark.asyncio
     async def test_cleanup_exempt_users_removes_expired_rows(
@@ -176,24 +177,26 @@ class TestWaterboardDatabase:
     ) -> None:
         await waterboard_cog.create_tables()
 
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO exempt_users (user_id, exempt_until) VALUES (?, ?)",
-                (1, time.time() - 60),
+                'INSERT INTO "waterboard".exempt_users (user_id, exempt_until) VALUES ($1, $2)',
+                1,
+                time.time() - 60,
             )
             await conn.execute(
-                "INSERT INTO exempt_users (user_id, exempt_until) VALUES (?, ?)",
-                (2, time.time() + 3600),
+                'INSERT INTO "waterboard".exempt_users (user_id, exempt_until) VALUES ($1, $2)',
+                2,
+                time.time() + 3600,
             )
-            await conn.commit()
 
         waterboard_bot.wait_until_ready = AsyncMock()
         await WaterboardCog3.cleanup_exempt_users.coro(waterboard_cog)
 
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
-            cur = await conn.execute("SELECT user_id FROM exempt_users ORDER BY user_id")
-            rows = await cur.fetchall()
-        assert rows == [(2,)]
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                'SELECT user_id FROM "waterboard".exempt_users ORDER BY user_id'
+            )
+        assert [r["user_id"] for r in rows] == [2]
 
 
 # ---------------------------------------------------------------------------
@@ -336,12 +339,12 @@ class TestWaterboardPurchaseFlow:
     ) -> None:
         await waterboard_cog.create_tables()
         future = time.time() + 10_000
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO exempt_users (user_id, exempt_until) VALUES (?, ?)",
-                (30, future),
+                'INSERT INTO "waterboard".exempt_users (user_id, exempt_until) VALUES ($1, $2)',
+                30,
+                future,
             )
-            await conn.commit()
 
         ix = _make_interaction()
         target = _make_member(30)
@@ -430,16 +433,19 @@ class TestWaterboardPurchaseFlow:
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.return_value = econ
         t_old = 3_000_000.0
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
             await conn.execute(
-                """
-                INSERT INTO waterboarded_users
+                '''
+                INSERT INTO "waterboard".waterboarded_users
                 (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (42, t_old, 3, 1, 200),
+                VALUES ($1, $2, $3, $4, $5)
+                ''',
+                42,
+                t_old,
+                3,
+                1,
+                200,
             )
-            await conn.commit()
 
         ix = _make_interaction(user_id=62)
         target = _make_member(42)
@@ -651,16 +657,16 @@ class TestWaterboardSlashHandlers:
         self, waterboard_cog: WaterboardCog3, waterboard_bot: MagicMock
     ) -> None:
         await waterboard_cog.create_tables()
-        async with aiosqlite.connect(waterboard_cog.db_path) as conn:
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
             await conn.execute(
-                """
-                INSERT INTO waterboarded_users
+                '''
+                INSERT INTO "waterboard".waterboarded_users
                 (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent)
-                VALUES (?, ?, 0, 5, 1000)
-                """,
-                (777, time.time()),
+                VALUES ($1, $2, 0, 5, 1000)
+                ''',
+                777,
+                time.time(),
             )
-            await conn.commit()
 
         u = MagicMock()
         u.name = "RankedUser"
@@ -713,8 +719,9 @@ class TestWaterboardPrefixCreateChannels:
 class TestWaterboardSetup:
     @pytest.mark.asyncio
     async def test_setup_adds_cog(
-        self, waterboard_db_path: str, waterboard_bot: MagicMock
+        self, waterboard_bot: MagicMock, pg_pool
     ) -> None:
+        waterboard_bot.pg_pool = pg_pool
         with patch.object(WaterboardCog3.cleanup_exempt_users, "start", MagicMock()):
             await waterboard_mod.setup(waterboard_bot)
         waterboard_bot.add_cog.assert_called_once()

@@ -24,9 +24,23 @@ import nextcord
 from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
+from main_bot.db.ddl import init_all_schemas
+from main_bot.db.pool import close_pool, create_pool
 from main_bot.error_alerts import ensure_asyncio_exception_handler, install_error_alerts
 from main_bot.paths import PROJECT_ROOT
 from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
+
+
+class MainBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        pool = await create_pool()
+        self.pg_pool = pool
+        await init_all_schemas(pool)
+        boot_print("PostgreSQL pool ready and schemas initialized.")
+
+    async def close(self) -> None:
+        await close_pool()
+        await super().close()
 
 
 def _setup_logging() -> None:
@@ -67,7 +81,7 @@ intents.voice_states = True
 intents.guild_messages = True
 intents.guild_reactions = True
 
-bot = commands.Bot(
+bot = MainBot(
     command_prefix=".",
     intents=intents,
     application_id=APPLICATION_ID,

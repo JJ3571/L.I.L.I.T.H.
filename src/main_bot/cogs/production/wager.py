@@ -1,6 +1,6 @@
 import nextcord
 from nextcord.ext import commands
-import sqlite3
+import asyncpg
 from nextcord import Interaction, SlashOption, ChannelType
 from nextcord.ui import Button, View, Modal, TextInput
 from datetime import datetime
@@ -9,14 +9,20 @@ from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
-from main_bot.server_configs.database_config import DATABASE_PATHS
 
-DB_PATH = DATABASE_PATHS["wager"]
+_WG = "wager"
 
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+
+def _dt_ts(val) -> int:
+    if val is None:
+        return 0
+    if isinstance(val, datetime):
+        return int(val.timestamp())
+    s = str(val).split("+")[0].strip()
+    if "." in s:
+        s = s.rsplit(".", 1)[0]
+    return int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp())
+
 
 # --- UI Modals ---
 class BetAmountModal(Modal):
@@ -59,27 +65,28 @@ class BetAmountModal(Modal):
             await interaction.send(f"You do not have enough funds. Your balance: {user_balance}", ephemeral=True)
             return
 
-        # Process the bet
-        # 1. Deduct funds
         await economy_cog.update_balance(user_id, -amount)
-        
-        # 2. Record bet in DB
-        conn = get_db_connection()
-        cursor = conn.cursor()
+
         try:
-            cursor.execute(
-                "INSERT INTO user_bets (user_id, event_id, outcome_id, amount) VALUES (?, ?, ?, ?)",
-                (user_id, self.event_id, self.outcome_id, amount)
+            async with self.betting_cog.bot.pg_pool.acquire() as conn:
+                await conn.execute(
+                    f'''
+                    INSERT INTO "{_WG}".user_bets (user_id, event_id, outcome_id, amount)
+                    VALUES ($1, $2, $3, $4)
+                    ''',
+                    user_id,
+                    self.event_id,
+                    self.outcome_id,
+                    amount,
+                )
+            await interaction.send(
+                f"You successfully bet {amount} on '{self.outcome_text}' for Event ID {self.event_id}!",
+                ephemeral=True,
             )
-            conn.commit()
-            await interaction.send(f"You successfully bet {amount} on '{self.outcome_text}' for Event ID {self.event_id}!", ephemeral=True)
-            # Optionally, update the main event message to show new totals or odds
-            await self.betting_cog.update_event_message(self.event_id) # You'll need this method
-        except sqlite3.Error as e:
-            await economy_cog.update_balance(user_id, amount) # Refund on DB error
+            await self.betting_cog.update_event_message(self.event_id)
+        except asyncpg.PostgresError as e:
+            await economy_cog.update_balance(user_id, amount)
             await interaction.send(f"An error occurred while placing your bet: {e}", ephemeral=True)
-        finally:
-            conn.close()
 
 
 class ViewBetsButton(Button):
@@ -90,32 +97,33 @@ class ViewBetsButton(Button):
 
     async def callback(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        pool = self.cog.bot.pg_pool
+        async with pool.acquire() as conn:
+            event_details = await conn.fetchrow(
+                f'SELECT title FROM "{_WG}".betting_events WHERE event_id = $1',
+                self.event_id,
+            )
+            if not event_details:
+                await interaction.followup.send("Could not find details for this event.", ephemeral=True)
+                return
 
-        event_details = cursor.execute("SELECT title FROM betting_events WHERE event_id = ?", (self.event_id,)).fetchone()
-        if not event_details:
-            await interaction.followup.send("Could not find details for this event.", ephemeral=True)
-            conn.close()
-            return
+            outcomes = await conn.fetch(
+                f'SELECT outcome_id, outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                self.event_id,
+            )
 
-        outcomes = cursor.execute(
-            "SELECT outcome_id, outcome_text FROM event_outcomes WHERE event_id = ?", (self.event_id,)
-        ).fetchall()
-        
-        bets_by_outcome = {outcome['outcome_id']: [] for outcome in outcomes}
-        
-        all_bets = cursor.execute(
-            "SELECT user_id, outcome_id, amount FROM user_bets WHERE event_id = ?", (self.event_id,)
-        ).fetchall()
-        conn.close()
+            bets_by_outcome = {outcome["outcome_id"]: [] for outcome in outcomes}
+
+            all_bets = await conn.fetch(
+                f'SELECT user_id, outcome_id, amount FROM "{_WG}".user_bets WHERE event_id = $1',
+                self.event_id,
+            )
 
         for bet in all_bets:
-            if bet['outcome_id'] in bets_by_outcome:
-                # Try to fetch member to display name, fallback to ID
-                member = interaction.guild.get_member(bet['user_id'])
+            if bet["outcome_id"] in bets_by_outcome:
+                member = interaction.guild.get_member(bet["user_id"])
                 user_display = member.mention if member else f"User ID: {bet['user_id']}"
-                bets_by_outcome[bet['outcome_id']].append(f"{user_display}: {bet['amount']}")
+                bets_by_outcome[bet["outcome_id"]].append(f"{user_display}: {bet['amount']}")
 
         if not all_bets:
             await interaction.followup.send(f"No bets have been placed on '{event_details['title']}' yet.", ephemeral=True)
@@ -163,13 +171,13 @@ class OutcomeButton(Button):
         self.cog = cog_instance
 
     async def callback(self, interaction: Interaction):
-        # Check if event is still open for betting
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        event_data = cursor.execute("SELECT status FROM betting_events WHERE event_id = ?", (self.event_id,)).fetchone()
-        conn.close()
+        async with self.cog.bot.pg_pool.acquire() as conn:
+            event_data = await conn.fetchrow(
+                f'SELECT status FROM "{_WG}".betting_events WHERE event_id = $1',
+                self.event_id,
+            )
 
-        if not event_data or event_data['status'] != 'open':
+        if not event_data or event_data["status"] != "open":
             await interaction.send("Betting for this event is currently closed.", ephemeral=True)
             return
             
@@ -188,57 +196,72 @@ class FinalizeEventButton(Button):
         self.event_creator_id = event_creator_id # To allow creator to initiate finalization request
 
     async def callback(self, interaction: Interaction):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        event = cursor.execute("SELECT status, creator_user_id FROM betting_events WHERE event_id = ?", (self.event_id,)).fetchone()
-        
+        pool = self.cog.bot.pg_pool
+        async with pool.acquire() as conn:
+            event = await conn.fetchrow(
+                f'SELECT status, creator_user_id FROM "{_WG}".betting_events WHERE event_id = $1',
+                self.event_id,
+            )
+
         if not event:
             await interaction.send("Event not found.", ephemeral=True)
-            conn.close()
             return
 
-        is_admin = interaction.user.id in admin_user_ids # Ensure admin_user_ids is loaded
-        is_creator = interaction.user.id == event['creator_user_id']
+        is_admin = interaction.user.id in admin_user_ids
+        is_creator = interaction.user.id == event["creator_user_id"]
 
-        if event['status'] == 'open' and (is_admin or is_creator):
-            # Option to close betting first
-            cursor.execute("UPDATE betting_events SET status = ? WHERE event_id = ?", ('closed_for_betting', self.event_id))
-            conn.commit()
-            await interaction.send("Betting for this event has been closed. Admins can now finalize and choose the winning outcome!", ephemeral=True)
+        if event["status"] == "open" and (is_admin or is_creator):
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    f'UPDATE "{_WG}".betting_events SET status = $1 WHERE event_id = $2',
+                    "closed_for_betting",
+                    self.event_id,
+                )
+            await interaction.send(
+                "Betting for this event has been closed. Admins can now finalize and choose the winning outcome!",
+                ephemeral=True,
+            )
             await self.cog.update_event_message(self.event_id, new_status_display="Betting Closed")
-            # Admins will now see a different view or an enabled "Finalize Now" button
-        elif event['status'] in ['closed_for_betting', 'pending_finalization'] and is_admin:
-            # Proceed to admin finalization
-            outcomes = cursor.execute("SELECT outcome_id, outcome_text FROM event_outcomes WHERE event_id = ?", (self.event_id,)).fetchall()
-            conn.close()
+        elif event["status"] in ("closed_for_betting", "pending_finalization") and is_admin:
+            async with pool.acquire() as conn:
+                outcomes = await conn.fetch(
+                    f'SELECT outcome_id, outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                    self.event_id,
+                )
             if not outcomes:
                 await interaction.send("No outcomes found for this event to finalize.", ephemeral=True)
                 return
-            
-            # Check if this admin has bets on this event
-            admin_has_bets = False
-            conn_check_bets = get_db_connection()
-            if conn_check_bets.execute("SELECT 1 FROM user_bets WHERE event_id = ? AND user_id = ?", (self.event_id, interaction.user.id)).fetchone():
-                admin_has_bets = True
-            conn_check_bets.close()
+
+            admin_has_bets = await pool.fetchval(
+                f'SELECT 1 FROM "{_WG}".user_bets WHERE event_id = $1 AND user_id = $2',
+                self.event_id,
+                interaction.user.id,
+            ) is not None
 
             if admin_has_bets:
-                confirm_view = ConfirmAdminFinalizeView(self.event_id, outcomes, self.cog, interaction.user.id, "You have personal bets on this event. This action will be logged. Proceed?")
+                confirm_view = ConfirmAdminFinalizeView(
+                    self.event_id,
+                    outcomes,
+                    self.cog,
+                    interaction.user.id,
+                    "You have personal bets on this event. This action will be logged. Proceed?",
+                )
                 await interaction.send(
                     "**Admin Finalization Warning**\n\nYou have placed personal bets on this event. Finalizing it yourself will be logged! Please select the winning outcome:",
                     view=confirm_view,
-                    ephemeral=True
+                    ephemeral=True,
                 )
             else:
                 select_view = AdminSelectOutcomeView(self.event_id, outcomes, self.cog, interaction.user.id)
                 await interaction.send("Please select the winning outcome:", view=select_view, ephemeral=True)
 
-        elif event['status'] == 'finalized':
+        elif event["status"] == "finalized":
             await interaction.send("This event has already been finalized.", ephemeral=True)
         else:
-            await interaction.send("You do not have permission to finalize this event now, or it's not ready for finalization.", ephemeral=True)
-        if conn: # ensure connection is closed if not closed by specific paths
-            conn.close()
+            await interaction.send(
+                "You do not have permission to finalize this event now, or it's not ready for finalization.",
+                ephemeral=True,
+            )
 
 
 class PendingFinalizationView(View):
@@ -268,35 +291,41 @@ class TriggerFinalizationButton(Button):
             await interaction.send("You do not have permission to do this.", ephemeral=True)
             return
 
-        await interaction.response.defer(ephemeral=True) # Acknowledge, will send new message or modal
+        await interaction.response.defer(ephemeral=True)
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        event = cursor.execute("SELECT status FROM betting_events WHERE event_id = ?", (self.event_id,)).fetchone()
+        pool = self.cog.bot.pg_pool
+        async with pool.acquire() as conn:
+            event = await conn.fetchrow(
+                f'SELECT status FROM "{_WG}".betting_events WHERE event_id = $1',
+                self.event_id,
+            )
 
         if not event:
             await interaction.followup.send("Event not found.", ephemeral=True)
-            conn.close()
             return
 
-        if event['status'] not in ['closed_for_betting', 'pending_finalization']:
-            await interaction.followup.send(f"Event {self.event_id} is not ready for finalization (Status: {event['status']}).", ephemeral=True)
-            conn.close()
+        if event["status"] not in ("closed_for_betting", "pending_finalization"):
+            await interaction.followup.send(
+                f"Event {self.event_id} is not ready for finalization (Status: {event['status']}).",
+                ephemeral=True,
+            )
             return
 
-        outcomes = cursor.execute("SELECT outcome_id, outcome_text FROM event_outcomes WHERE event_id = ?", (self.event_id,)).fetchall()
-        conn.close() # Close connection after fetching necessary data
+        async with pool.acquire() as conn:
+            outcomes = await conn.fetch(
+                f'SELECT outcome_id, outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                self.event_id,
+            )
 
         if not outcomes:
             await interaction.followup.send("No outcomes found for this event to finalize.", ephemeral=True)
             return
-        
-        admin_has_bets = False
-        conn_check_bets = get_db_connection()
-        cursor_check_bets = conn_check_bets.cursor()
-        if cursor_check_bets.execute("SELECT 1 FROM user_bets WHERE event_id = ? AND user_id = ?", (self.event_id, interaction.user.id)).fetchone():
-            admin_has_bets = True
-        conn_check_bets.close()
+
+        admin_has_bets = await pool.fetchval(
+            f'SELECT 1 FROM "{_WG}".user_bets WHERE event_id = $1 AND user_id = $2',
+            self.event_id,
+            interaction.user.id,
+        ) is not None
 
         if admin_has_bets:
             confirm_view = ConfirmAdminFinalizeView(self.event_id, outcomes, self.cog, interaction.user.id, "You have personal bets on this event. This action will be logged. Proceed?")
@@ -349,26 +378,26 @@ class SelectWagerButton(Button):
         self.cog = cog_instance # BettingCog instance
 
     async def callback(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True) # Acknowledge, will send new message
+        await interaction.response.defer(ephemeral=True)
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        event_data = cursor.execute(
-            "SELECT event_id, title, description, creator_user_id FROM betting_events WHERE event_id = ? AND status = 'open'", 
-            (self.event_id,)
-        ).fetchone()
-        
-        if not event_data:
-            await interaction.followup.send("This wager might no longer be active or available.", ephemeral=True)
-            conn.close()
-            return
+        pool = self.cog.bot.pg_pool
+        async with pool.acquire() as conn:
+            event_data = await conn.fetchrow(
+                f'''
+                SELECT event_id, title, description, creator_user_id FROM "{_WG}".betting_events
+                WHERE event_id = $1 AND status = 'open'
+                ''',
+                self.event_id,
+            )
 
-        outcomes = cursor.execute(
-            "SELECT outcome_id, outcome_text FROM event_outcomes WHERE event_id = ?",
-            (self.event_id,)
-        ).fetchall()
-        conn.close()
+            if not event_data:
+                await interaction.followup.send("This wager might no longer be active or available.", ephemeral=True)
+                return
+
+            outcomes = await conn.fetch(
+                f'SELECT outcome_id, outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                self.event_id,
+            )
 
         if not outcomes:
             await interaction.followup.send("Could not retrieve outcomes for this wager.", ephemeral=True)
@@ -421,74 +450,36 @@ class ActiveWagersListView(View):
 class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed for clarity
     def __init__(self, bot):
         self.bot = bot
-        # self.db_path = "betting_events.db" # Defined globally for helper
         self.create_tables()
         self.bot.loop.create_task(self.add_persistent_views())
 
 
     async def add_persistent_views(self):
         await self.bot.wait_until_ready()
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        # Add views for events that are 'open' or 'closed_for_betting' etc.
-        # This is complex if you have many dynamic buttons per view from the DB
-        # Simplified: Re-construct view if message_id exists.
-        # For OutcomeButtons with dynamic labels from `event_outcomes`, you need to fetch them.
-        events_to_reactivate = cursor.execute("SELECT event_id, creator_user_id FROM betting_events WHERE status IN ('open', 'closed_for_betting', 'pending_finalization') AND message_id IS NOT NULL").fetchall()
-        for event_row in events_to_reactivate:
-            outcomes = cursor.execute("SELECT outcome_id, outcome_text FROM event_outcomes WHERE event_id = ?", (event_row['event_id'],)).fetchall()
-            if outcomes:
-                view = BettingEventView(event_row['event_id'], outcomes, self, event_row['creator_user_id'])
-                self.bot.add_view(view, message_id=None) # This won't link to existing message;
-                                                         # nextcord needs message_id at init for existing msgs.
-                                                         # Proper persistent views often involve storing view structure or re-sending.
-                                                         # For now, this just makes the view listen if custom_ids match.
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            events_to_reactivate = await conn.fetch(
+                f'''
+                SELECT event_id, creator_user_id FROM "{_WG}".betting_events
+                WHERE status IN ('open', 'closed_for_betting', 'pending_finalization') AND message_id IS NOT NULL
+                '''
+            )
+            for event_row in events_to_reactivate:
+                outcomes = await conn.fetch(
+                    f'SELECT outcome_id, outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                    event_row["event_id"],
+                )
+                if outcomes:
+                    view = BettingEventView(
+                        event_row["event_id"],
+                        outcomes,
+                        self,
+                        event_row["creator_user_id"],
+                    )
+                    self.bot.add_view(view, message_id=None)
         self.cog_print("Attempted to re-add persistent views for betting events.")
 
-
     def create_tables(self):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS betting_events (
-                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                creator_user_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT,
-                status TEXT NOT NULL DEFAULT 'open',
-                message_id INTEGER,
-                channel_id INTEGER, -- Added channel_id
-                guild_id INTEGER,
-                winning_outcome_id INTEGER,
-                resolved_by_admin_id INTEGER,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                closes_at DATETIME,
-                FOREIGN KEY(winning_outcome_id) REFERENCES event_outcomes(outcome_id)
-            )
-        ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS event_outcomes (
-                outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id INTEGER NOT NULL,
-                outcome_text TEXT NOT NULL,
-                FOREIGN KEY(event_id) REFERENCES betting_events(event_id) ON DELETE CASCADE 
-            )
-        ''') # Added ON DELETE CASCADE
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_bets (
-                bet_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                event_id INTEGER NOT NULL,
-                outcome_id INTEGER NOT NULL,
-                amount INTEGER NOT NULL,
-                placed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(event_id) REFERENCES betting_events(event_id) ON DELETE CASCADE,
-                FOREIGN KEY(outcome_id) REFERENCES event_outcomes(outcome_id) ON DELETE CASCADE
-            )
-        ''') # Added ON DELETE CASCADE
-        conn.commit()
-        conn.close()
+        return
 
     @nextcord.slash_command(name="wager", description="Manage betting events.",guild_ids=[GUILD_ID]) 
     async def event_parent_cmd(self, interaction: Interaction):
@@ -509,59 +500,73 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
             await interaction.send("Please provide at least two distinct outcomes.", ephemeral=True)
             return
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute(
-                "INSERT INTO betting_events (creator_user_id, title, description, guild_id, channel_id, status) VALUES (?, ?, ?, ?, ?, ?)",
-                (interaction.user.id, title, description, interaction.guild.id, interaction.channel.id, 'open')
-            )
-            event_id = cursor.lastrowid
-            
-            db_outcomes = [] # To pass to the View constructor
-            for outcome_text in outcome_list:
-                cursor.execute("INSERT INTO event_outcomes (event_id, outcome_text) VALUES (?, ?)", (event_id, outcome_text))
-                db_outcomes.append({'outcome_id': cursor.lastrowid, 'outcome_text': outcome_text}) # Store for view
+            async with self.bot.pg_pool.acquire() as conn:
+                async with conn.transaction():
+                    event_id = await conn.fetchval(
+                        f'''
+                        INSERT INTO "{_WG}".betting_events
+                            (creator_user_id, title, description, guild_id, channel_id, status)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        RETURNING event_id
+                        ''',
+                        interaction.user.id,
+                        title,
+                        description,
+                        interaction.guild.id,
+                        interaction.channel.id,
+                        "open",
+                    )
 
-            conn.commit()
+                    db_outcomes = []
+                    for outcome_text in outcome_list:
+                        oid = await conn.fetchval(
+                            f'''
+                            INSERT INTO "{_WG}".event_outcomes (event_id, outcome_text) VALUES ($1, $2)
+                            RETURNING outcome_id
+                            ''',
+                            event_id,
+                            outcome_text,
+                        )
+                        db_outcomes.append({"outcome_id": oid, "outcome_text": outcome_text})
 
             embed = nextcord.Embed(title=f"📢 New Wager: {title}", color=nextcord.Color.blue())
             if description:
                 embed.description = description
             embed.add_field(name="Status", value="Open for Betting", inline=False)
             embed.set_footer(text=f"Event ID: {event_id} | Created by: {interaction.user.display_name}")
-            
+
             for i, outcome_t in enumerate(outcome_list):
-                 embed.add_field(name=f"Outcome {i+1}", value=outcome_t, inline=True)
+                embed.add_field(name=f"Outcome {i+1}", value=outcome_t, inline=True)
 
             view = BettingEventView(event_id, db_outcomes, self, interaction.user.id)
-            
-            # Send to the current channel.
+
             event_message = await interaction.channel.send(embed=embed, view=view)
-            
-            # Store message_id and channel_id
-            cursor.execute("UPDATE betting_events SET message_id = ?, channel_id = ? WHERE event_id = ?", 
-                           (event_message.id, interaction.channel.id, event_id))
-            conn.commit()
-            
+
+            async with self.bot.pg_pool.acquire() as conn:
+                await conn.execute(
+                    f'''
+                    UPDATE "{_WG}".betting_events SET message_id = $1, channel_id = $2 WHERE event_id = $3
+                    ''',
+                    event_message.id,
+                    interaction.channel.id,
+                    event_id,
+                )
+
             await interaction.send(f"Betting event '{title}' (ID: {event_id}) created successfully!", ephemeral=True)
 
-        except sqlite3.Error as e:
-            conn.rollback()
+        except asyncpg.PostgresError as e:
             await interaction.send(f"Database error creating event: {e}", ephemeral=True)
-        finally:
-            conn.close()
 
     @event_parent_cmd.subcommand(name="list", description="List all active wagers you can bet on.")
     async def event_list_active(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        # Fetch events that are currently open for betting
-        active_events_data = cursor.execute(
-            "SELECT event_id, title FROM betting_events WHERE status = 'open' ORDER BY created_at DESC"
-        ).fetchall()
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            active_events_data = await conn.fetch(
+                f'''
+                SELECT event_id, title FROM "{_WG}".betting_events WHERE status = 'open' ORDER BY created_at DESC
+                '''
+            )
 
         if not active_events_data:
             await interaction.followup.send("There are no active wagers at the moment.", ephemeral=True)
@@ -595,13 +600,13 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
             return
 
         await interaction.response.defer(ephemeral=True)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        pending_events = cursor.execute(
-            "SELECT event_id, title, status FROM betting_events WHERE status IN ('closed_for_betting', 'pending_finalization') ORDER BY created_at ASC"
-        ).fetchall()
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            pending_events = await conn.fetch(
+                f'''
+                SELECT event_id, title, status FROM "{_WG}".betting_events
+                WHERE status IN ('closed_for_betting', 'pending_finalization') ORDER BY created_at ASC
+                '''
+            )
 
         if not pending_events:
             await interaction.followup.send("No wagers are currently pending finalization.", ephemeral=True)
@@ -628,21 +633,17 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
     @event_parent_cmd.subcommand(name="history", description="View history of recently finalized wagers.")
     async def event_history(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # Fetch finalized events, join with outcomes to get winning outcome text
-        finalized_events = cursor.execute(
-            """
-            SELECT be.event_id, be.title, be.resolved_by_admin_id, eo.outcome_text as winning_outcome, be.created_at
-            FROM betting_events be
-            LEFT JOIN event_outcomes eo ON be.winning_outcome_id = eo.outcome_id
-            WHERE be.status = 'finalized' 
-            ORDER BY be.created_at DESC 
-            LIMIT 10 
-            """, # Limiting to 10 for now, add pagination later
-        ).fetchall()
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            finalized_events = await conn.fetch(
+                f'''
+                SELECT be.event_id, be.title, be.resolved_by_admin_id, eo.outcome_text AS winning_outcome, be.created_at
+                FROM "{_WG}".betting_events be
+                LEFT JOIN "{_WG}".event_outcomes eo ON be.winning_outcome_id = eo.outcome_id
+                WHERE be.status = 'finalized'
+                ORDER BY be.created_at DESC
+                LIMIT 10
+                '''
+            )
 
         if not finalized_events:
             await interaction.followup.send("No finalized wagers found in the recent history.", ephemeral=True)
@@ -653,13 +654,12 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
         history_lines = []
         for event_row in finalized_events:
             admin_mention = f"<@{event_row['resolved_by_admin_id']}>" if event_row['resolved_by_admin_id'] else "N/A"
-            winning_text = event_row['winning_outcome'] if event_row['winning_outcome'] else "N/A (or no winning bets)"
-            # Convert created_at string to Unix timestamp
-            created_at_dt = datetime.strptime(event_row['created_at'], '%Y-%m-%d %H:%M:%S')
+            winning_text = event_row["winning_outcome"] if event_row["winning_outcome"] else "N/A (or no winning bets)"
+            ts = _dt_ts(event_row["created_at"])
             history_lines.append(
                 f"**{event_row['title']}** (ID: {event_row['event_id']})\n"
                 f"  Winner: {winning_text}\n"
-                f"  Finalized by: {admin_mention} on <t:{int(created_at_dt.timestamp())}:D>"
+                f"  Finalized by: {admin_mention} on <t:{ts}:D>"
             )
         
         embed.description = "\n\n".join(history_lines)
@@ -671,28 +671,24 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
     async def event_my_bets(self, interaction: Interaction):
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # Fetch user's bets, join with event details and outcome details
-        my_bets_data = cursor.execute(
-            """
-            SELECT 
-                ub.bet_id, ub.amount, ub.placed_at,
-                be.event_id, be.title AS event_title, be.status AS event_status,
-                eo_bet.outcome_text AS bet_on_outcome,
-                eo_win.outcome_text AS winning_outcome_text
-            FROM user_bets ub
-            JOIN betting_events be ON ub.event_id = be.event_id
-            JOIN event_outcomes eo_bet ON ub.outcome_id = eo_bet.outcome_id
-            LEFT JOIN event_outcomes eo_win ON be.winning_outcome_id = eo_win.outcome_id
-            WHERE ub.user_id = ?
-            ORDER BY ub.placed_at DESC
-            LIMIT 15 
-            """, # Limiting for now
-            (user_id,)
-        ).fetchall()
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            my_bets_data = await conn.fetch(
+                f'''
+                SELECT
+                    ub.bet_id, ub.amount, ub.placed_at,
+                    be.event_id, be.title AS event_title, be.status AS event_status,
+                    eo_bet.outcome_text AS bet_on_outcome,
+                    eo_win.outcome_text AS winning_outcome_text
+                FROM "{_WG}".user_bets ub
+                JOIN "{_WG}".betting_events be ON ub.event_id = be.event_id
+                JOIN "{_WG}".event_outcomes eo_bet ON ub.outcome_id = eo_bet.outcome_id
+                LEFT JOIN "{_WG}".event_outcomes eo_win ON be.winning_outcome_id = eo_win.outcome_id
+                WHERE ub.user_id = $1
+                ORDER BY ub.placed_at DESC
+                LIMIT 15
+                ''',
+                user_id,
+            )
 
         if not my_bets_data:
             await interaction.followup.send("You haven't placed any bets yet, or your betting history is empty.", ephemeral=True)
@@ -702,12 +698,11 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
         
         bet_lines = []
         for bet in my_bets_data:
-            # Convert placed_at string to Unix timestamp
-            placed_at_dt = datetime.strptime(bet['placed_at'], '%Y-%m-%d %H:%M:%S')
+            placed_ts = _dt_ts(bet["placed_at"])
             line = (
                 f"**{bet['event_title']}** (ID: {bet['event_id']}) - Bet ID: {bet['bet_id']}\n"
                 f"  Amount: {bet['amount']} on '{bet['bet_on_outcome']}'\n"
-                f"  Placed: <t:{int(placed_at_dt.timestamp())}:R>\n"
+                f"  Placed: <t:{placed_ts}:R>\n"
                 f"  Status: {bet['event_status'].replace('_', ' ').capitalize()}"
             )
             if bet['event_status'] == 'finalized':
@@ -734,33 +729,31 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
             return
 
         await interaction.response.defer(ephemeral=True)
-        conn = get_db_connection()
-        cursor = conn.cursor()
 
         try:
-            # First, retrieve message_id and channel_id if they exist, before deleting the event
-            event_info = cursor.execute(
-                "SELECT message_id, channel_id, guild_id, title FROM betting_events WHERE event_id = ?",
-                (event_id,)
-            ).fetchone()
+            async with self.bot.pg_pool.acquire() as conn:
+                event_info = await conn.fetchrow(
+                    f'''
+                    SELECT message_id, channel_id, guild_id, title FROM "{_WG}".betting_events WHERE event_id = $1
+                    ''',
+                    event_id,
+                )
 
             if not event_info:
                 await interaction.followup.send(f"Wager with ID {event_id} not found.", ephemeral=True)
-                conn.close()
                 return
 
-            # Delete the event from the database. Associated bets and outcomes will be deleted due to ON DELETE CASCADE.
-            cursor.execute("DELETE FROM betting_events WHERE event_id = ?", (event_id,))
-            conn.commit()
+            async with self.bot.pg_pool.acquire() as conn:
+                await conn.execute(f'DELETE FROM "{_WG}".betting_events WHERE event_id = $1', event_id)
 
             deleted_message_info = ""
-            if event_info['message_id'] and event_info['channel_id'] and event_info['guild_id']:
+            if event_info["message_id"] and event_info["channel_id"] and event_info["guild_id"]:
                 try:
-                    guild = self.bot.get_guild(event_info['guild_id'])
+                    guild = self.bot.get_guild(event_info["guild_id"])
                     if guild:
-                        channel = guild.get_channel(event_info['channel_id'])
+                        channel = guild.get_channel(event_info["channel_id"])
                         if channel:
-                            message = await channel.fetch_message(event_info['message_id'])
+                            message = await channel.fetch_message(event_info["message_id"])
                             await message.delete()
                             deleted_message_info = " The original event message was also deleted."
                 except nextcord.NotFound:
@@ -772,142 +765,153 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
 
             await interaction.followup.send(
                 f"Successfully deleted wager '{event_info['title']}' (ID: {event_id}) and all associated bets/outcomes.{deleted_message_info}",
-                ephemeral=True
+                ephemeral=True,
             )
 
-        except sqlite3.Error as e:
-            conn.rollback()
+        except asyncpg.PostgresError as e:
             await interaction.followup.send(f"Database error deleting event: {e}", ephemeral=True)
         except Exception as e:
-            conn.rollback() # Ensure rollback on any unexpected error
             await interaction.followup.send(f"An unexpected error occurred: {e}", ephemeral=True)
-        finally:
-            conn.close()
 
 
     async def update_event_message(self, event_id: int, new_status_display: str = None):
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        event_data = cursor.execute("SELECT message_id, channel_id, title, description, status, guild_id FROM betting_events WHERE event_id = ?", (event_id,)).fetchone()
-        
-        if not event_data or not event_data['message_id'] or not event_data['channel_id']:
-            conn.close()
-            self.cog_print(f"Event {event_id} missing message_id or channel_id for update.")
-            return
+        async with self.bot.pg_pool.acquire() as conn:
+            event_data = await conn.fetchrow(
+                f'''
+                SELECT message_id, channel_id, title, description, status, guild_id
+                FROM "{_WG}".betting_events WHERE event_id = $1
+                ''',
+                event_id,
+            )
+            if not event_data or not event_data["message_id"] or not event_data["channel_id"]:
+                self.cog_print(f"Event {event_id} missing message_id or channel_id for update.")
+                return
+
+            outcomes = await conn.fetch(
+                f'SELECT outcome_text FROM "{_WG}".event_outcomes WHERE event_id = $1',
+                event_id,
+            )
 
         try:
-            guild = self.bot.get_guild(event_data['guild_id'])
+            guild = self.bot.get_guild(event_data["guild_id"])
             if not guild:
                 self.cog_print(f"Guild {event_data['guild_id']} not found for event {event_id}.")
-                conn.close()
-                return 
-            
-            channel = guild.get_channel(event_data['channel_id'])
+                return
+
+            channel = guild.get_channel(event_data["channel_id"])
             if not channel:
                 self.cog_print(f"Channel {event_data['channel_id']} not found in guild {guild.id} for event {event_id}.")
-                conn.close()
-                return
-            
-            target_message = await channel.fetch_message(event_data['message_id'])
-            
-            if not target_message: # Should be caught by fetch_message's NotFound exception, but good practice
-                self.cog_print(f"Could not fetch message {event_data['message_id']} from channel {channel.id} for event {event_id}.")
-                conn.close()
                 return
 
-            # Rebuild embed
-            embed = target_message.embeds[0] if target_message.embeds else nextcord.Embed(title=event_data['title']) # Fallback
-            embed.clear_fields() # Or update specific fields
+            target_message = await channel.fetch_message(event_data["message_id"])
 
-            # Update status field
-            current_status_display = new_status_display if new_status_display else event_data['status'].replace('_', ' ').capitalize()
+            embed = (
+                target_message.embeds[0]
+                if target_message.embeds
+                else nextcord.Embed(title=event_data["title"])
+            )
+            embed.clear_fields()
+
+            current_status_display = (
+                new_status_display
+                if new_status_display
+                else event_data["status"].replace("_", " ").capitalize()
+            )
             embed.add_field(name="Status", value=current_status_display, inline=False)
 
-            # Re-add outcomes (or update existing outcome fields with totals if you track that)
-            outcomes = cursor.execute("SELECT outcome_text FROM event_outcomes WHERE event_id = ?", (event_id,)).fetchall()
             for i, outcome_row in enumerate(outcomes):
-                 embed.add_field(name=f"Outcome {i+1}", value=outcome_row['outcome_text'], inline=True)
-            
-            # Re-attach view if needed (especially if buttons need to be enabled/disabled)
-            # The current view buttons enable/disable themselves based on DB status checks.
-            # So, just editing the embed might be enough sometimes.
-            # For changing button labels or adding/removing buttons, you'd send a new view instance.
-            # view = BettingEventView(event_id, outcomes_data_for_view, self, event_data['creator_user_id'])
-            await target_message.edit(embed=embed) # view=new_view if needed
+                embed.add_field(
+                    name=f"Outcome {i+1}",
+                    value=outcome_row["outcome_text"],
+                    inline=True,
+                )
+
+            await target_message.edit(embed=embed)
 
         except nextcord.NotFound:
             self.cog_print(f"Message {event_data['message_id']} for event {event_id} not found for update.")
         except Exception as e:
             self.cog_print(f"Error updating event message for {event_id}: {e}")
-        finally:
-            conn.close()
 
 
     async def finalize_event_logic(self, interaction: Interaction, event_id: int, winning_outcome_id: int, admin_id: int):
         """Handles the logic after an admin has confirmed the winning outcome."""
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
         try:
-            # 1. Update event status
-            cursor.execute(
-                "UPDATE betting_events SET status = 'finalized', winning_outcome_id = ?, resolved_by_admin_id = ? WHERE event_id = ?",
-                (winning_outcome_id, admin_id, event_id)
-            )
-            
-            # 2. Get all bets for the event
-            all_bets = cursor.execute("SELECT user_id, outcome_id, amount FROM user_bets WHERE event_id = ?", (event_id,)).fetchall()
+            async with self.bot.pg_pool.acquire() as conn:
+                await conn.execute(
+                    f'''
+                    UPDATE "{_WG}".betting_events
+                    SET status = 'finalized', winning_outcome_id = $1, resolved_by_admin_id = $2
+                    WHERE event_id = $3
+                    ''',
+                    winning_outcome_id,
+                    admin_id,
+                    event_id,
+                )
+
+                all_bets = await conn.fetch(
+                    f'SELECT user_id, outcome_id, amount FROM "{_WG}".user_bets WHERE event_id = $1',
+                    event_id,
+                )
+
             if not all_bets:
                 await interaction.followup.send("Event finalized. No bets were placed.", ephemeral=True)
-                conn.commit()
                 await self.update_event_message(event_id, new_status_display="Finalized - No Bets")
                 return
 
-            total_pot = sum(bet['amount'] for bet in all_bets)
-            winning_bets = [bet for bet in all_bets if bet['outcome_id'] == winning_outcome_id]
-            
+            total_pot = sum(bet["amount"] for bet in all_bets)
+            winning_bets = [bet for bet in all_bets if bet["outcome_id"] == winning_outcome_id]
+
             if not winning_bets:
-                await interaction.followup.send(f"Event finalized. Winning Outcome ID: {winning_outcome_id}. No one bet on the winning outcome. Pot of {total_pot} sent to the Treasury.", ephemeral=True)
-                conn.commit()
-                await self.update_event_message(event_id, new_status_display=f"Finalized - No Winners (Pot: {total_pot})")
+                await interaction.followup.send(
+                    f"Event finalized. Winning Outcome ID: {winning_outcome_id}. No one bet on the winning outcome. Pot of {total_pot} sent to the Treasury.",
+                    ephemeral=True,
+                )
+                await self.update_event_message(
+                    event_id,
+                    new_status_display=f"Finalized - No Winners (Pot: {total_pot})",
+                )
                 return
 
-            total_bet_on_winning_outcome = sum(bet['amount'] for bet in winning_bets)
-            
-            # 3. Payout to winners
-            economy_cog = self.bot.get_cog('Economy')
+            total_bet_on_winning_outcome = sum(bet["amount"] for bet in winning_bets)
+
+            economy_cog = self.bot.get_cog("Economy")
             if not economy_cog:
                 await interaction.followup.send("Economy cog not found. Cannot process payouts.", ephemeral=True)
-                # Potentially rollback or mark for manual payout
-                conn.rollback()
                 return
-            
+
             payout_summary = []
             for winner_bet in winning_bets:
-                # Proportional Payout: (user's winning stake / total winning stake) * total pot
-                payout = (winner_bet['amount'] / total_bet_on_winning_outcome) * total_pot
-                payout = round(payout) # Or use decimal for precision
+                payout = round((winner_bet["amount"] / total_bet_on_winning_outcome) * total_pot)
+                await economy_cog.update_balance(winner_bet["user_id"], payout)
+                payout_summary.append(
+                    f"<@{winner_bet['user_id']}> won {payout} (staked {winner_bet['amount']})"
+                )
 
-                await economy_cog.update_balance(winner_bet['user_id'], payout)
-                payout_summary.append(f"<@{winner_bet['user_id']}> won {payout} (staked {winner_bet['amount']})")
-            
-            conn.commit()
-            winning_outcome_text_row = cursor.execute("SELECT outcome_text FROM event_outcomes WHERE outcome_id = ?", (winning_outcome_id,)).fetchone()
-            winning_outcome_text = winning_outcome_text_row['outcome_text'] if winning_outcome_text_row else "N/A"
+            async with self.bot.pg_pool.acquire() as conn:
+                winning_outcome_text_row = await conn.fetchrow(
+                    f'SELECT outcome_text FROM "{_WG}".event_outcomes WHERE outcome_id = $1',
+                    winning_outcome_id,
+                )
+            winning_outcome_text = (
+                winning_outcome_text_row["outcome_text"] if winning_outcome_text_row else "N/A"
+            )
 
-            summary_message = f"Event ID {event_id} finalized!\nWinning Outcome: **{winning_outcome_text}**\nTotal Pot: {total_pot}\n\nPayouts:\n" + "\n".join(payout_summary)
-            await interaction.followup.send(summary_message, ephemeral=False) # Send to channel
-            
-            await self.update_event_message(event_id, new_status_display=f"Finalized - Won: {winning_outcome_text}")
+            summary_message = (
+                f"Event ID {event_id} finalized!\nWinning Outcome: **{winning_outcome_text}**\nTotal Pot: {total_pot}\n\nPayouts:\n"
+                + "\n".join(payout_summary)
+            )
+            await interaction.followup.send(summary_message, ephemeral=False)
 
-        except sqlite3.Error as e:
-            conn.rollback()
+            await self.update_event_message(
+                event_id,
+                new_status_display=f"Finalized - Won: {winning_outcome_text}",
+            )
+
+        except asyncpg.PostgresError as e:
             await interaction.followup.send(f"Database error during finalization: {e}", ephemeral=True)
-        except Exception as e: # Catch other errors like Economy cog issues if not caught by it
-            conn.rollback() # Ensure rollback on any processing error after DB changes started
+        except Exception as e:
             await interaction.followup.send(f"An unexpected error occurred during finalization: {e}", ephemeral=True)
-        finally:
-            conn.close()
 
 
 def setup(bot):

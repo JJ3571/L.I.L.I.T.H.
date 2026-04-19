@@ -6,12 +6,10 @@ import random
 import html
 import time
 from typing import Optional, Dict, List
-import aiosqlite
-import os
-
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.paths import PROJECT_ROOT
+
+_TR = "trivia"
 
 # Get the GUILD_ID from config
 try:
@@ -121,7 +119,6 @@ class TriviaView(nextcord.ui.View):
 class Trivia(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = os.fspath(PROJECT_ROOT / "databases" / "trivia.db")
         self.session = None
         
         # OpenTDB API categories
@@ -169,55 +166,10 @@ class Trivia(commands.Cog, CogLogMixin):
             self.cog_print("Trivia cog: HTTP session closed")
     
     async def create_tables(self):
-        """Create trivia database tables"""
-        try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS trivia_scores (
-                        user_id INTEGER PRIMARY KEY,
-                        total_points INTEGER DEFAULT 0,
-                        questions_answered INTEGER DEFAULT 0,
-                        questions_correct INTEGER DEFAULT 0,
-                        last_played TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                await db.execute('''
-                    CREATE TABLE IF NOT EXISTS trivia_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        question TEXT,
-                        correct_answer TEXT,
-                        user_answer TEXT,
-                        is_correct BOOLEAN,
-                        difficulty TEXT,
-                        category TEXT,
-                        points_earned INTEGER,
-                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                ''')
-                
-                await db.commit()
-                self.cog_print("Trivia cog: Database tables created successfully")
-        except Exception as e:
-            self.cog_print(f"Trivia cog: Error creating database tables: {e}")
-    
+        return
+
     async def ensure_tables_exist(self):
-        """Ensure database tables exist before operations"""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Check if trivia_scores table exists
-                async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trivia_scores'") as cursor:
-                    result = await cursor.fetchone()
-                    if not result:
-                        self.cog_print("Trivia cog: Tables missing, recreating...")
-                        await self.create_tables()
-        except Exception as e:
-            self.cog_print(f"Trivia cog: Error checking tables: {e}")
-            # Try to recreate tables
-            await self.create_tables()
+        return
     
     async def get_trivia_question(self, difficulty: str = "medium", category: Optional[int] = None) -> Optional[dict]:
         """Fetch trivia question from OpenTDB API"""
@@ -269,66 +221,73 @@ class Trivia(commands.Cog, CogLogMixin):
     async def add_trivia_points(self, user_id: int, points: int):
         """Add points to user's trivia score"""
         await self.ensure_tables_exist()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO trivia_scores 
-                (user_id, total_points, questions_answered, questions_correct, last_played)
-                VALUES (
-                    ?, 
-                    COALESCE((SELECT total_points FROM trivia_scores WHERE user_id = ?), 0) + ?,
-                    COALESCE((SELECT questions_answered FROM trivia_scores WHERE user_id = ?), 0) + 1,
-                    COALESCE((SELECT questions_correct FROM trivia_scores WHERE user_id = ?), 0) + 1,
-                    CURRENT_TIMESTAMP
-                )
-            ''', (user_id, user_id, points, user_id, user_id))
-            await db.commit()
-    
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                INSERT INTO "{_TR}".trivia_scores AS ts (user_id, total_points, questions_answered, questions_correct, last_played)
+                VALUES ($1, $2, 1, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    total_points = ts.total_points + EXCLUDED.total_points,
+                    questions_answered = ts.questions_answered + 1,
+                    questions_correct = ts.questions_correct + 1,
+                    last_played = CURRENT_TIMESTAMP
+                ''',
+                user_id,
+                points,
+            )
+
     async def record_wrong_answer(self, user_id: int):
         """Record a wrong answer (no points, but increment questions_answered)"""
         await self.ensure_tables_exist()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO trivia_scores 
-                (user_id, total_points, questions_answered, questions_correct, last_played)
-                VALUES (
-                    ?, 
-                    COALESCE((SELECT total_points FROM trivia_scores WHERE user_id = ?), 0),
-                    COALESCE((SELECT questions_answered FROM trivia_scores WHERE user_id = ?), 0) + 1,
-                    COALESCE((SELECT questions_correct FROM trivia_scores WHERE user_id = ?), 0),
-                    CURRENT_TIMESTAMP
-                )
-            ''', (user_id, user_id, user_id, user_id))
-            await db.commit()
-    
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                INSERT INTO "{_TR}".trivia_scores AS ts (user_id, total_points, questions_answered, questions_correct, last_played)
+                VALUES ($1, 0, 1, 0, CURRENT_TIMESTAMP)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    total_points = ts.total_points,
+                    questions_answered = ts.questions_answered + 1,
+                    questions_correct = ts.questions_correct,
+                    last_played = CURRENT_TIMESTAMP
+                ''',
+                user_id,
+            )
+
     async def get_user_stats(self, user_id: int) -> Optional[dict]:
         """Get trivia statistics for a user"""
         await self.ensure_tables_exist()
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT total_points, questions_answered, questions_correct FROM trivia_scores WHERE user_id = ?",
-                (user_id,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if result:
-                    total_points, questions_answered, questions_correct = result
-                    accuracy = (questions_correct / questions_answered * 100) if questions_answered > 0 else 0
-                    return {
-                        "total_points": total_points,
-                        "questions_answered": questions_answered,
-                        "questions_correct": questions_correct,
-                        "accuracy": accuracy
-                    }
-                return None
-    
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'''
+                SELECT total_points, questions_answered, questions_correct FROM "{_TR}".trivia_scores WHERE user_id = $1
+                ''',
+                user_id,
+            )
+            if row:
+                total_points = row["total_points"]
+                questions_answered = row["questions_answered"]
+                questions_correct = row["questions_correct"]
+                accuracy = (questions_correct / questions_answered * 100) if questions_answered > 0 else 0
+                return {
+                    "total_points": total_points,
+                    "questions_answered": questions_answered,
+                    "questions_correct": questions_correct,
+                    "accuracy": accuracy,
+                }
+            return None
+
     async def get_trivia_leaderboard(self, limit: int = 10) -> List[tuple]:
         """Get top trivia players"""
         await self.ensure_tables_exist()
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT user_id, total_points, questions_correct, questions_answered FROM trivia_scores ORDER BY total_points DESC LIMIT ?",
-                (limit,)
-            ) as cursor:
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT user_id, total_points, questions_correct, questions_answered FROM "{_TR}".trivia_scores
+                ORDER BY total_points DESC LIMIT $1
+                ''',
+                limit,
+            )
+            return [tuple(r) for r in rows]
     
     @nextcord.slash_command(name="trivia", description="Play trivia questions!", guild_ids=[GUILD_ID] if GUILD_ID else None)
     async def trivia_group(self, interaction: nextcord.Interaction):

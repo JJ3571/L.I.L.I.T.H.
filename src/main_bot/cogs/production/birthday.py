@@ -1,7 +1,7 @@
 import calendar
 import nextcord
 from nextcord.ext import commands, tasks
-import aiosqlite
+import asyncpg
 from datetime import datetime, timedelta
 import pytz
 
@@ -9,7 +9,8 @@ from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_BD = "birthday"
 
 
 def _dbg_print(cog, message: str) -> None:
@@ -21,24 +22,12 @@ def _dbg_print(cog, message: str) -> None:
 class Birthday(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["birthday"]
         self.bot.loop.create_task(self.create_tables())
         self.check_birthdays.start()
         self.cleanup_birthdays.start()
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''CREATE TABLE IF NOT EXISTS birthdays (
-                            user_id TEXT PRIMARY KEY,
-                            username TEXT NOT NULL,
-                            birthday TEXT NOT NULL
-                        )''')
-            await db.execute('''CREATE TABLE IF NOT EXISTS birthday_messages (
-                            message_id TEXT PRIMARY KEY,
-                            user_id TEXT NOT NULL,
-                            birthday TEXT NOT NULL
-                        )''')
-            await db.commit()
+        return
 
     @tasks.loop(seconds=30)
     async def check_birthdays(self):
@@ -47,26 +36,33 @@ class Birthday(commands.Cog, CogLogMixin):
         _dbg_print(self, "--------------------------------")
         _dbg_print(self, f"[DEBUG] Current time (US/Pacific): {now_pacific}")
         if now_pacific.hour >= 8: #  8 AM PST
-            async with aiosqlite.connect(self.db_path) as db:
-                # Date for which we are checking birthdays, in US/Pacific
+            async with self.bot.pg_pool.acquire() as db:
                 pacific_date_to_check_str = now_pacific.strftime("%Y-%m-%d")
                 pacific_mm_dd_to_check = now_pacific.strftime("%m-%d")
 
-                # Find users whose birthday (MM-DD) matches the current US/Pacific MM-DD
-                async with db.execute("SELECT user_id FROM birthdays WHERE strftime('%m-%d', birthday) = ?", (pacific_mm_dd_to_check,)) as cursor:
-                    users = await cursor.fetchall()
+                users = await db.fetch(
+                    f'''
+                    SELECT user_id FROM "{_BD}".birthdays
+                    WHERE to_char(birthday::date, 'MM-DD') = $1
+                    ''',
+                    pacific_mm_dd_to_check,
+                )
 
                 channel = self.bot.get_channel(birthday_announcement_channel_id)
                 if channel is None:
                     print("[ERROR] Birthday channel not found.")
                     return
 
-                for user_tuple in users:
-                    user_id = user_tuple[0]
-                    # Check if a message was already sent for this user for this specific US/Pacific date
-                    async with db.execute("SELECT message_id FROM birthday_messages WHERE user_id = ? AND birthday = ?", 
-                              (user_id, pacific_date_to_check_str)) as cursor:
-                        message_exists = await cursor.fetchone()
+                for row in users:
+                    user_id = row["user_id"]
+                    message_exists = await db.fetchrow(
+                        f'''
+                        SELECT message_id FROM "{_BD}".birthday_messages
+                        WHERE user_id = $1 AND birthday = $2
+                        ''',
+                        user_id,
+                        pacific_date_to_check_str,
+                    )
                     
                     _dbg_print(self, f"[DEBUG] Message exists for user {user_id} on {pacific_date_to_check_str}: {message_exists}")
                     if not message_exists:
@@ -104,7 +100,7 @@ class Birthday(commands.Cog, CogLogMixin):
         today_pacific_date = now_pacific.date()
         current_pacific_mm_dd = now_pacific.strftime("%m-%d")
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.bot.pg_pool.acquire() as db:
             guild = self.bot.get_guild(GUILD_ID)
             if guild is None:
                 print("[ERROR] Guild not found for cleanup.")
@@ -115,11 +111,14 @@ class Birthday(commands.Cog, CogLogMixin):
 
             # Part 1: Message-driven cleanup (and associated role removal)
             if channel:
-                async with db.execute("SELECT user_id, message_id, birthday FROM birthday_messages") as cursor:
-                    messages_to_cleanup = await cursor.fetchall()
+                messages_to_cleanup = await db.fetch(
+                    f'SELECT user_id, message_id, birthday FROM "{_BD}".birthday_messages'
+                )
 
                 for message_tuple in messages_to_cleanup:
-                    user_id_str, message_id, birthday_str = message_tuple
+                    user_id_str = message_tuple["user_id"]
+                    message_id = message_tuple["message_id"]
+                    birthday_str = message_tuple["birthday"]
                     
                     # Skip if birthday_str is empty or None
                     if not birthday_str or birthday_str.strip() == '':
@@ -134,7 +133,7 @@ class Birthday(commands.Cog, CogLogMixin):
 
                     if today_pacific_date > birthday_date_obj:
                         try:
-                            msg = await channel.fetch_message(message_id)
+                            msg = await channel.fetch_message(int(message_id))
                             await msg.delete()
                             _dbg_print(self, f"[DEBUG] Deleted message ID {message_id} for user ID {user_id_str}")
                         except nextcord.NotFound:
@@ -157,7 +156,10 @@ class Birthday(commands.Cog, CogLogMixin):
                                         except Exception as e:
                                             print(f"[ERROR] Error removing role from user ID {user_id_str}: {e}")
                             
-                            await db.execute("DELETE FROM birthday_messages WHERE message_id = ?", (message_id,))
+                            await db.execute(
+                                f'DELETE FROM "{_BD}".birthday_messages WHERE message_id = $1',
+                                str(message_id),
+                            )
             elif not channel:
                 print("[ERROR] Birthday channel not found for message cleanup part.")
 
@@ -166,12 +168,16 @@ class Birthday(commands.Cog, CogLogMixin):
                 members_with_role = [m for m in guild.members if birthday_role in m.roles]
 
                 for member in members_with_role:
-                    async with db.execute("SELECT strftime('%m-%d', birthday) FROM birthdays WHERE user_id = ?", (str(member.id),)) as cursor:
-                        birthday_record = await cursor.fetchone()
-                    
+                    birthday_record = await db.fetchrow(
+                        f'''
+                        SELECT to_char(birthday::date, 'MM-DD') AS mmdd FROM "{_BD}".birthdays WHERE user_id = $1
+                        ''',
+                        str(member.id),
+                    )
+
                     should_have_role = False
                     if birthday_record:
-                        member_birthday_mm_dd = birthday_record[0]
+                        member_birthday_mm_dd = birthday_record["mmdd"]
                         if member_birthday_mm_dd == current_pacific_mm_dd:
                             should_have_role = True
 
@@ -186,18 +192,27 @@ class Birthday(commands.Cog, CogLogMixin):
             elif not birthday_role:
                 print("[ERROR] Birthday role not found, skipping general role audit.")
 
-            await db.commit()
-
     async def store_birthday_message(self, message_id, user_id, pacific_date_str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT INTO birthday_messages (message_id, user_id, birthday) VALUES (?, ?, ?)", 
-                      (message_id, user_id, pacific_date_str))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                INSERT INTO "{_BD}".birthday_messages (message_id, user_id, birthday)
+                VALUES ($1, $2, $3)
+                ''',
+                str(message_id),
+                str(user_id),
+                pacific_date_str,
+            )
 
     async def remove_birthday_messages(self, birthday_mm_dd):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM birthday_messages WHERE strftime('%m-%d', birthday) = ?", (birthday_mm_dd,))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                DELETE FROM "{_BD}".birthday_messages
+                WHERE to_char(birthday::date, 'MM-DD') = $1
+                ''',
+                birthday_mm_dd,
+            )
     
     async def grant_birthday_executive_pardon(self, user_id):
         """Grant a 20-hour executive pardon for a user's birthday"""
@@ -225,9 +240,11 @@ class Birthday(commands.Cog, CogLogMixin):
                 member = username
 
             if member:
-                async with aiosqlite.connect(self.db_path) as db:
-                    async with db.execute("SELECT birthday FROM birthdays WHERE user_id = ?", (str(user_id),)) as cursor:
-                        result = await cursor.fetchone()
+                async with self.bot.pg_pool.acquire() as db:
+                    result = await db.fetchrow(
+                        f'SELECT birthday FROM "{_BD}".birthdays WHERE user_id = $1',
+                        str(user_id),
+                    )
 
                 if result:
                     # Check if user can update (is admin or is themselves)
@@ -235,35 +252,46 @@ class Birthday(commands.Cog, CogLogMixin):
                     
                     display_name = member.mention
                     try:
-                        formatted_birthday = datetime.strptime(result[0], "%Y-%m-%d").strftime("%m/%d")
+                        formatted_birthday = datetime.strptime(result["birthday"], "%Y-%m-%d").strftime("%m/%d")
                     except ValueError:
                         formatted_birthday = "Invalid Date"
                     
                     if can_update:
-                        view = UpdateBirthdayView(self.db_path, member.display_name, str(user_id), interaction.user.id == user_id)
+                        view = UpdateBirthdayView(self, member.display_name, str(user_id), interaction.user.id == user_id)
                         await interaction.response.send_message(f"{display_name}'s birthday is on {formatted_birthday}.", view=view, ephemeral=True)
                     else:
                         await interaction.response.send_message(f"{display_name}'s birthday is on {formatted_birthday}.", ephemeral=True)
                 else:
                     if interaction.user.id in admin_user_ids or interaction.user.id == user_id:
-                        modal = AddBirthdayModal(self.db_path, member.display_name, str(user_id))
+                        modal = AddBirthdayModal(self, member.display_name, str(user_id))
                         await interaction.response.send_modal(modal)
                     else:
                         await interaction.response.send_message(f"I don't know {member.display_name}'s birthday.", ephemeral=True)
             else:
                 await interaction.response.send_message(f"User {username} not found.", ephemeral=True)
         else:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("SELECT user_id, username, birthday FROM birthdays WHERE strftime('%m', birthday) = ?", (f"{now.month:02}",)) as cursor:
-                    this_month_birthdays = await cursor.fetchall()
-                async with db.execute("SELECT user_id, username, birthday FROM birthdays WHERE strftime('%m', birthday) = ?", (f"{next_month:02}",)) as cursor:
-                    next_month_birthdays = await cursor.fetchall()
+            async with self.bot.pg_pool.acquire() as db:
+                this_month_birthdays = await db.fetch(
+                    f'''
+                    SELECT user_id, username, birthday FROM "{_BD}".birthdays
+                    WHERE EXTRACT(MONTH FROM birthday::date) = $1
+                    ''',
+                    now.month,
+                )
+                next_month_birthdays = await db.fetch(
+                    f'''
+                    SELECT user_id, username, birthday FROM "{_BD}".birthdays
+                    WHERE EXTRACT(MONTH FROM birthday::date) = $1
+                    ''',
+                    next_month,
+                )
 
             embed = nextcord.Embed(title="Upcoming Birthdays", color=0x00ff00)
 
             if this_month_birthdays:
                 this_month_list = []
-                for user_id, username, birthday in this_month_birthdays:
+                for row in this_month_birthdays:
+                    user_id, username, birthday = row["user_id"], row["username"], row["birthday"]
                     try:
                         formatted_date = datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')
                     except ValueError:
@@ -275,7 +303,8 @@ class Birthday(commands.Cog, CogLogMixin):
 
             if next_month_birthdays:
                 next_month_list = []
-                for user_id, username, birthday in next_month_birthdays:
+                for row in next_month_birthdays:
+                    user_id, username, birthday = row["user_id"], row["username"], row["birthday"]
                     try:
                         formatted_date = datetime.strptime(birthday, '%Y-%m-%d').strftime('%m/%d')
                     except ValueError:
@@ -313,19 +342,21 @@ class Birthday(commands.Cog, CogLogMixin):
     )
     async def bday_all(self, interaction: nextcord.Interaction):
         guild = interaction.guild
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT user_id, username, birthday FROM birthdays "
-                "ORDER BY strftime('%m', birthday), strftime('%d', birthday)"
-            ) as cursor:
-                rows = await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT user_id, username, birthday FROM "{_BD}".birthdays
+                ORDER BY EXTRACT(MONTH FROM birthday::date), EXTRACT(DAY FROM birthday::date)
+                '''
+            )
 
         if not rows:
             await interaction.response.send_message("No birthdays registered yet.", ephemeral=True)
             return
 
         by_month: dict[int, list[str]] = {m: [] for m in range(1, 13)}
-        for user_id, _username, birthday in rows:
+        for row in rows:
+            user_id, birthday = row["user_id"], row["birthday"]
             try:
                 dt = datetime.strptime(birthday, "%Y-%m-%d")
             except ValueError:
@@ -342,16 +373,16 @@ class Birthday(commands.Cog, CogLogMixin):
         await interaction.response.send_message(embed=embed)
 
 class UpdateBirthdayView(nextcord.ui.View):
-    def __init__(self, db_path, username, user_id, is_self):
+    def __init__(self, birthday_cog, username, user_id, is_self):
         super().__init__(timeout=300)  # 5 minute timeout
-        self.db_path = db_path
+        self.birthday_cog = birthday_cog
         self.username = username
         self.user_id = user_id
         self.is_self = is_self
 
     @nextcord.ui.button(label="Update Birthday", style=nextcord.ButtonStyle.secondary, emoji="✏️")
     async def update_birthday(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        modal = UpdateBirthdayModal(self.db_path, self.username, self.user_id, self.is_self)
+        modal = UpdateBirthdayModal(self.birthday_cog, self.username, self.user_id, self.is_self)
         await interaction.response.send_modal(modal)
 
 class BirthdayButtonView(nextcord.ui.View):
@@ -416,9 +447,9 @@ class BirthdayButtonView(nextcord.ui.View):
             await interaction.response.send_message("Reaction channel not found.", ephemeral=True)
 
 class AddBirthdayModal(nextcord.ui.Modal):
-    def __init__(self, db_path, username, user_id):
+    def __init__(self, birthday_cog, username, user_id):
         super().__init__("Add Birthday", timeout=5 * 60)
-        self.db_path = db_path
+        self.birthday_cog = birthday_cog
         self.username = username
         self.user_id = user_id
 
@@ -441,19 +472,25 @@ class AddBirthdayModal(nextcord.ui.Modal):
             await interaction.response.send_message("Invalid date format. Please use MM/DD.", ephemeral=True)
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.birthday_cog.bot.pg_pool.acquire() as db:
             try:
-                await db.execute("INSERT INTO birthdays (user_id, username, birthday) VALUES (?, ?, ?)", 
-                               (self.user_id, self.username, formatted_birthday))
-                await db.commit()
+                await db.execute(
+                    f'''
+                    INSERT INTO "{_BD}".birthdays (user_id, username, birthday)
+                    VALUES ($1, $2, $3)
+                    ''',
+                    self.user_id,
+                    self.username,
+                    formatted_birthday,
+                )
                 await interaction.response.send_message(f"Added {self.username}'s birthday on {birthday}.", ephemeral=True)
-            except aiosqlite.IntegrityError:
+            except asyncpg.UniqueViolationError:
                 await interaction.response.send_message(f"A birthday for {self.username} already exists.", ephemeral=True)
 
 class UpdateBirthdayModal(nextcord.ui.Modal):
-    def __init__(self, db_path, username, user_id, is_self):
+    def __init__(self, birthday_cog, username, user_id, is_self):
         super().__init__("Update Birthday", timeout=5 * 60)
-        self.db_path = db_path
+        self.birthday_cog = birthday_cog
         self.username = username
         self.user_id = user_id
         self.is_self = is_self
@@ -478,10 +515,15 @@ class UpdateBirthdayModal(nextcord.ui.Modal):
             await interaction.response.send_message("Invalid date format. Please use MM/DD.", ephemeral=True)
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE birthdays SET birthday = ?, username = ? WHERE user_id = ?", 
-                           (formatted_birthday, self.username, self.user_id))
-            await db.commit()
+        async with self.birthday_cog.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                UPDATE "{_BD}".birthdays SET birthday = $1, username = $2 WHERE user_id = $3
+                ''',
+                formatted_birthday,
+                self.username,
+                self.user_id,
+            )
             
             if self.is_self:
                 await interaction.response.send_message(f"Your birthday has been updated to {birthday}.", ephemeral=True)

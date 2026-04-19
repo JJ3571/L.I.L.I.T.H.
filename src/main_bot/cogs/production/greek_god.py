@@ -2,14 +2,14 @@ import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction, ButtonStyle, Embed, Color
 from nextcord.ui import View, Button
-import aiosqlite
 import logging
 from typing import Optional, Dict, Any, List
 
-from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.database_config import DATABASE_PATHS
+import asyncpg
 
-DB_PATH = DATABASE_PATHS["greek_gods"]
+from main_bot.server_configs.config import GUILD_ID
+
+_GG = "greek_gods"
 
 # --- Logging Setup ---
 logger = logging.getLogger(__name__)
@@ -141,46 +141,35 @@ QUESTIONS = [
 # --- Database Manager ---
 class DatabaseManager:
     """Handles all database operations for the cog."""
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+
+    def __init__(self, pool: asyncpg.Pool):
+        self._pool = pool
 
     async def initialize(self):
-        """Create the database table if it doesn't exist."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS god_results (
-                    user_id INTEGER PRIMARY KEY,
-                    god_name TEXT NOT NULL
-                )
-            """)
-            await db.commit()
-        logger.info("Database initialized for GreekGodTest.")
+        logger.info("Greek gods DB ready (PostgreSQL).")
 
     async def get_user_result(self, user_id: int) -> Optional[str]:
         """Fetches the stored result for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute(
-                "SELECT god_name FROM god_results WHERE user_id = ?",
-                (user_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else None
+        row = await self._pool.fetchrow(
+            f'SELECT god_name FROM "{_GG}".god_results WHERE user_id = $1', user_id
+        )
+        return row["god_name"] if row else None
 
     async def save_user_result(self, user_id: int, god_name: str):
         """Saves or updates a user's test result."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO god_results (user_id, god_name) VALUES (?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET god_name = excluded.god_name
-            """, (user_id, god_name))
-            await db.commit()
+        await self._pool.execute(
+            f'''
+            INSERT INTO "{_GG}".god_results (user_id, god_name) VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET god_name = EXCLUDED.god_name
+            ''',
+            user_id,
+            god_name,
+        )
         logger.info(f"Saved result for user {user_id}: {god_name}")
-        
+
     async def delete_user_result(self, user_id: int):
         """Deletes a user's test result."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM god_results WHERE user_id = ?", (user_id,))
-            await db.commit()
+        await self._pool.execute(f'DELETE FROM "{_GG}".god_results WHERE user_id = $1', user_id)
         logger.info(f"Deleted result for user {user_id}")
 
 
@@ -295,7 +284,7 @@ class ResultView(View):
 class GreekGodTest(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_manager = DatabaseManager(DB_PATH)
+        self.db_manager = DatabaseManager(bot.pg_pool)
 
     async def cog_load(self):
         """Initialize database when the cog is loaded."""
