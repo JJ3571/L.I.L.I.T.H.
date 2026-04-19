@@ -181,6 +181,11 @@ if not DISCORD_BOT_TOKEN:
 # Admins
 admin_user_ids = _get_json_int_list("ADMIN_USER_IDS")
 
+# Error alerts (Discord ping + embed). Both zero = disabled.
+# Prefer a staff channel for ERROR_ALERT_CHANNEL_ID so delivery does not depend on DMs.
+ERROR_ALERT_USER_ID = _get_int("ERROR_ALERT_USER_ID", 0)
+ERROR_ALERT_CHANNEL_ID = _get_int("ERROR_ALERT_CHANNEL_ID", 0)
+
 # Channel IDs
 voice_channel_ids = _get_json_int_list("VOICE_CHANNEL_IDS")
 create_fireteam_channel_id = _get_int("CREATE_FIRETEAM_CHANNEL_ID", 0)

@@ -24,6 +24,7 @@ import nextcord
 from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
+from main_bot.error_alerts import ensure_asyncio_exception_handler, install_error_alerts
 from main_bot.paths import PROJECT_ROOT
 from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -73,13 +74,16 @@ bot = commands.Bot(
 )
 bot.full_debug_in_terminal = FULL_DEBUG_IN_TERMINAL
 
+install_error_alerts(bot)
+
 
 @bot.event
 async def on_ready():
+    await ensure_asyncio_exception_handler(bot)
     try:
         await load_extensions("production") 
         await bot.sync_application_commands(guild_id=GUILD_ID)
-        print("Bot is ready and running.")
+        print("[STARTUP_SUCCESS] Bot is ready and running.")
     except nextcord.HTTPException as e:
         print(f"An error occurred while syncing commands: {e}")
 
@@ -89,6 +93,6 @@ def run() -> None:
         bot.run(DISCORD_BOT_TOKEN)
     except KeyboardInterrupt:
         bot.close()
-        print("Bot has been stopped.")
+        print(f"[SHUTDOWN] Bot has been stopped.")
     except Exception as e:
         print(f"An error occurred: {e}")
