@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import os
 import sqlite3
 import sys
@@ -46,6 +47,104 @@ def _sqlite_columns(conn: sqlite3.Connection, table: str) -> list[tuple]:
     return list(conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
+async def _pg_column_data_types(
+    pg: asyncpg.Connection, schema: str, table: str
+) -> dict[str, str]:
+    rows = await pg.fetch(
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = $1 AND table_name = $2
+        ORDER BY ordinal_position
+        """,
+        schema,
+        table,
+    )
+    return {r["column_name"]: r["data_type"] for r in rows}
+
+
+def _pg_type_for_column(pg_types: dict[str, str], col_name: str) -> str | None:
+    if col_name in pg_types:
+        return pg_types[col_name]
+    lower = {k.lower(): v for k, v in pg_types.items()}
+    return lower.get(col_name.lower())
+
+
+def _adapt_sqlite_value_for_pg(value: Any, pg_type: str | None) -> Any:
+    """Map SQLite cell values to types asyncpg accepts for the target column."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+
+    if pg_type is None:
+        return value
+
+    t = pg_type.lower()
+    if value is None:
+        return None
+
+    if t == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(int(value))
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "t", "yes", "y")
+        return bool(value)
+
+    if t == "date":
+        if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+            return value
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, str) and value.strip():
+            return datetime.date.fromisoformat(value.strip()[:10])
+        return value
+
+    if t in ("timestamp with time zone", "timestamp without time zone"):
+        if isinstance(value, datetime.datetime):
+            if t == "timestamp with time zone" and value.tzinfo is None:
+                return value.replace(tzinfo=datetime.timezone.utc)
+            if t == "timestamp without time zone" and value.tzinfo is not None:
+                return value.replace(tzinfo=None)
+            return value
+        if isinstance(value, datetime.date):
+            dt = datetime.datetime.combine(value, datetime.time.min)
+            if t == "timestamp with time zone":
+                return dt.replace(tzinfo=datetime.timezone.utc)
+            return dt
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None
+            if "T" not in s and " " in s:
+                dt: datetime.datetime | None = None
+                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        dt = datetime.datetime.strptime(s, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if dt is not None:
+                    if t == "timestamp with time zone":
+                        return dt.replace(tzinfo=datetime.timezone.utc)
+                    return dt
+            iso = s.replace("Z", "+00:00")
+            dt2 = datetime.datetime.fromisoformat(iso)
+            if t == "timestamp with time zone" and dt2.tzinfo is None:
+                return dt2.replace(tzinfo=datetime.timezone.utc)
+            if t == "timestamp without time zone" and dt2.tzinfo is not None:
+                return dt2.replace(tzinfo=None)
+            return dt2
+        return value
+
+    if t == "bytea":
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        return value
+
+    return value
+
+
 async def _copy_table(
     *,
     pg: asyncpg.Connection,
@@ -65,14 +164,14 @@ async def _copy_table(
     if dry_run:
         return len(rows), True
 
+    pg_types = await _pg_column_data_types(pg, schema, table)
+
     n = 0
     for row in rows:
         vals: list[Any] = []
-        for v in row:
-            if isinstance(v, bytes):
-                vals.append(v.decode("utf-8", errors="replace"))
-            else:
-                vals.append(v)
+        for name, v in zip(col_names, row, strict=True):
+            pg_t = _pg_type_for_column(pg_types, name)
+            vals.append(_adapt_sqlite_value_for_pg(v, pg_t))
         try:
             await pg.execute(sql, *vals)
             n += 1
