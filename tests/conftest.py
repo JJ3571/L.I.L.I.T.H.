@@ -2,30 +2,24 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from main_bot.db.ddl import init_all_schemas
 
 
-@pytest.fixture(scope="module")
-def pg_pool():
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def pg_pool():
     dsn = os.getenv("DATABASE_URL", "").strip()
     if not dsn:
         pytest.skip("DATABASE_URL is not set (CI provides Postgres; local: export DATABASE_URL)")
 
-    async def _init() -> asyncpg.Pool:
-        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5, command_timeout=60)
-        await init_all_schemas(pool)
-        return pool
-
-    pool = asyncio.run(_init())
-    yield pool
-
-    async def _close() -> None:
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5, command_timeout=60)
+    await init_all_schemas(pool)
+    try:
+        yield pool
+    finally:
         await pool.close()
-
-    asyncio.run(_close())

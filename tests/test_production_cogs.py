@@ -31,6 +31,9 @@ _SLASH_TYPES = (SlashApplicationCommand, SlashApplicationSubcommand)
 # Discord application command name rules (chat input commands); see API docs.
 _COMMAND_NAME_RE = re.compile(r"^[-_a-z0-9]{1,32}$", re.ASCII)
 
+# Background-only extensions (scheduled tasks, listeners) with no user-facing commands.
+_PRODUCTION_COGS_WITHOUT_COMMANDS = frozenset({"database_backup"})
+
 
 def _production_stems_from_disk() -> list[str]:
     prod_dir = PROJECT_ROOT / "src" / "main_bot" / "cogs" / "production"
@@ -145,9 +148,12 @@ def test_production_slash_command_contract(stem: str) -> None:
     assert not all_violations, "Slash command contract violations:\n" + "\n".join(all_violations)
 
 
-@pytest.mark.parametrize("stem", PRODUCTION_COG_STEMS)
+@pytest.mark.parametrize(
+    "stem",
+    tuple(s for s in PRODUCTION_COG_STEMS if s not in _PRODUCTION_COGS_WITHOUT_COMMANDS),
+)
 def test_production_cog_exposes_at_least_one_slash_command(stem: str) -> None:
-    """Every production extension should expose at least one user-facing command."""
+    """Every interactive production extension should expose at least one user-facing command."""
     mod = importlib.import_module(f"main_bot.cogs.production.{stem}")
     slash_count = 0
     prefix_count = 0

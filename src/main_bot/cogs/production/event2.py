@@ -15,6 +15,16 @@ from main_bot.cog_log_mixin import CogLogMixin
 _EV = "event"
 
 
+def _to_timestamptz_arg(value: datetime.datetime | str) -> datetime.datetime:
+    """asyncpg 0.30+ expects datetime for timestamptz parameters, not ISO strings."""
+    if isinstance(value, datetime.datetime):
+        return value
+    s = str(value).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.datetime.fromisoformat(s)
+
+
 def _dbg_print(cog, message: str) -> None:
     """Honors ``bot.full_debug_in_terminal`` (set in ``main_bot.main`` from ``FULL_DEBUG_IN_TERMINAL``)."""
     if getattr(cog.bot, "full_debug_in_terminal", False):
@@ -31,8 +41,16 @@ class Event(commands.Cog, CogLogMixin):
     async def create_tables(self):
         return
 
-    async def create_event(self, creator_id: int, event_name: str, event_description: str, event_time: str, max_attendees: int = None):
+    async def create_event(
+        self,
+        creator_id: int,
+        event_name: str,
+        event_description: str,
+        event_time: datetime.datetime | str,
+        max_attendees: int = None,
+    ):
         """Create a new event and return the event_id"""
+        event_time = _to_timestamptz_arg(event_time)
         async with self.bot.pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 f'''
@@ -205,8 +223,9 @@ class Event(commands.Cog, CogLogMixin):
                 limit,
             )
 
-    async def update_event(self, event_id: int, name: str, description: str, event_time: str):
+    async def update_event(self, event_id: int, name: str, description: str, event_time: datetime.datetime | str):
         """Update an existing event"""
+        event_time = _to_timestamptz_arg(event_time)
         async with self.bot.pg_pool.acquire() as conn:
             tag = await conn.execute(
                 f'''
@@ -475,13 +494,21 @@ class Event(commands.Cog, CogLogMixin):
 
     # ============== REMINDER METHODS ==============
     
-    async def create_reminder(self, creator_id: int, reminder_text: str, reminder_time: str, original_channel_id: int, message_id: int = None):
+    async def create_reminder(
+        self,
+        creator_id: int,
+        reminder_text: str,
+        reminder_time: datetime.datetime | str,
+        original_channel_id: int,
+        message_id: int = None,
+    ):
         """Create a new reminder and return the reminder_id"""
+        reminder_time = _to_timestamptz_arg(reminder_time)
         async with self.bot.pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 f'''
                 INSERT INTO "{_EV}".reminders (creator_id, reminder_text, reminder_time, original_channel_id, message_id)
-                VALUES ($1, $2, $3::timestamptz, $4, $5) RETURNING reminder_id
+                VALUES ($1, $2, $3, $4, $5) RETURNING reminder_id
                 ''',
                 creator_id,
                 reminder_text,
@@ -556,13 +583,14 @@ class Event(commands.Cog, CogLogMixin):
             )
             return row is not None
 
-    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: str):
+    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: datetime.datetime | str):
         """Update an existing reminder"""
+        reminder_time = _to_timestamptz_arg(reminder_time)
         async with self.bot.pg_pool.acquire() as conn:
             tag = await conn.execute(
                 f'''
                 UPDATE "{_EV}".reminders
-                SET reminder_text = $1, reminder_time = $2::timestamptz
+                SET reminder_text = $1, reminder_time = $2
                 WHERE reminder_id = $3
                 ''',
                 reminder_text,
@@ -586,14 +614,14 @@ class Event(commands.Cog, CogLogMixin):
     async def get_due_reminders(self):
         """Get all reminders that are due now"""
         async with self.bot.pg_pool.acquire() as conn:
-            current_time = nextcord.utils.utcnow().isoformat()
-            _dbg_print(self, f"[DEBUG] get_due_reminders() - Current time: {current_time}")
+            current_time = nextcord.utils.utcnow()
+            _dbg_print(self, f"[DEBUG] get_due_reminders() - Current time: {current_time.isoformat()}")
 
             results = await conn.fetch(
                 f'''
                 SELECT reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status
                 FROM "{_EV}".reminders
-                WHERE status = 'active' AND reminder_time <= $1::timestamptz
+                WHERE status = 'active' AND reminder_time <= $1
                 ''',
                 current_time,
             )
@@ -1175,7 +1203,7 @@ class EventCreationModal(nextcord.ui.Modal):
                 creator_id=interaction.user.id,
                 event_name=self.event_name.value,
                 event_description=self.event_description.value or "No description provided",
-                event_time=event_datetime_utc.isoformat(),
+                event_time=event_datetime_utc,
                 max_attendees=max_attendees_val
             )
             
@@ -1394,7 +1422,7 @@ class ReminderCreationModal(nextcord.ui.Modal):
             reminder_id = await self.cog.create_reminder(
                 creator_id=interaction.user.id,
                 reminder_text=self.reminder_text.value,
-                reminder_time=reminder_datetime_utc.isoformat(),
+                reminder_time=reminder_datetime_utc,
                 original_channel_id=interaction.channel.id
             )
             
@@ -1504,7 +1532,7 @@ class ReminderEditModal(nextcord.ui.Modal):
             success = await self.cog.update_reminder(
                 reminder_id=self.reminder_id,
                 reminder_text=self.reminder_text.value,
-                reminder_time=reminder_datetime_utc.isoformat()
+                reminder_time=reminder_datetime_utc
             )
             
             if success:

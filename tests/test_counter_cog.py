@@ -27,12 +27,12 @@ These tests follow a layered strategy common in Discord bot codebases:
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import nextcord
 import pytest
+import pytest_asyncio
 
 import main_bot.cogs.production.counter as counter_mod
 from main_bot.cogs.production.counter import (
@@ -48,14 +48,11 @@ from main_bot.cogs.production.counter import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _clean_counter_tables(pg_pool) -> None:
-    async def _run() -> None:
-        async with pg_pool.acquire() as conn:
-            await conn.execute('DELETE FROM "counter".counters')
-            await conn.execute('DELETE FROM "counter".multi_counters')
-
-    asyncio.run(_run())
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_counter_tables(pg_pool) -> None:
+    async with pg_pool.acquire() as conn:
+        await conn.execute('DELETE FROM "counter".counters')
+        await conn.execute('DELETE FROM "counter".multi_counters')
 
 
 @pytest.fixture

@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import nextcord
 import pytest
+import pytest_asyncio
 from nextcord.application_command import SlashApplicationCommand, SlashApplicationSubcommand
 from nextcord.ext import commands
 
@@ -60,14 +61,11 @@ def waterboard_bot() -> MagicMock:
     return bot
 
 
-@pytest.fixture(autouse=True)
-def _clean_waterboard_tables(pg_pool) -> None:
-    async def _run() -> None:
-        async with pg_pool.acquire() as conn:
-            await conn.execute('DELETE FROM "waterboard".exempt_users')
-            await conn.execute('DELETE FROM "waterboard".waterboarded_users')
-
-    asyncio.run(_run())
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_waterboard_tables(pg_pool) -> None:
+    async with pg_pool.acquire() as conn:
+        await conn.execute('DELETE FROM "waterboard".exempt_users')
+        await conn.execute('DELETE FROM "waterboard".waterboarded_users')
 
 
 @pytest.fixture

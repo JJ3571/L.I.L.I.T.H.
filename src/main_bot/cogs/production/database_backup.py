@@ -111,5 +111,5 @@ class DatabaseBackupCog(commands.Cog, CogLogMixin):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(DatabaseBackupCog(bot))
+    bot.add_cog(DatabaseBackupCog(bot))
     boot_print("DatabaseBackupCog loaded.")

@@ -32,11 +32,13 @@ from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GU
 
 
 class MainBot(commands.Bot):
-    async def setup_hook(self) -> None:
+    # PostgreSQL before gateway: nextcord does not run discord.py's ``setup_hook`` on this path.
+    async def login(self, token: str) -> None:
         pool = await create_pool()
         self.pg_pool = pool
         await init_all_schemas(pool)
         boot_print("PostgreSQL pool ready and schemas initialized.")
+        await super().login(token)
 
     async def close(self) -> None:
         await close_pool()

@@ -42,3 +42,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Module-scoped loop so asyncpg pools from ``tests/conftest.py`` stay on the same loop as async tests.
+asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
