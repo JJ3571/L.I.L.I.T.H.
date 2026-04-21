@@ -1,6 +1,5 @@
 import nextcord
 from nextcord.ext import commands, tasks
-import aiosqlite
 import time
 from datetime import datetime
 import pytz
@@ -8,7 +7,8 @@ import pytz
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_PU = "powerups"
 
 # Define Powerups
 POWERUP_TYPES = {
@@ -62,7 +62,6 @@ POWERUP_TYPES = {
 class PowerupCog(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["powerups"]
         self.check_expired_powerups.start()
         self.cleanup_old_purchase_records.start()
 
@@ -76,90 +75,69 @@ class PowerupCog(commands.Cog, CogLogMixin):
         self.daily_art_request_reminder.cancel()
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS powerup_inventory (
-                    inventory_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    powerup_type TEXT NOT NULL
-                )
-            ''')
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS active_powerups (
-                    user_id INTEGER NOT NULL,
-                    powerup_type TEXT NOT NULL,
-                    start_time INTEGER NOT NULL,
-                    end_time INTEGER NOT NULL,
-                    PRIMARY KEY (user_id, powerup_type)
-                )
-            ''')
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS daily_powerup_purchases (
-                    user_id INTEGER NOT NULL,
-                    powerup_type TEXT NOT NULL,
-                    purchase_date TEXT NOT NULL,
-                    PRIMARY KEY (user_id, powerup_type, purchase_date)
-                )
-            ''')
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS art_requests (
-                    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    requester_user_id INTEGER NOT NULL,
-                    artist_user_id INTEGER NOT NULL,
-                    request_description TEXT NOT NULL,
-                    purchase_date TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    completion_date TEXT,
-                    rejection_reason TEXT,
-                    amount_paid INTEGER NOT NULL
-                )
-            ''')
-            await db.commit()
+        return
 
     # --- Database Helper Functions ---
     async def add_powerup_to_inventory(self, user_id: int, powerup_type: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT INTO powerup_inventory (user_id, powerup_type) VALUES (?, ?)",
-                             (user_id, powerup_type))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'INSERT INTO "{_PU}".powerup_inventory (user_id, powerup_type) VALUES ($1, $2)',
+                user_id,
+                powerup_type,
+            )
 
     async def get_user_inventory(self, user_id: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT powerup_type, COUNT(*) as quantity FROM powerup_inventory WHERE user_id = ? GROUP BY powerup_type",
-                                  (user_id,)) as cursor:
-                return await cursor.fetchall()
-    
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT powerup_type, COUNT(*)::int AS quantity FROM "{_PU}".powerup_inventory
+                WHERE user_id = $1 GROUP BY powerup_type
+                ''',
+                user_id,
+            )
+            return [(r["powerup_type"], r["quantity"]) for r in rows]
+
     async def get_user_total_inventory_count(self, user_id: int):
         """Get the total number of powerups in a user's inventory"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM powerup_inventory WHERE user_id = ?", (user_id,)) as cursor:
-                result = await cursor.fetchone()
-                return result[0] if result else 0
-    
+        async with self.bot.pg_pool.acquire() as db:
+            n = await db.fetchval(f'SELECT COUNT(*) FROM "{_PU}".powerup_inventory WHERE user_id = $1', user_id)
+            return int(n or 0)
+
     async def has_purchased_today(self, user_id: int, powerup_type: str):
         """Check if user has already purchased this powerup type today (PST timezone)"""
-        # Get current PST date
-        pst = pytz.timezone('US/Pacific')
+        pst = pytz.timezone("US/Pacific")
         current_pst = datetime.now(pst)
-        today_date = current_pst.strftime('%Y-%m-%d')
-        
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT COUNT(*) FROM daily_powerup_purchases WHERE user_id = ? AND powerup_type = ? AND purchase_date = ?", 
-                                  (user_id, powerup_type, today_date)) as cursor:
-                result = await cursor.fetchone()
-                return (result[0] if result else 0) > 0
-    
+        today_date = current_pst.strftime("%Y-%m-%d")
+
+        async with self.bot.pg_pool.acquire() as db:
+            n = await db.fetchval(
+                f'''
+                SELECT COUNT(*) FROM "{_PU}".daily_powerup_purchases
+                WHERE user_id = $1 AND powerup_type = $2 AND purchase_date = $3
+                ''',
+                user_id,
+                powerup_type,
+                today_date,
+            )
+            return (int(n or 0)) > 0
+
     async def record_daily_purchase(self, user_id: int, powerup_type: str):
         """Record that user purchased this powerup type today"""
-        # Get current PST date
-        pst = pytz.timezone('US/Pacific')
+        pst = pytz.timezone("US/Pacific")
         current_pst = datetime.now(pst)
-        today_date = current_pst.strftime('%Y-%m-%d')
-        
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("INSERT OR IGNORE INTO daily_powerup_purchases (user_id, powerup_type, purchase_date) VALUES (?, ?, ?)",
-                             (user_id, powerup_type, today_date))
-            await db.commit()
+        today_date = current_pst.strftime("%Y-%m-%d")
+
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                INSERT INTO "{_PU}".daily_powerup_purchases (user_id, powerup_type, purchase_date)
+                VALUES ($1, $2, $3)
+                ON CONFLICT DO NOTHING
+                ''',
+                user_id,
+                powerup_type,
+                today_date,
+            )
     
     def is_user_in_voice_chat(self, user_id: int):
         """Check if a user is currently in a voice channel"""
@@ -179,85 +157,120 @@ class PowerupCog(commands.Cog, CogLogMixin):
         current_pst = datetime.now(pst)
         purchase_date = current_pst.strftime('%Y-%m-%d %H:%M:%S')
         
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                INSERT INTO art_requests (requester_user_id, artist_user_id, request_description, purchase_date, amount_paid)
-                VALUES (?, ?, ?, ?, ?)
-            """, (requester_user_id, artist_user_id, request_description, purchase_date, amount_paid)) as cursor:
-                request_id = cursor.lastrowid
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            request_id = await db.fetchval(
+                f'''
+                INSERT INTO "{_PU}".art_requests
+                    (requester_user_id, artist_user_id, request_description, purchase_date, amount_paid)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING request_id
+                ''',
+                requester_user_id,
+                artist_user_id,
+                request_description,
+                purchase_date,
+                amount_paid,
+            )
             return request_id
-    
+
     async def get_pending_art_requests(self, artist_user_id: int):
         """Get all pending art requests for an artist"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
                 SELECT request_id, requester_user_id, request_description, purchase_date, amount_paid
-                FROM art_requests
-                WHERE artist_user_id = ? AND status = 'pending'
+                FROM "{_PU}".art_requests
+                WHERE artist_user_id = $1 AND status = 'pending'
                 ORDER BY purchase_date ASC
-            """, (artist_user_id,)) as cursor:
-                return await cursor.fetchall()
-    
+                ''',
+                artist_user_id,
+            )
+            return [tuple(r) for r in rows]
+
     async def complete_art_request(self, request_id: int):
         """Mark an art request as completed"""
-        pst = pytz.timezone('US/Pacific')
+        pst = pytz.timezone("US/Pacific")
         current_pst = datetime.now(pst)
-        completion_date = current_pst.strftime('%Y-%m-%d %H:%M:%S')
-        
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                UPDATE art_requests
-                SET status = 'completed', completion_date = ?
-                WHERE request_id = ?
-            """, (completion_date, request_id))
-            await db.commit()
-    
+        completion_date = current_pst.strftime("%Y-%m-%d %H:%M:%S")
+
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                UPDATE "{_PU}".art_requests
+                SET status = 'completed', completion_date = $1
+                WHERE request_id = $2
+                ''',
+                completion_date,
+                request_id,
+            )
+
     async def reject_art_request(self, request_id: int, rejection_reason: str):
         """Mark an art request as rejected"""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                UPDATE art_requests
-                SET status = 'rejected', rejection_reason = ?
-                WHERE request_id = ?
-            """, (rejection_reason, request_id))
-            await db.commit()
-    
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                UPDATE "{_PU}".art_requests
+                SET status = 'rejected', rejection_reason = $1
+                WHERE request_id = $2
+                ''',
+                rejection_reason,
+                request_id,
+            )
+
     async def get_art_request_details(self, request_id: int):
         """Get details of a specific art request"""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT request_id, requester_user_id, artist_user_id, request_description, 
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'''
+                SELECT request_id, requester_user_id, artist_user_id, request_description,
                        purchase_date, status, completion_date, rejection_reason, amount_paid
-                FROM art_requests
-                WHERE request_id = ?
-            """, (request_id,)) as cursor:
-                return await cursor.fetchone()
+                FROM "{_PU}".art_requests
+                WHERE request_id = $1
+                ''',
+                request_id,
+            )
+            return tuple(row) if row else None
 
     async def get_active_powerups_for_user(self, user_id: int):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT powerup_type, end_time FROM active_powerups WHERE user_id = ?", (user_id,)) as cursor:
-                return await cursor.fetchall()
-            
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'SELECT powerup_type, end_time FROM "{_PU}".active_powerups WHERE user_id = $1',
+                user_id,
+            )
+            return [tuple(r) for r in rows]
+
     async def remove_powerup_from_inventory(self, user_id: int, powerup_type: str):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT inventory_id FROM powerup_inventory WHERE user_id = ? AND powerup_type = ? LIMIT 1", (user_id, powerup_type)) as cursor:
-                row = await cursor.fetchone()
-                if row:
-                    await db.execute("DELETE FROM powerup_inventory WHERE inventory_id = ?", (row[0],))
-                    await db.commit()
-                    return True
-            return False
+        async with self.bot.pg_pool.acquire() as db:
+            inv_id = await db.fetchval(
+                f'''
+                SELECT inventory_id FROM "{_PU}".powerup_inventory
+                WHERE user_id = $1 AND powerup_type = $2 LIMIT 1
+                ''',
+                user_id,
+                powerup_type,
+            )
+            if inv_id is None:
+                return False
+            await db.execute(f'DELETE FROM "{_PU}".powerup_inventory WHERE inventory_id = $1', inv_id)
+            return True
 
     async def activate_powerup(self, user_id: int, powerup_type: str, duration_hours: int):
         start_time = int(time.time())
         end_time = start_time + (duration_hours * 3600)
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO active_powerups (user_id, powerup_type, start_time, end_time)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, powerup_type, start_time, end_time))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'''
+                INSERT INTO "{_PU}".active_powerups AS ap (user_id, powerup_type, start_time, end_time)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, powerup_type) DO UPDATE SET
+                    start_time = EXCLUDED.start_time,
+                    end_time = EXCLUDED.end_time
+                ''',
+                user_id,
+                powerup_type,
+                start_time,
+                end_time,
+            )
         return await self.apply_powerup_effect(user_id, powerup_type)
 
     async def apply_powerup_effect(self, user_id: int, powerup_type: str):
@@ -492,16 +505,24 @@ class PowerupCog(commands.Cog, CogLogMixin):
     @tasks.loop(minutes=1)
     async def check_expired_powerups(self):
         current_time = int(time.time())
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT user_id, powerup_type FROM active_powerups WHERE end_time <= ?", (current_time,)) as cursor:
-                expired = await cursor.fetchall()
-            
+        async with self.bot.pg_pool.acquire() as db:
+            expired = await db.fetch(
+                f'''
+                SELECT user_id, powerup_type FROM "{_PU}".active_powerups WHERE end_time <= $1
+                ''',
+                current_time,
+            )
+
             if expired:
-                for user_id, powerup_type in expired:
+                for row in expired:
+                    user_id, powerup_type = row["user_id"], row["powerup_type"]
                     self.cog_print(f"Powerup {powerup_type} for user {user_id} has expired. Removing effect.")
                     await self.remove_powerup_effect(user_id, powerup_type)
-                    await db.execute("DELETE FROM active_powerups WHERE user_id = ? AND powerup_type = ?", (user_id, powerup_type))
-                await db.commit()
+                    await db.execute(
+                        f'DELETE FROM "{_PU}".active_powerups WHERE user_id = $1 AND powerup_type = $2',
+                        user_id,
+                        powerup_type,
+                    )
 
     @check_expired_powerups.before_loop
     async def before_check_expired_powerups(self):
@@ -515,9 +536,11 @@ class PowerupCog(commands.Cog, CogLogMixin):
         current_pst = datetime.now(pst)
         cutoff_date = (current_pst - timedelta(days=7)).strftime('%Y-%m-%d')  # 7 days ago
         
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM daily_powerup_purchases WHERE purchase_date < ?", (cutoff_date,))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'DELETE FROM "{_PU}".daily_powerup_purchases WHERE purchase_date < $1',
+                cutoff_date,
+            )
     
     @cleanup_old_purchase_records.before_loop
     async def before_cleanup_old_purchase_records(self):
@@ -999,11 +1022,12 @@ class DeactivatePowerupButton(nextcord.ui.Button):
         # Attempt to remove the effect
         await self.cog.remove_powerup_effect(user_id, self.powerup_type)
 
-        # Remove from active_powerups table
-        async with aiosqlite.connect(self.cog.db_path) as db:
-            await db.execute("DELETE FROM active_powerups WHERE user_id = ? AND powerup_type = ?",
-                             (user_id, self.powerup_type))
-            await db.commit()
+        async with self.cog.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'DELETE FROM "{_PU}".active_powerups WHERE user_id = $1 AND powerup_type = $2',
+                user_id,
+                self.powerup_type,
+            )
 
         await interaction.followup.send(f"{powerup_info['name']} has been deactivated.", ephemeral=True)
 

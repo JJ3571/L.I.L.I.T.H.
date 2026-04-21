@@ -1,17 +1,28 @@
 import nextcord
 from nextcord.ext import commands
-import aiosqlite
 import os
 import time, datetime
 import pytz
 import re
 import asyncio
+import asyncpg
 
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_EV = "event"
+
+
+def _to_timestamptz_arg(value: datetime.datetime | str) -> datetime.datetime:
+    """asyncpg 0.30+ expects datetime for timestamptz parameters, not ISO strings."""
+    if isinstance(value, datetime.datetime):
+        return value
+    s = str(value).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.datetime.fromisoformat(s)
 
 
 def _dbg_print(cog, message: str) -> None:
@@ -23,138 +34,105 @@ def _dbg_print(cog, message: str) -> None:
 class Event(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["event"]
         # Reminders are sent only to the original channel where the command was used
-        # Initialize database when cog loads
         self.bot.loop.create_task(self.create_tables())
         self.bot.loop.create_task(self.start_reminder_check_task())
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # Events table
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS events (
-                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        creator_id INTEGER NOT NULL,
-                        event_name TEXT NOT NULL,
-                        event_description TEXT,
-                        event_time TIMESTAMP NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        max_attendees INTEGER DEFAULT NULL,
-                        status TEXT DEFAULT 'active'
-                    )
-                ''')
-                
-                # Event attendees table
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS event_attendees (
-                        event_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        status TEXT DEFAULT 'confirmed',
-                        PRIMARY KEY (event_id, user_id),
-                        FOREIGN KEY (event_id) REFERENCES events (event_id) ON DELETE CASCADE
-                    )
-                ''')
+        return
 
-                # Reminders table
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS reminders (
-                        reminder_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        creator_id INTEGER NOT NULL,
-                        reminder_text TEXT NOT NULL,
-                        reminder_time TIMESTAMP NOT NULL,
-                        original_channel_id INTEGER NOT NULL,
-                        message_id INTEGER,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        status TEXT DEFAULT 'active'
-                    )
-                ''')
-                
-                # Reminder subscribers table
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS reminder_subscribers (
-                        reminder_id INTEGER NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (reminder_id, user_id),
-                        FOREIGN KEY (reminder_id) REFERENCES reminders (reminder_id) ON DELETE CASCADE
-                    )
-                ''')
-            await conn.commit()
-
-    async def create_event(self, creator_id: int, event_name: str, event_description: str, event_time: str, max_attendees: int = None):
+    async def create_event(
+        self,
+        creator_id: int,
+        event_name: str,
+        event_description: str,
+        event_time: datetime.datetime | str,
+        max_attendees: int = None,
+    ):
         """Create a new event and return the event_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    INSERT INTO events (creator_id, event_name, event_description, event_time, max_attendees)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (creator_id, event_name, event_description, event_time, max_attendees))
-                await conn.commit()
-                return cursor.lastrowid
+        event_time = _to_timestamptz_arg(event_time)
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                INSERT INTO "{_EV}".events (creator_id, event_name, event_description, event_time, max_attendees)
+                VALUES ($1, $2, $3, $4, $5) RETURNING event_id
+                ''',
+                creator_id,
+                event_name,
+                event_description,
+                event_time,
+                max_attendees,
+            )
+            return row["event_id"]
 
     async def get_event(self, event_id: int):
         """Get event details by event_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT event_id, creator_id, event_name, event_description, event_time, 
-                           created_at, max_attendees, status
-                    FROM events WHERE event_id = ?
-                ''', (event_id,))
-                return await cursor.fetchone()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetchrow(
+                f'''
+                SELECT event_id, creator_id, event_name, event_description, event_time,
+                       created_at, max_attendees, status
+                FROM "{_EV}".events WHERE event_id = $1
+                ''',
+                event_id,
+            )
 
     async def join_event(self, event_id: int, user_id: int, status: str = 'confirmed'):
         """Add a user to an event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                try:
-                    await cursor.execute('''
-                        INSERT INTO event_attendees (event_id, user_id, status)
-                        VALUES (?, ?, ?)
-                    ''', (event_id, user_id, status))
-                    await conn.commit()
-                    return True
-                except aiosqlite.IntegrityError:
-                    # User already signed up
-                    return False
+        async with self.bot.pg_pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    f'''
+                    INSERT INTO "{_EV}".event_attendees (event_id, user_id, status)
+                    VALUES ($1, $2, $3)
+                    ''',
+                    event_id,
+                    user_id,
+                    status,
+                )
+                return True
+            except asyncpg.UniqueViolationError:
+                return False
 
     async def leave_event(self, event_id: int, user_id: int):
         """Remove a user from an event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    DELETE FROM event_attendees 
-                    WHERE event_id = ? AND user_id = ?
-                ''', (event_id, user_id))
-                await conn.commit()
-                return cursor.rowcount > 0
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                DELETE FROM "{_EV}".event_attendees
+                WHERE event_id = $1 AND user_id = $2
+                ''',
+                event_id,
+                user_id,
+            )
+            return tag != "DELETE 0"
 
     async def get_event_attendees(self, event_id: int):
         """Get all attendees for an event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT user_id, joined_at, status
-                    FROM event_attendees 
-                    WHERE event_id = ?
-                    ORDER BY joined_at ASC
-                ''', (event_id,))
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT user_id, joined_at, status
+                FROM "{_EV}".event_attendees
+                WHERE event_id = $1
+                ORDER BY joined_at ASC
+                ''',
+                event_id,
+            )
 
     async def get_attendees_by_status(self, event_id: int, status: str = 'confirmed'):
         """Get attendees for an event by status"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT user_id, joined_at
-                    FROM event_attendees 
-                    WHERE event_id = ? AND status = ?
-                    ORDER BY joined_at ASC
-                ''', (event_id, status))
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT user_id, joined_at
+                FROM "{_EV}".event_attendees
+                WHERE event_id = $1 AND status = $2
+                ORDER BY joined_at ASC
+                ''',
+                event_id,
+                status,
+            )
 
     async def get_attendees_display_text(self, event_id: int):
         """Get formatted attendee text for embed display"""
@@ -193,74 +171,86 @@ class Event(commands.Cog, CogLogMixin):
 
     async def get_attendee_count(self, event_id: int):
         """Get the number of attendees for an event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT COUNT(*) FROM event_attendees 
-                    WHERE event_id = ? AND status = 'confirmed'
-                ''', (event_id,))
-                result = await cursor.fetchone()
-                return result[0] if result else 0
+        async with self.bot.pg_pool.acquire() as conn:
+            val = await conn.fetchval(
+                f'''
+                SELECT COUNT(*) FROM "{_EV}".event_attendees
+                WHERE event_id = $1 AND status = 'confirmed'
+                ''',
+                event_id,
+            )
+            return int(val or 0)
 
     async def is_user_attending(self, event_id: int, user_id: int):
         """Check if a user is attending an event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT 1 FROM event_attendees 
-                    WHERE event_id = ? AND user_id = ?
-                ''', (event_id, user_id))
-                return await cursor.fetchone() is not None
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                SELECT 1 FROM "{_EV}".event_attendees
+                WHERE event_id = $1 AND user_id = $2
+                ''',
+                event_id,
+                user_id,
+            )
+            return row is not None
 
     async def get_user_events(self, user_id: int):
         """Get all events a user is attending"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT e.event_id, e.event_name, e.event_time, e.creator_id
-                    FROM events e
-                    JOIN event_attendees ea ON e.event_id = ea.event_id
-                    WHERE ea.user_id = ? AND e.status = 'active'
-                    ORDER BY e.event_time ASC
-                ''', (user_id,))
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT e.event_id, e.event_name, e.event_time, e.creator_id
+                FROM "{_EV}".events e
+                JOIN "{_EV}".event_attendees ea ON e.event_id = ea.event_id
+                WHERE ea.user_id = $1 AND e.status = 'active'
+                ORDER BY e.event_time ASC
+                ''',
+                user_id,
+            )
 
     async def get_upcoming_events(self, limit: int = 10):
         """Get upcoming events"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT event_id, creator_id, event_name, event_description, event_time, 
-                           created_at, max_attendees, status
-                    FROM events 
-                    WHERE status = 'active' AND event_time > datetime('now')
-                    ORDER BY event_time ASC
-                    LIMIT ?
-                ''', (limit,))
-                return await cursor.fetchall()
-            
-    async def update_event(self, event_id: int, name: str, description: str, event_time: str):
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT event_id, creator_id, event_name, event_description, event_time,
+                       created_at, max_attendees, status
+                FROM "{_EV}".events
+                WHERE status = 'active' AND event_time > CURRENT_TIMESTAMP
+                ORDER BY event_time ASC
+                LIMIT $1
+                ''',
+                limit,
+            )
+
+    async def update_event(self, event_id: int, name: str, description: str, event_time: datetime.datetime | str):
         """Update an existing event"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    UPDATE events
-                    SET event_name = ?, event_description = ?, event_time = ?
-                    WHERE event_id = ?
-                ''', (name, description, event_time, event_id))
-                await conn.commit()
-                return cursor.rowcount > 0
-            
+        event_time = _to_timestamptz_arg(event_time)
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                UPDATE "{_EV}".events
+                SET event_name = $1, event_description = $2, event_time = $3
+                WHERE event_id = $4
+                ''',
+                name,
+                description,
+                event_time,
+                event_id,
+            )
+            return tag != "UPDATE 0"
+
     async def delete_event(self, event_id: int):
         """Delete an event by event_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    DELETE FROM events
-                    WHERE event_id = ?
-                ''', (event_id,))
-                await conn.commit()
-                return cursor.rowcount > 0
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                DELETE FROM "{_EV}".events
+                WHERE event_id = $1
+                ''',
+                event_id,
+            )
+            return tag != "DELETE 0"
 
     @nextcord.slash_command(name="event", description="Create or manage events", guild_ids=[GUILD_ID])
     async def event_command(self, interaction: nextcord.Interaction):
@@ -504,134 +494,158 @@ class Event(commands.Cog, CogLogMixin):
 
     # ============== REMINDER METHODS ==============
     
-    async def create_reminder(self, creator_id: int, reminder_text: str, reminder_time: str, original_channel_id: int, message_id: int = None):
+    async def create_reminder(
+        self,
+        creator_id: int,
+        reminder_text: str,
+        reminder_time: datetime.datetime | str,
+        original_channel_id: int,
+        message_id: int = None,
+    ):
         """Create a new reminder and return the reminder_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    INSERT INTO reminders (creator_id, reminder_text, reminder_time, original_channel_id, message_id)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (creator_id, reminder_text, reminder_time, original_channel_id, message_id))
-                await conn.commit()
-                return cursor.lastrowid
+        reminder_time = _to_timestamptz_arg(reminder_time)
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                INSERT INTO "{_EV}".reminders (creator_id, reminder_text, reminder_time, original_channel_id, message_id)
+                VALUES ($1, $2, $3, $4, $5) RETURNING reminder_id
+                ''',
+                creator_id,
+                reminder_text,
+                reminder_time,
+                original_channel_id,
+                message_id,
+            )
+            return row["reminder_id"]
 
     async def get_reminder(self, reminder_id: int):
         """Get reminder details by reminder_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT reminder_id, creator_id, reminder_text, reminder_time, 
-                           original_channel_id, message_id, created_at, status
-                    FROM reminders WHERE reminder_id = ?
-                ''', (reminder_id,))
-                return await cursor.fetchone()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetchrow(
+                f'''
+                SELECT reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status
+                FROM "{_EV}".reminders WHERE reminder_id = $1
+                ''',
+                reminder_id,
+            )
 
     async def subscribe_to_reminder(self, reminder_id: int, user_id: int):
         """Subscribe a user to a reminder"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                try:
-                    await cursor.execute('''
-                        INSERT INTO reminder_subscribers (reminder_id, user_id)
-                        VALUES (?, ?)
-                    ''', (reminder_id, user_id))
-                    await conn.commit()
-                    return True
-                except aiosqlite.IntegrityError:
-                    # User already subscribed
-                    return False
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                INSERT INTO "{_EV}".reminder_subscribers (reminder_id, user_id)
+                VALUES ($1, $2)
+                ON CONFLICT (reminder_id, user_id) DO NOTHING
+                RETURNING reminder_id
+                ''',
+                reminder_id,
+                user_id,
+            )
+            return row is not None
 
     async def unsubscribe_from_reminder(self, reminder_id: int, user_id: int):
         """Unsubscribe a user from a reminder"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    DELETE FROM reminder_subscribers 
-                    WHERE reminder_id = ? AND user_id = ?
-                ''', (reminder_id, user_id))
-                await conn.commit()
-                return cursor.rowcount > 0
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                DELETE FROM "{_EV}".reminder_subscribers
+                WHERE reminder_id = $1 AND user_id = $2
+                ''',
+                reminder_id,
+                user_id,
+            )
+            return tag != "DELETE 0"
 
     async def get_reminder_subscribers(self, reminder_id: int):
         """Get all subscribers for a reminder"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT user_id, subscribed_at
-                    FROM reminder_subscribers 
-                    WHERE reminder_id = ?
-                    ORDER BY subscribed_at ASC
-                ''', (reminder_id,))
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT user_id, subscribed_at
+                FROM "{_EV}".reminder_subscribers
+                WHERE reminder_id = $1
+                ORDER BY subscribed_at ASC
+                ''',
+                reminder_id,
+            )
 
     async def is_user_subscribed(self, reminder_id: int, user_id: int):
         """Check if a user is subscribed to a reminder"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT 1 FROM reminder_subscribers 
-                    WHERE reminder_id = ? AND user_id = ?
-                ''', (reminder_id, user_id))
-                return await cursor.fetchone() is not None
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                SELECT 1 FROM "{_EV}".reminder_subscribers
+                WHERE reminder_id = $1 AND user_id = $2
+                ''',
+                reminder_id,
+                user_id,
+            )
+            return row is not None
 
-    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: str):
+    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: datetime.datetime | str):
         """Update an existing reminder"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    UPDATE reminders
-                    SET reminder_text = ?, reminder_time = ?
-                    WHERE reminder_id = ?
-                ''', (reminder_text, reminder_time, reminder_id))
-                await conn.commit()
-                return cursor.rowcount > 0
+        reminder_time = _to_timestamptz_arg(reminder_time)
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                UPDATE "{_EV}".reminders
+                SET reminder_text = $1, reminder_time = $2
+                WHERE reminder_id = $3
+                ''',
+                reminder_text,
+                reminder_time,
+                reminder_id,
+            )
+            return tag != "UPDATE 0"
 
     async def delete_reminder(self, reminder_id: int):
         """Delete a reminder by reminder_id"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    DELETE FROM reminders
-                    WHERE reminder_id = ?
-                ''', (reminder_id,))
-                await conn.commit()
-                return cursor.rowcount > 0
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                DELETE FROM "{_EV}".reminders
+                WHERE reminder_id = $1
+                ''',
+                reminder_id,
+            )
+            return tag != "DELETE 0"
 
     async def get_due_reminders(self):
         """Get all reminders that are due now"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # Get current UTC time in ISO format to match stored reminder_time format
-                current_time = nextcord.utils.utcnow().isoformat()
-                _dbg_print(self, f"[DEBUG] get_due_reminders() - Current time: {current_time}")
-                
-                await cursor.execute('''
-                    SELECT reminder_id, creator_id, reminder_text, reminder_time, 
-                           original_channel_id, message_id, created_at, status
-                    FROM reminders 
-                    WHERE status = 'active' AND reminder_time <= ?
-                ''', (current_time,))
-                results = await cursor.fetchall()
-                
-                _dbg_print(self, f"[DEBUG] get_due_reminders() - SQL query found {len(results)} results")
-                for result in results:
-                    reminder_id = result[0]
-                    reminder_time = result[3]
-                    _dbg_print(self, f"[DEBUG]   -> Reminder ID {reminder_id} with time {reminder_time}")
-                
-                return results
+        async with self.bot.pg_pool.acquire() as conn:
+            current_time = nextcord.utils.utcnow()
+            _dbg_print(self, f"[DEBUG] get_due_reminders() - Current time: {current_time.isoformat()}")
+
+            results = await conn.fetch(
+                f'''
+                SELECT reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status
+                FROM "{_EV}".reminders
+                WHERE status = 'active' AND reminder_time <= $1
+                ''',
+                current_time,
+            )
+
+            _dbg_print(self, f"[DEBUG] get_due_reminders() - SQL query found {len(results)} results")
+            for result in results:
+                reminder_id = result["reminder_id"]
+                rtime = result["reminder_time"]
+                _dbg_print(self, f"[DEBUG]   -> Reminder ID {reminder_id} with time {rtime}")
+
+            return results
 
     async def mark_reminder_completed(self, reminder_id: int):
         """Mark a reminder as completed"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    UPDATE reminders
-                    SET status = 'completed'
-                    WHERE reminder_id = ?
-                ''', (reminder_id,))
-                await conn.commit()
-                return cursor.rowcount > 0
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                UPDATE "{_EV}".reminders
+                SET status = 'completed'
+                WHERE reminder_id = $1
+                ''',
+                reminder_id,
+            )
+            return tag != "UPDATE 0"
 
     async def start_reminder_check_task(self):
         """Start the background task to check for due reminders"""
@@ -652,24 +666,28 @@ class Event(commands.Cog, CogLogMixin):
         _dbg_print(self, f"[DEBUG] Checking for due reminders at {current_time_iso}")
         
         # First, let's see all active reminders in the database
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    SELECT reminder_id, creator_id, reminder_text, reminder_time, status
-                    FROM reminders 
-                    WHERE status = 'active'
-                    ORDER BY reminder_time ASC
-                ''')
-                all_active = await cursor.fetchall()
-                
-                _dbg_print(self, f"[DEBUG] Found {len(all_active)} active reminders in database:")
-                for reminder in all_active:
-                    reminder_id, creator_id, reminder_text, reminder_time, status = reminder
-                    _dbg_print(self, f"[DEBUG]   ID {reminder_id}: '{reminder_text[:50]}...' due at {reminder_time} (status: {status})")
-                    
-                    # Check if this reminder is due
-                    is_due = reminder_time <= current_time_iso
-                    _dbg_print(self, f"[DEBUG]   -> Is due? {is_due} (reminder_time <= current_time: {reminder_time} <= {current_time_iso})")
+        async with self.bot.pg_pool.acquire() as conn:
+            all_active = await conn.fetch(
+                f'''
+                SELECT reminder_id, creator_id, reminder_text, reminder_time, status
+                FROM "{_EV}".reminders
+                WHERE status = 'active'
+                ORDER BY reminder_time ASC
+                '''
+            )
+
+            _dbg_print(self, f"[DEBUG] Found {len(all_active)} active reminders in database:")
+            for reminder in all_active:
+                reminder_id = reminder["reminder_id"]
+                creator_id = reminder["creator_id"]
+                reminder_text = reminder["reminder_text"]
+                reminder_time = reminder["reminder_time"]
+                status = reminder["status"]
+                _dbg_print(self, f"[DEBUG]   ID {reminder_id}: '{reminder_text[:50]}...' due at {reminder_time} (status: {status})")
+
+                rt_str = reminder_time.isoformat() if hasattr(reminder_time, "isoformat") else str(reminder_time)
+                is_due = rt_str <= current_time_iso
+                _dbg_print(self, f"[DEBUG]   -> Is due? {is_due} (reminder_time <= current_time: {rt_str} <= {current_time_iso})")
         
         due_reminders = await self.get_due_reminders()
         
@@ -1185,7 +1203,7 @@ class EventCreationModal(nextcord.ui.Modal):
                 creator_id=interaction.user.id,
                 event_name=self.event_name.value,
                 event_description=self.event_description.value or "No description provided",
-                event_time=event_datetime_utc.isoformat(),
+                event_time=event_datetime_utc,
                 max_attendees=max_attendees_val
             )
             
@@ -1404,7 +1422,7 @@ class ReminderCreationModal(nextcord.ui.Modal):
             reminder_id = await self.cog.create_reminder(
                 creator_id=interaction.user.id,
                 reminder_text=self.reminder_text.value,
-                reminder_time=reminder_datetime_utc.isoformat(),
+                reminder_time=reminder_datetime_utc,
                 original_channel_id=interaction.channel.id
             )
             
@@ -1443,14 +1461,15 @@ class ReminderCreationModal(nextcord.ui.Modal):
             message = await interaction.response.send_message(embed=embed, view=view)
             
             # Update the reminder with the message ID for future reference
-            async with aiosqlite.connect(self.cog.db_path) as conn:
-                async with conn.cursor() as cursor:
-                    # Get the message ID from the response
-                    response_message = await interaction.original_message()
-                    await cursor.execute('''
-                        UPDATE reminders SET message_id = ? WHERE reminder_id = ?
-                    ''', (response_message.id, reminder_id))
-                    await conn.commit()
+            async with self.cog.bot.pg_pool.acquire() as conn:
+                response_message = await interaction.original_message()
+                await conn.execute(
+                    f'''
+                    UPDATE "{_EV}".reminders SET message_id = $1 WHERE reminder_id = $2
+                    ''',
+                    response_message.id,
+                    reminder_id,
+                )
             
         except ValueError as e:
             # Check if interaction was already responded to
@@ -1513,7 +1532,7 @@ class ReminderEditModal(nextcord.ui.Modal):
             success = await self.cog.update_reminder(
                 reminder_id=self.reminder_id,
                 reminder_text=self.reminder_text.value,
-                reminder_time=reminder_datetime_utc.isoformat()
+                reminder_time=reminder_datetime_utc
             )
             
             if success:

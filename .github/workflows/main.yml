@@ -1,18 +1,30 @@
 name: CI/CD Pipeline 
 
 on:
+  # Run tests on every branch; deploy remains main + push only (see deploy job `if`).
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Map the secret to an ENV variable here so the steps can see it
     env:
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
       DISCORD_BOT_TOKEN: ci-placeholder-token
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d testdb"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -22,14 +34,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --group dev
 
-      - name: Install Doppler CLI
-        # Now we check 'env' instead of 'secrets'
-        if: env.DOPPLER_TOKEN != ''
-        run: curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh | sudo sh
-
       - name: Run tests
-        if: env.DOPPLER_TOKEN != ''
-        run: doppler run -- uv run pytest
+        run: uv run pytest
 
   deploy:
     needs: test

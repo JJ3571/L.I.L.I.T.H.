@@ -1,6 +1,5 @@
 import nextcord
 from nextcord.ext import commands
-import aiosqlite
 import time
 
 from main_bot.boot_log import boot_print
@@ -8,7 +7,8 @@ from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 # Ensure this import is correct and admin_user_ids is populated
 from main_bot.server_configs.config import admin_user_ids
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_BZ = "buzzer"
 
 class BuzzerView(nextcord.ui.View):
     def __init__(self, cog_instance):
@@ -75,59 +75,25 @@ class VoteView(nextcord.ui.View):
 class Buzzer(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["buzzer"]
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS buzzer_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL,
-                    buzz_time REAL NOT NULL
-                )
-            ''')
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS buzzer_sessions (
-                    message_id INTEGER PRIMARY KEY,
-                    channel_id INTEGER NOT NULL,
-                    locked BOOLEAN NOT NULL DEFAULT FALSE,
-                    first_buzz_timestamp REAL DEFAULT NULL
-                )
-            ''')
-            # Vote tables: store sessions (number of options) and individual votes
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS vote_sessions (
-                    message_id INTEGER PRIMARY KEY,
-                    channel_id INTEGER NOT NULL,
-                    num_options INTEGER NOT NULL,
-                    locked BOOLEAN NOT NULL DEFAULT FALSE
-                )
-            ''')
-            await db.execute('''
-                CREATE TABLE IF NOT EXISTS votes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message_id INTEGER NOT NULL,
-                    option_index INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    username TEXT NOT NULL,
-                    vote_time REAL NOT NULL
-                )
-            ''')
-            await db.commit()
         self.cog_print("Buzzer database tables created/verified successfully.")
 
-
     async def get_session_info(self, message_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT locked, first_buzz_timestamp FROM buzzer_sessions WHERE message_id = ?", (message_id,)) as cursor:
-                return await cursor.fetchone()
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'SELECT locked, first_buzz_timestamp FROM "{_BZ}".buzzer_sessions WHERE message_id = $1',
+                message_id,
+            )
+            return tuple(row) if row else None
 
     async def get_buzz_entries(self, message_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT user_id, username, buzz_time FROM buzzer_entries WHERE message_id = ? ORDER BY buzz_time ASC", (message_id,)) as cursor:
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'SELECT user_id, username, buzz_time FROM "{_BZ}".buzzer_entries WHERE message_id = $1 ORDER BY buzz_time ASC',
+                message_id,
+            )
+            return [tuple(r) for r in rows]
 
     async def update_buzzer_embed(self, interaction: nextcord.Interaction = None, message_to_update: nextcord.Message = None):
         if interaction:
@@ -236,16 +202,17 @@ class Buzzer(commands.Cog, CogLogMixin):
         channel_id = interaction.channel_id
 
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                # Ensure old entries for this message_id are cleared if it's somehow reused (though unlikely with new messages)
-                await db.execute("DELETE FROM buzzer_sessions WHERE message_id = ?", (message_id,))
-                await db.execute("DELETE FROM buzzer_entries WHERE message_id = ?", (message_id,))
-                # Create new session
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(f'DELETE FROM "{_BZ}".buzzer_sessions WHERE message_id = $1', message_id)
+                await db.execute(f'DELETE FROM "{_BZ}".buzzer_entries WHERE message_id = $1', message_id)
                 await db.execute(
-                    "INSERT INTO buzzer_sessions (message_id, channel_id, locked, first_buzz_timestamp) VALUES (?, ?, FALSE, NULL)",
-                    (message_id, channel_id)
+                    f'''
+                    INSERT INTO "{_BZ}".buzzer_sessions (message_id, channel_id, locked, first_buzz_timestamp)
+                    VALUES ($1, $2, FALSE, NULL)
+                    ''',
+                    message_id,
+                    channel_id,
                 )
-                await db.commit()
         except Exception as e:
             self.cog_print(f"Database error in buzzer_create_subcommand: {e}")
             # Do not try to send a followup if the original interaction.original_message() failed,
@@ -284,21 +251,33 @@ class Buzzer(commands.Cog, CogLogMixin):
 
         current_actual_buzz_time = time.time()
 
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT 1 FROM buzzer_entries WHERE message_id = ? AND user_id = ?", (message_id, user_id)) as cursor:
-                if await cursor.fetchone():
-                    await interaction.response.send_message("You have already buzzed in for this round!", ephemeral=True)
-                    return
+        async with self.bot.pg_pool.acquire() as db:
+            dup = await db.fetchval(
+                f'SELECT 1 FROM "{_BZ}".buzzer_entries WHERE message_id = $1 AND user_id = $2',
+                message_id,
+                user_id,
+            )
+            if dup:
+                await interaction.response.send_message("You have already buzzed in for this round!", ephemeral=True)
+                return
 
             await db.execute(
-                "INSERT INTO buzzer_entries (message_id, user_id, username, buzz_time) VALUES (?, ?, ?, ?)",
-                (message_id, user_id, username, current_actual_buzz_time)
+                f'''
+                INSERT INTO "{_BZ}".buzzer_entries (message_id, user_id, username, buzz_time)
+                VALUES ($1, $2, $3, $4)
+                ''',
+                message_id,
+                user_id,
+                username,
+                current_actual_buzz_time,
             )
 
-            if first_buzz_db_time is None: # This is the first person to buzz
-                await db.execute("UPDATE buzzer_sessions SET first_buzz_timestamp = ? WHERE message_id = ?", (current_actual_buzz_time, message_id))
-
-            await db.commit()
+            if first_buzz_db_time is None:
+                await db.execute(
+                    f'UPDATE "{_BZ}".buzzer_sessions SET first_buzz_timestamp = $1 WHERE message_id = $2',
+                    current_actual_buzz_time,
+                    message_id,
+                )
 
         if not interaction.response.is_done():
             await interaction.response.defer() # Defer to acknowledge interaction before updating embed
@@ -314,12 +293,16 @@ class Buzzer(commands.Cog, CogLogMixin):
             return
         message_id = interaction.message.id
 
-        async with aiosqlite.connect(self.db_path) as db:
-            # Clear entries for this specific buzzer
-            await db.execute("DELETE FROM buzzer_entries WHERE message_id = ?", (message_id,))
-            # Reset the session: unlock it and clear the first buzz timestamp
-            await db.execute("UPDATE buzzer_sessions SET first_buzz_timestamp = NULL, locked = FALSE WHERE message_id = ?", (message_id,))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(f'DELETE FROM "{_BZ}".buzzer_entries WHERE message_id = $1', message_id)
+            await db.execute(
+                f'''
+                UPDATE "{_BZ}".buzzer_sessions
+                SET first_buzz_timestamp = NULL, locked = FALSE
+                WHERE message_id = $1
+                ''',
+                message_id,
+            )
 
         if not interaction.response.is_done():
             await interaction.response.defer()
@@ -339,14 +322,15 @@ class Buzzer(commands.Cog, CogLogMixin):
             return
         message_id = interaction.message.id
 
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("UPDATE buzzer_sessions SET locked = TRUE WHERE message_id = ?", (message_id,))
-            await db.commit()
-            if cursor.rowcount == 0:
-                await interaction.response.send_message(f"No active buzzer session found for this message to lock.", ephemeral=True)
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'UPDATE "{_BZ}".buzzer_sessions SET locked = TRUE WHERE message_id = $1 RETURNING message_id',
+                message_id,
+            )
+            if row is None:
+                await interaction.response.send_message("No active buzzer session found for this message to lock.", ephemeral=True)
                 return
 
-        # await interaction.response.send_message(f"Buzzer has been locked.", ephemeral=True)
         await self.update_buzzer_embed(interaction=interaction)
 
     async def handle_unlock_button(self, interaction: nextcord.Interaction):
@@ -359,27 +343,36 @@ class Buzzer(commands.Cog, CogLogMixin):
             return
         message_id = interaction.message.id
 
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("UPDATE buzzer_sessions SET locked = FALSE WHERE message_id = ?", (message_id,))
-            await db.commit()
-            if cursor.rowcount == 0:
-                await interaction.response.send_message(f"No active buzzer session found for this message to unlock.", ephemeral=True)
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'UPDATE "{_BZ}".buzzer_sessions SET locked = FALSE WHERE message_id = $1 RETURNING message_id',
+                message_id,
+            )
+            if row is None:
+                await interaction.response.send_message("No active buzzer session found for this message to unlock.", ephemeral=True)
                 return
 
-        # await interaction.response.send_message(f"Buzzer has been unlocked.", ephemeral=True)
         await self.update_buzzer_embed(interaction=interaction)
-
 
     # ----------------- Vote helpers and handlers -----------------
     async def get_vote_session(self, message_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT num_options, locked FROM vote_sessions WHERE message_id = ?", (message_id,)) as cursor:
-                return await cursor.fetchone()
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'SELECT num_options, locked FROM "{_BZ}".vote_sessions WHERE message_id = $1',
+                message_id,
+            )
+            return tuple(row) if row else None
 
     async def get_votes_for_message(self, message_id):
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("SELECT option_index, user_id, username FROM votes WHERE message_id = ? ORDER BY option_index ASC, id ASC", (message_id,)) as cursor:
-                return await cursor.fetchall()
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT option_index, user_id, username FROM "{_BZ}".votes
+                WHERE message_id = $1 ORDER BY option_index ASC, id ASC
+                ''',
+                message_id,
+            )
+            return [tuple(r) for r in rows]
 
     async def update_vote_embed(self, interaction: nextcord.Interaction = None, message_to_update: nextcord.Message = None):
         if interaction:
@@ -487,11 +480,18 @@ class Buzzer(commands.Cog, CogLogMixin):
         channel_id = interaction.channel_id
 
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("DELETE FROM vote_sessions WHERE message_id = ?", (message_id,))
-                await db.execute("DELETE FROM votes WHERE message_id = ?", (message_id,))
-                await db.execute("INSERT INTO vote_sessions (message_id, channel_id, num_options, locked) VALUES (?, ?, ?, FALSE)", (message_id, channel_id, num_options))
-                await db.commit()
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(f'DELETE FROM "{_BZ}".vote_sessions WHERE message_id = $1', message_id)
+                await db.execute(f'DELETE FROM "{_BZ}".votes WHERE message_id = $1', message_id)
+                await db.execute(
+                    f'''
+                    INSERT INTO "{_BZ}".vote_sessions (message_id, channel_id, num_options, locked)
+                    VALUES ($1, $2, $3, FALSE)
+                    ''',
+                    message_id,
+                    channel_id,
+                    num_options,
+                )
         except Exception as e:
             self.cog_print(f"Database error in vote_create_subcommand: {e}")
             if msg:
@@ -535,25 +535,39 @@ class Buzzer(commands.Cog, CogLogMixin):
             await interaction.response.send_message("Invalid option selected.", ephemeral=True)
             return
 
-        async with aiosqlite.connect(self.db_path) as db:
-            # Check existing vote
-            async with db.execute("SELECT option_index FROM votes WHERE message_id = ? AND user_id = ?", (message_id, user_id)) as cursor:
-                row = await cursor.fetchone()
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'SELECT option_index FROM "{_BZ}".votes WHERE message_id = $1 AND user_id = $2',
+                message_id,
+                user_id,
+            )
 
-            # If user already voted same option -> remove (toggle off)
-            if row and row[0] == option_index:
-                await db.execute("DELETE FROM votes WHERE message_id = ? AND user_id = ?", (message_id, user_id))
-                await db.commit()
-
+            if row and row["option_index"] == option_index:
+                await db.execute(
+                    f'DELETE FROM "{_BZ}".votes WHERE message_id = $1 AND user_id = $2',
+                    message_id,
+                    user_id,
+                )
                 await self.update_vote_embed(interaction=interaction)
                 return
 
-            # otherwise remove any prior vote and insert new
-            await db.execute("DELETE FROM votes WHERE message_id = ? AND user_id = ?", (message_id, user_id))
-            await db.execute("INSERT INTO votes (message_id, option_index, user_id, username, vote_time) VALUES (?, ?, ?, ?, ?)", (message_id, option_index, user_id, username, time.time()))
-            await db.commit()
+            await db.execute(
+                f'DELETE FROM "{_BZ}".votes WHERE message_id = $1 AND user_id = $2',
+                message_id,
+                user_id,
+            )
+            await db.execute(
+                f'''
+                INSERT INTO "{_BZ}".votes (message_id, option_index, user_id, username, vote_time)
+                VALUES ($1, $2, $3, $4, $5)
+                ''',
+                message_id,
+                option_index,
+                user_id,
+                username,
+                time.time(),
+            )
 
-        # acknowledge and update
         await self.update_vote_embed(interaction=interaction)
 
     async def handle_vote_lock(self, interaction: nextcord.Interaction):
@@ -577,9 +591,12 @@ class Buzzer(commands.Cog, CogLogMixin):
         # Toggle lock status
         new_locked_status = not locked
         
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("UPDATE vote_sessions SET locked = ? WHERE message_id = ?", (new_locked_status, message_id))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f'UPDATE "{_BZ}".vote_sessions SET locked = $1 WHERE message_id = $2',
+                new_locked_status,
+                message_id,
+            )
 
         if not interaction.response.is_done():
             await interaction.response.defer()
@@ -596,9 +613,8 @@ class Buzzer(commands.Cog, CogLogMixin):
             return
         message_id = interaction.message.id
 
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("DELETE FROM votes WHERE message_id = ?", (message_id,))
-            await db.commit()
+        async with self.bot.pg_pool.acquire() as db:
+            await db.execute(f'DELETE FROM "{_BZ}".votes WHERE message_id = $1', message_id)
 
         if not interaction.response.is_done():
             await interaction.response.send_message("Votes have been reset.", ephemeral=True)

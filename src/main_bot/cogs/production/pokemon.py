@@ -1,7 +1,7 @@
 import aiohttp
 import nextcord
 from nextcord.ext import commands
-import sqlite3
+import asyncpg
 import asyncio
 import json
 import time
@@ -13,7 +13,8 @@ from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_PK = "pokemon"
 
 
 pkgo_api_url = "https://pogoapi.net/api/v1/"
@@ -100,149 +101,41 @@ class FriendCodePaginationView(nextcord.ui.View):
 class Pokemon(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["pokemon"]
-        self.create_tables()
-        
+
         # Initialize Pokemon name cache for autocomplete
         self.pokemon_name_cache = {}  # {id: {'name': str, 'generation': int}}
         self.pokemon_name_list = []   # List of (name, id) tuples for fuzzy matching
         self.cache_last_updated = None
         self.cache_task = None
 
-    def create_tables(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        # Original friend codes table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS friendcodes (
-                discord_id INT PRIMARY KEY,
-                in_game_name TEXT NOT NULL,
-                friend_code TEXT NOT NULL
+    async def add_user(self, discord_id, in_game_name, friend_code):
+        did = int(discord_id)
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'''
+                INSERT INTO "{_PK}".friendcodes (discord_id, in_game_name, friend_code)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (discord_id) DO UPDATE SET
+                    in_game_name = EXCLUDED.in_game_name,
+                    friend_code = EXCLUDED.friend_code
+                ''',
+                did,
+                in_game_name,
+                friend_code,
             )
-        ''')
 
-        # Pokemon teams table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS pokemon_teams (
-                team_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                team_name TEXT NOT NULL,
-                description TEXT,
-                generation_filter INTEGER,
-                version_group_filter TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, team_name)
+    async def get_user(self, discord_id):
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'SELECT in_game_name, friend_code FROM "{_PK}".friendcodes WHERE discord_id = $1',
+                int(discord_id),
             )
-        ''')
+        return tuple(row) if row else None
 
-        # Pokemon team members table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS team_members (
-                member_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                team_id INTEGER NOT NULL,
-                slot_number INTEGER NOT NULL CHECK(slot_number >= 1 AND slot_number <= 6),
-                pokemon_id INTEGER NOT NULL,
-                nickname TEXT,
-                level INTEGER DEFAULT 50 CHECK(level >= 1 AND level <= 100),
-                nature TEXT,
-                ability TEXT,
-                item TEXT,
-                move1 TEXT,
-                move2 TEXT,
-                move3 TEXT,
-                move4 TEXT,
-                FOREIGN KEY(team_id) REFERENCES pokemon_teams(team_id) ON DELETE CASCADE,
-                UNIQUE(team_id, slot_number)
-            )
-        ''')
-
-        # Cached Pokemon data for performance
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cached_pokemon_data (
-                pokemon_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                species_name TEXT NOT NULL,
-                generation INTEGER NOT NULL,
-                primary_type TEXT NOT NULL,
-                secondary_type TEXT,
-                sprite_url TEXT,
-                hp INTEGER NOT NULL,
-                attack INTEGER NOT NULL,
-                defense INTEGER NOT NULL,
-                special_attack INTEGER NOT NULL,
-                special_defense INTEGER NOT NULL,
-                speed INTEGER NOT NULL,
-                height INTEGER,
-                weight INTEGER,
-                abilities TEXT, -- JSON array of abilities
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Generation data cache
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cached_generations (
-                generation_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                pokemon_species_count INTEGER,
-                version_groups TEXT, -- JSON array of version groups
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # Version group data cache
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cached_version_groups (
-                version_group_id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                display_name TEXT NOT NULL,
-                generation_id INTEGER NOT NULL,
-                versions TEXT, -- JSON array of individual versions
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-
-        # User preferences for team building
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS user_preferences (
-                user_id INTEGER PRIMARY KEY,
-                default_generation INTEGER,
-                default_version_group TEXT,
-                show_stats BOOLEAN DEFAULT 1,
-                show_sprites BOOLEAN DEFAULT 1,
-                preferred_team_size INTEGER DEFAULT 6 CHECK(preferred_team_size >= 1 AND preferred_team_size <= 6)
-            )
-        ''')
-
-        conn.commit()
-        conn.close()
-
-    def add_user(self, discord_id, in_game_name, friend_code):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('INSERT OR REPLACE INTO friendcodes (discord_id, in_game_name, friend_code) VALUES (?, ?, ?)',
-                       (discord_id, in_game_name, friend_code))
-        conn.commit()
-        conn.close()
-
-    def get_user(self, discord_id):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT in_game_name, friend_code FROM friendcodes WHERE discord_id = ?', (discord_id,))
-        user = cursor.fetchone()
-        conn.close()
-        return user
-
-    def get_all_users(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('SELECT discord_id, in_game_name, friend_code FROM friendcodes')
-        users = cursor.fetchall()
-        conn.close()
-        return users
+    async def get_all_users(self):
+        async with self.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(f'SELECT discord_id, in_game_name, friend_code FROM "{_PK}".friendcodes')
+        return [tuple(r) for r in rows]
 
     # --- PokeAPI Integration Methods ---
     
@@ -267,28 +160,23 @@ class Pokemon(commands.Cog, CogLogMixin):
     
     async def get_cached_pokemon_data(self, pokemon_id: int) -> Optional[Dict]:
         """Get Pokemon data from cache, or fetch from API if not cached/expired"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Check if data exists and is fresh
-        cursor.execute('''
-            SELECT * FROM cached_pokemon_data 
-            WHERE pokemon_id = ? AND datetime(cached_at, '+{} hours') > datetime('now')
-        '''.format(CACHE_EXPIRY_HOURS), (pokemon_id,))
-        
-        cached_data = cursor.fetchone()
-        conn.close()
-        
-        if cached_data:
-            # Convert row to dictionary
-            columns = ['pokemon_id', 'name', 'species_name', 'generation', 'primary_type', 'secondary_type', 
-                      'sprite_url', 'hp', 'attack', 'defense', 'special_attack', 'special_defense', 'speed',
-                      'height', 'weight', 'abilities', 'cached_at']
-            pokemon_data = dict(zip(columns, cached_data))
-            pokemon_data['abilities'] = json.loads(pokemon_data['abilities'])
+        async with self.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f'''
+                SELECT * FROM "{_PK}".cached_pokemon_data
+                WHERE pokemon_id = $1 AND cached_at > NOW() - ($2 * INTERVAL '1 hour')
+                ''',
+                pokemon_id,
+                CACHE_EXPIRY_HOURS,
+            )
+
+        if row:
+            pokemon_data = dict(row)
+            ab = pokemon_data.get("abilities")
+            if isinstance(ab, str):
+                pokemon_data["abilities"] = json.loads(ab)
             return pokemon_data
-        
-        # Fetch fresh data from API
+
         return await self.fetch_and_cache_pokemon_data(pokemon_id)
     
     async def fetch_and_cache_pokemon_data(self, pokemon_id: int) -> Optional[Dict]:
@@ -342,25 +230,51 @@ class Pokemon(commands.Cog, CogLogMixin):
                 'abilities': abilities
             }
             
-            # Cache the data
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO cached_pokemon_data 
-                (pokemon_id, name, species_name, generation, primary_type, secondary_type,
-                 sprite_url, hp, attack, defense, special_attack, special_defense, speed,
-                 height, weight, abilities, cached_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ''', (
-                cache_data['pokemon_id'], cache_data['name'], cache_data['species_name'],
-                cache_data['generation'], cache_data['primary_type'], cache_data['secondary_type'],
-                cache_data['sprite_url'], cache_data['hp'], cache_data['attack'], cache_data['defense'],
-                cache_data['special_attack'], cache_data['special_defense'], cache_data['speed'],
-                cache_data['height'], cache_data['weight'], json.dumps(cache_data['abilities'])
-            ))
-            conn.commit()
-            conn.close()
-            
+            async with self.bot.pg_pool.acquire() as conn:
+                await conn.execute(
+                    f'''
+                    INSERT INTO "{_PK}".cached_pokemon_data (
+                        pokemon_id, name, species_name, generation, primary_type, secondary_type,
+                        sprite_url, hp, attack, defense, special_attack, special_defense, speed,
+                        height, weight, abilities, cached_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP)
+                    ON CONFLICT (pokemon_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        species_name = EXCLUDED.species_name,
+                        generation = EXCLUDED.generation,
+                        primary_type = EXCLUDED.primary_type,
+                        secondary_type = EXCLUDED.secondary_type,
+                        sprite_url = EXCLUDED.sprite_url,
+                        hp = EXCLUDED.hp,
+                        attack = EXCLUDED.attack,
+                        defense = EXCLUDED.defense,
+                        special_attack = EXCLUDED.special_attack,
+                        special_defense = EXCLUDED.special_defense,
+                        speed = EXCLUDED.speed,
+                        height = EXCLUDED.height,
+                        weight = EXCLUDED.weight,
+                        abilities = EXCLUDED.abilities,
+                        cached_at = CURRENT_TIMESTAMP
+                    ''',
+                    cache_data["pokemon_id"],
+                    cache_data["name"],
+                    cache_data["species_name"],
+                    cache_data["generation"],
+                    cache_data["primary_type"],
+                    cache_data["secondary_type"],
+                    cache_data["sprite_url"],
+                    cache_data["hp"],
+                    cache_data["attack"],
+                    cache_data["defense"],
+                    cache_data["special_attack"],
+                    cache_data["special_defense"],
+                    cache_data["speed"],
+                    cache_data["height"],
+                    cache_data["weight"],
+                    json.dumps(cache_data["abilities"]),
+                )
+
             return cache_data
     
     async def get_generation_pokemon_list(self, generation_id: int) -> List[Dict]:
@@ -416,195 +330,212 @@ class Pokemon(commands.Cog, CogLogMixin):
     
     # --- Team Management Methods ---
     
-    async def create_team(self, user_id: int, team_name: str, description: str = None, 
+    async def create_team(self, user_id: int, team_name: str, description: str = None,
                          generation_filter: int = None, version_group_filter: str = None) -> int:
         """Create a new Pokemon team"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
-            cursor.execute('''
-                INSERT INTO pokemon_teams (user_id, team_name, description, generation_filter, version_group_filter)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, team_name, description, generation_filter, version_group_filter))
-            team_id = cursor.lastrowid
-            conn.commit()
+            async with self.bot.pg_pool.acquire() as conn:
+                team_id = await conn.fetchval(
+                    f'''
+                    INSERT INTO "{_PK}".pokemon_teams
+                        (user_id, team_name, description, generation_filter, version_group_filter)
+                    VALUES ($1, $2, $3, $4, $5)
+                    RETURNING team_id
+                    ''',
+                    user_id,
+                    team_name,
+                    description,
+                    generation_filter,
+                    version_group_filter,
+                )
             return team_id
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Team '{team_name}' already exists for this user")
-        finally:
-            conn.close()
-    
+        except asyncpg.UniqueViolationError:
+            raise ValueError(f"Team '{team_name}' already exists for this user") from None
+
     async def get_user_teams(self, user_id: int) -> List[Dict]:
         """Get all teams for a user"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT team_id, team_name, description, generation_filter, version_group_filter, 
-                   created_at, updated_at
-            FROM pokemon_teams 
-            WHERE user_id = ? 
-            ORDER BY updated_at DESC
-        ''', (user_id,))
-        
+        async with self.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'''
+                SELECT team_id, team_name, description, generation_filter, version_group_filter,
+                       created_at, updated_at
+                FROM "{_PK}".pokemon_teams
+                WHERE user_id = $1
+                ORDER BY updated_at DESC
+                ''',
+                user_id,
+            )
+
         teams = []
-        for row in cursor.fetchall():
-            team_data = {
-                'team_id': row[0],
-                'team_name': row[1],
-                'description': row[2],
-                'generation_filter': row[3],
-                'version_group_filter': row[4],
-                'created_at': row[5],
-                'updated_at': row[6]
-            }
-            
-            # Get team member count
-            cursor.execute('SELECT COUNT(*) FROM team_members WHERE team_id = ?', (row[0],))
-            team_data['member_count'] = cursor.fetchone()[0]
-            
-            teams.append(team_data)
-        
-        conn.close()
+        async with self.bot.pg_pool.acquire() as conn:
+            for row in rows:
+                team_data = {
+                    "team_id": row["team_id"],
+                    "team_name": row["team_name"],
+                    "description": row["description"],
+                    "generation_filter": row["generation_filter"],
+                    "version_group_filter": row["version_group_filter"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+                n = await conn.fetchval(
+                    f'SELECT COUNT(*) FROM "{_PK}".team_members WHERE team_id = $1',
+                    row["team_id"],
+                )
+                team_data["member_count"] = int(n or 0)
+                teams.append(team_data)
         return teams
-    
+
     async def get_team_details(self, team_id: int, user_id: int = None) -> Optional[Dict]:
         """Get detailed information about a team"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Get team info
-        query = 'SELECT * FROM pokemon_teams WHERE team_id = ?'
-        params = [team_id]
-        if user_id:
-            query += ' AND user_id = ?'
-            params.append(user_id)
-        
-        cursor.execute(query, params)
-        team_row = cursor.fetchone()
-        
-        if not team_row:
-            conn.close()
-            return None
-        
-        team_data = {
-            'team_id': team_row[0],
-            'user_id': team_row[1],
-            'team_name': team_row[2],
-            'description': team_row[3],
-            'generation_filter': team_row[4],
-            'version_group_filter': team_row[5],
-            'created_at': team_row[6],
-            'updated_at': team_row[7],
-            'members': []
-        }
-        
-        # Get team members
-        cursor.execute('''
-            SELECT slot_number, pokemon_id, nickname, level, nature, ability, item,
-                   move1, move2, move3, move4
-            FROM team_members 
-            WHERE team_id = ? 
-            ORDER BY slot_number
-        ''', (team_id,))
-        
-        for member_row in cursor.fetchall():
-            member_data = {
-                'slot_number': member_row[0],
-                'pokemon_id': member_row[1],
-                'nickname': member_row[2],
-                'level': member_row[3],
-                'nature': member_row[4],
-                'ability': member_row[5],
-                'item': member_row[6],
-                'moves': [member_row[7], member_row[8], member_row[9], member_row[10]]
+        async with self.bot.pg_pool.acquire() as conn:
+            if user_id is not None:
+                team_row = await conn.fetchrow(
+                    f'SELECT * FROM "{_PK}".pokemon_teams WHERE team_id = $1 AND user_id = $2',
+                    team_id,
+                    user_id,
+                )
+            else:
+                team_row = await conn.fetchrow(
+                    f'SELECT * FROM "{_PK}".pokemon_teams WHERE team_id = $1',
+                    team_id,
+                )
+
+            if not team_row:
+                return None
+
+            team_data = {
+                "team_id": team_row["team_id"],
+                "user_id": team_row["user_id"],
+                "team_name": team_row["team_name"],
+                "description": team_row["description"],
+                "generation_filter": team_row["generation_filter"],
+                "version_group_filter": team_row["version_group_filter"],
+                "created_at": team_row["created_at"],
+                "updated_at": team_row["updated_at"],
+                "members": [],
             }
-            
-            # Filter out None moves
-            member_data['moves'] = [move for move in member_data['moves'] if move]
-            
-            team_data['members'].append(member_data)
-        
-        conn.close()
+
+            member_rows = await conn.fetch(
+                f'''
+                SELECT slot_number, pokemon_id, nickname, level, nature, ability, item,
+                       move1, move2, move3, move4
+                FROM "{_PK}".team_members
+                WHERE team_id = $1
+                ORDER BY slot_number
+                ''',
+                team_id,
+            )
+
+        for member_row in member_rows:
+            member_data = {
+                "slot_number": member_row["slot_number"],
+                "pokemon_id": member_row["pokemon_id"],
+                "nickname": member_row["nickname"],
+                "level": member_row["level"],
+                "nature": member_row["nature"],
+                "ability": member_row["ability"],
+                "item": member_row["item"],
+                "moves": [
+                    member_row["move1"],
+                    member_row["move2"],
+                    member_row["move3"],
+                    member_row["move4"],
+                ],
+            }
+            member_data["moves"] = [m for m in member_data["moves"] if m]
+            team_data["members"].append(member_data)
+
         return team_data
-    
+
     async def add_pokemon_to_team(self, team_id: int, pokemon_id: int, slot_number: int,
                                  nickname: str = None, level: int = 50, nature: str = None,
                                  ability: str = None, item: str = None, moves: List[str] = None) -> bool:
         """Add a Pokemon to a team slot"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Validate that the Pokemon exists (try to get its data)
         pokemon_data = await self.get_cached_pokemon_data(pokemon_id)
         if not pokemon_data:
-            conn.close()
             return False
-        
-        # Prepare moves (up to 4)
+
         move_data = [None, None, None, None]
         if moves:
             for i, move in enumerate(moves[:4]):
                 move_data[i] = move
-        
+
         try:
-            cursor.execute('''
-                INSERT OR REPLACE INTO team_members 
-                (team_id, slot_number, pokemon_id, nickname, level, nature, ability, item,
-                 move1, move2, move3, move4)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (team_id, slot_number, pokemon_id, nickname, level, nature, ability, item,
-                  move_data[0], move_data[1], move_data[2], move_data[3]))
-            
-            # Update team's updated_at timestamp
-            cursor.execute('''
-                UPDATE pokemon_teams 
-                SET updated_at = datetime('now') 
-                WHERE team_id = ?
-            ''', (team_id,))
-            
-            conn.commit()
+            async with self.bot.pg_pool.acquire() as conn:
+                await conn.execute(
+                    f'''
+                    INSERT INTO "{_PK}".team_members (
+                        team_id, slot_number, pokemon_id, nickname, level, nature, ability, item,
+                        move1, move2, move3, move4
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    ON CONFLICT (team_id, slot_number) DO UPDATE SET
+                        pokemon_id = EXCLUDED.pokemon_id,
+                        nickname = EXCLUDED.nickname,
+                        level = EXCLUDED.level,
+                        nature = EXCLUDED.nature,
+                        ability = EXCLUDED.ability,
+                        item = EXCLUDED.item,
+                        move1 = EXCLUDED.move1,
+                        move2 = EXCLUDED.move2,
+                        move3 = EXCLUDED.move3,
+                        move4 = EXCLUDED.move4
+                    ''',
+                    team_id,
+                    slot_number,
+                    pokemon_id,
+                    nickname,
+                    level,
+                    nature,
+                    ability,
+                    item,
+                    move_data[0],
+                    move_data[1],
+                    move_data[2],
+                    move_data[3],
+                )
+                await conn.execute(
+                    f'''
+                    UPDATE "{_PK}".pokemon_teams SET updated_at = CURRENT_TIMESTAMP WHERE team_id = $1
+                    ''',
+                    team_id,
+                )
             return True
-        except sqlite3.IntegrityError:
+        except asyncpg.PostgresError:
             return False
-        finally:
-            conn.close()
-    
+
     async def remove_pokemon_from_team(self, team_id: int, slot_number: int) -> bool:
         """Remove a Pokemon from a team slot"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('DELETE FROM team_members WHERE team_id = ? AND slot_number = ?', 
-                      (team_id, slot_number))
-        
-        if cursor.rowcount > 0:
-            # Update team's updated_at timestamp
-            cursor.execute('''
-                UPDATE pokemon_teams 
-                SET updated_at = datetime('now') 
-                WHERE team_id = ?
-            ''', (team_id,))
-            conn.commit()
-            conn.close()
-            return True
-        
-        conn.close()
-        return False
-    
+        async with self.bot.pg_pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                f'''
+                DELETE FROM "{_PK}".team_members WHERE team_id = $1 AND slot_number = $2 RETURNING member_id
+                ''',
+                team_id,
+                slot_number,
+            )
+            if deleted is None:
+                return False
+            await conn.execute(
+                f'''
+                UPDATE "{_PK}".pokemon_teams SET updated_at = CURRENT_TIMESTAMP WHERE team_id = $1
+                ''',
+                team_id,
+            )
+        return True
+
     async def delete_team(self, team_id: int, user_id: int) -> bool:
         """Delete a team (only by owner)"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('DELETE FROM pokemon_teams WHERE team_id = ? AND user_id = ?', 
-                      (team_id, user_id))
-        
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        async with self.bot.pg_pool.acquire() as conn:
+            tid = await conn.fetchval(
+                f'''
+                DELETE FROM "{_PK}".pokemon_teams WHERE team_id = $1 AND user_id = $2 RETURNING team_id
+                ''',
+                team_id,
+                user_id,
+            )
+        return tid is not None
 
     # === Pokemon Name Cache Methods ===
     async def build_pokemon_name_cache(self):
@@ -823,7 +754,7 @@ class Pokemon(commands.Cog, CogLogMixin):
 
         # Store the sanitized friend code (without spaces) in the database
         discord_id = str(interaction.user.id)
-        self.add_user(discord_id, in_game_name, sanitized_friend_code)
+        await self.add_user(discord_id, in_game_name, sanitized_friend_code)
 
         # Format the friend code into 4-number chunks for display
         formatted_friend_code = " ".join([sanitized_friend_code[i:i+4] for i in range(0, 12, 4)])
@@ -835,7 +766,7 @@ class Pokemon(commands.Cog, CogLogMixin):
     @pkgo.subcommand(name="friendcode", description="Displays the IGN and friend code of a user")
     async def user(self, interaction: nextcord.Interaction, user: nextcord.User):
         discord_id = str(user.id)
-        user_data = self.get_user(discord_id)
+        user_data = await self.get_user(discord_id)
         if user_data:
             in_game_name, friend_code = user_data
 
@@ -854,7 +785,7 @@ class Pokemon(commands.Cog, CogLogMixin):
     @pkgo.subcommand(name="clan-friendcodes", description="Get a list of all friend codes for the Clan!")
     async def allusers(self, interaction: nextcord.Interaction):
         await interaction.response.defer()
-        users = self.get_all_users()
+        users = await self.get_all_users()
         
         if not users:
             await interaction.followup.send("No users found in the clan roster.")

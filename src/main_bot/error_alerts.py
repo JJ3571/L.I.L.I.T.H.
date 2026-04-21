@@ -176,10 +176,15 @@ async def ensure_asyncio_exception_handler(bot: commands.Bot) -> None:
         b = bot_ref()
         if b is None:
             return
+        if getattr(loop_, "is_closed", lambda: False)():
+            return
+        coro = _send_alert_from_asyncio_context(b, context)
         try:
-            loop_.create_task(_send_alert_from_asyncio_context(b, context))
+            loop_.create_task(coro)
         except RuntimeError:
-            pass
+            # Shutdown: coroutine was built but cannot be scheduled; close it to
+            # avoid "coroutine was never awaited" / RuntimeWarning.
+            coro.close()
 
     loop.set_exception_handler(_loop_handler)
 

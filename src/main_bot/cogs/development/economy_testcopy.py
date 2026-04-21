@@ -1,13 +1,13 @@
 import nextcord
 from nextcord.ext import commands, tasks
-import aiosqlite
 import time, datetime
 import random
 import pytz
 
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import backup_channel_id, watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_EC = "economy"
 
 
 class Economy(commands.Cog):
@@ -23,28 +23,17 @@ class Economy(commands.Cog):
 
         self.leaderboard_items_per_page = 12
 
-        self.db_path = DATABASE_PATHS["economy"]
         self.reward_users.start()
         self.backup_task.start()
 
 
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('''
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        balance INTEGER DEFAULT 0
-                    )
-                ''')
-            await conn.commit()
+        return
 
     async def get_user_balance(self, user_id):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-                result = await cursor.fetchone()
-            return result[0] if result else 0
+        async with self.bot.pg_pool.acquire() as conn:
+            val = await conn.fetchval(f'SELECT balance FROM "{_EC}".users WHERE user_id = $1', user_id)
+        return val or 0
 
     async def deduct_user_balance(self, user_id: int, amount: int):
         print(f"[EconomyCog] Attempting to deduct {amount} from user {user_id}")
@@ -59,15 +48,19 @@ class Economy(commands.Cog):
                 print(f"[EconomyCog] Deduction failed for user {user_id}: Insufficient balance. Has {current_balance}, needs {amount}.")
                 return False
 
-            async with aiosqlite.connect(self.db_path) as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-                    if cursor.rowcount == 0:
-                        print(f"[EconomyCog] Deduction failed for user {user_id}: User not found during update, or no rows affected.")
-                        return False
-                
-                await conn.commit()
-            
+            async with self.bot.pg_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f'''
+                    UPDATE "{_EC}".users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1
+                    RETURNING balance
+                    ''',
+                    amount,
+                    user_id,
+                )
+                if row is None:
+                    print(f"[EconomyCog] Deduction failed for user {user_id}: User not found during update, or no rows affected.")
+                    return False
+
             new_balance = current_balance - amount
             print(f"[EconomyCog] Successfully deducted {amount} from user {user_id}. New balance: {new_balance}")
             return True
@@ -76,39 +69,28 @@ class Economy(commands.Cog):
             print(f"[EconomyCog] Error in deduct_user_balance for user {user_id}, amount {amount}: {e}")
             import traceback
             traceback.print_exc()
-            # In case of an error, the transaction initiated by 'async with aiosqlite.connect' should automatically rollback.
             return False
 
     async def update_balance(self, user_id, amount): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-                await cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-            await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'''
+                INSERT INTO "{_EC}".users AS u (user_id, balance) VALUES ($1, $2)
+                ON CONFLICT (user_id) DO UPDATE SET balance = u.balance + EXCLUDED.balance
+                ''',
+                user_id,
+                amount,
+            )
 
     async def get_all_balances(self): # Made async
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT user_id, balance FROM users ORDER BY balance DESC")
-                result = await cursor.fetchall() # await fetchall
-            return result
+        async with self.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(f'SELECT user_id, balance FROM "{_EC}".users ORDER BY balance DESC')
+        return [tuple(r) for r in rows]
 
     @tasks.loop(minutes=1)
     async def backup_task(self):
-        # Make sure datetime is used correctly if it wasn't before
         await self.create_tables()
-        now = datetime.datetime.now(pytz.timezone('US/Pacific'))
-        if now.hour in [0, 12] and now.minute == 0:
-            await self.bot.wait_until_ready()
-            channel = self.bot.get_channel(backup_channel_id)
-            if channel:
-                try:
-                    await channel.send(file=nextcord.File(self.db_path))
-                    print("Backup task completed.")
-                except Exception as e:
-                    print(f"Backup task failed to send file: {e}")
-            else:
-                print(f"Backup channel not found with ID: {backup_channel_id}. Backup failed.")
+        # Dev copy: full-database backups are handled by production DatabaseBackupCog + pg_dump.
 
     @backup_task.before_loop
     async def before_backup_task(self):

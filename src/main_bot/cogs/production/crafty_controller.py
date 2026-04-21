@@ -131,7 +131,7 @@ class CraftyController(commands.Cog, CogLogMixin):
         
         if self.crafty_available:
             self.crafty_api = CraftyAPI(CRAFTY_BASE_URL, CRAFTY_USERNAME, CRAFTY_PASSWORD)
-            self.automation_db = CraftyAutomationDB()
+            self.automation_db = CraftyAutomationDB(bot.pg_pool)
             self.cog_print(f"[CRAFTY] Initialized with URL: {CRAFTY_BASE_URL}")
             
             # Start automation tasks

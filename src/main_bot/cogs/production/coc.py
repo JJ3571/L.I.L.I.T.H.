@@ -1,120 +1,72 @@
 import nextcord
 from nextcord.ext import commands
-import aiosqlite
 import re
 
 from main_bot.boot_log import boot_print
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
-from main_bot.server_configs.database_config import DATABASE_PATHS
+
+_SC = "coc"
 
 
 class COC(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DATABASE_PATHS["coc"]
         self.bot.loop.create_task(self.create_tables())
 
-
     async def create_tables(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # Check if old table structure exists (without account_id)
-                await cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='coc_usernames'")
-                table_exists = await cursor.fetchone()
-                
-                if table_exists:
-                    # Check if account_id column exists
-                    await cursor.execute("PRAGMA table_info(coc_usernames)")
-                    columns = await cursor.fetchall()
-                    column_names = [col[1] for col in columns]
-                    
-                    if 'account_id' not in column_names:
-                        # Old structure exists, need to migrate
-                        # Create new table with account_id
-                        await cursor.execute('''
-                            CREATE TABLE IF NOT EXISTS coc_usernames_new (
-                                account_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                discord_user_id INTEGER NOT NULL,
-                                coc_username TEXT NOT NULL,
-                                town_hall_level TEXT,
-                                nickname TEXT,
-                                account_label TEXT
-                            )
-                        ''')
-                        
-                        # Migrate existing data
-                        await cursor.execute('''
-                            INSERT INTO coc_usernames_new (discord_user_id, coc_username, town_hall_level, nickname, account_label)
-                            SELECT discord_user_id, coc_username, 
-                                   COALESCE(town_hall_level, NULL) as town_hall_level,
-                                   COALESCE(nickname, NULL) as nickname,
-                                   'Main' as account_label
-                            FROM coc_usernames
-                        ''')
-                        
-                        # Drop old table and rename new one
-                        await cursor.execute('DROP TABLE coc_usernames')
-                        await cursor.execute('ALTER TABLE coc_usernames_new RENAME TO coc_usernames')
-                    else:
-                        # New structure already exists, just ensure all columns are present
-                        try:
-                            await cursor.execute('ALTER TABLE coc_usernames ADD COLUMN account_label TEXT')
-                        except aiosqlite.OperationalError:
-                            pass  # Column already exists
-                else:
-                    # Create new table structure from scratch
-                    await cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS coc_usernames (
-                            account_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            discord_user_id INTEGER NOT NULL,
-                            coc_username TEXT NOT NULL,
-                            town_hall_level TEXT,
-                            nickname TEXT,
-                            account_label TEXT
-                        )
-                    ''')
-                
-                await conn.commit()
+        return
 
     async def add_coc_username(self, discord_user_id, coc_username, town_hall_level=None, nickname=None, account_label=None):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    'INSERT INTO coc_usernames (discord_user_id, coc_username, town_hall_level, nickname, account_label) VALUES (?, ?, ?, ?, ?)',
-                    (discord_user_id, coc_username, town_hall_level, nickname, account_label)
-                )
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'''
+                INSERT INTO "{_SC}".coc_usernames (discord_user_id, coc_username, town_hall_level, nickname, account_label)
+                VALUES ($1, $2, $3, $4, $5)
+                ''',
+                discord_user_id,
+                coc_username,
+                town_hall_level,
+                nickname,
+                account_label,
+            )
 
     async def update_coc_account(self, account_id, coc_username, town_hall_level=None, nickname=None, account_label=None):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    'UPDATE coc_usernames SET coc_username = ?, town_hall_level = ?, nickname = ?, account_label = ? WHERE account_id = ?',
-                    (coc_username, town_hall_level, nickname, account_label, account_id)
-                )
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'''
+                UPDATE "{_SC}".coc_usernames
+                SET coc_username = $1, town_hall_level = $2, nickname = $3, account_label = $4
+                WHERE account_id = $5
+                ''',
+                coc_username,
+                town_hall_level,
+                nickname,
+                account_label,
+                account_id,
+            )
 
     async def get_coc_records(self, discord_user_id):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute(
-                    'SELECT account_id, coc_username, town_hall_level, nickname, account_label FROM coc_usernames WHERE discord_user_id = ? ORDER BY account_label, coc_username',
-                    (discord_user_id,)
-                )
-                results = await cursor.fetchall()
-                if results:
-                    return [
-                        {
-                            'account_id': row[0],
-                            'coc_username': row[1],
-                            'town_hall_level': row[2],
-                            'nickname': row[3],
-                            'account_label': row[4]
-                        }
-                        for row in results
-                    ]
-                return []
+        async with self.bot.pg_pool.acquire() as conn:
+            rows = await conn.fetch(
+                f'''
+                SELECT account_id, coc_username, town_hall_level, nickname, account_label
+                FROM "{_SC}".coc_usernames
+                WHERE discord_user_id = $1
+                ORDER BY account_label, coc_username
+                ''',
+                discord_user_id,
+            )
+            return [
+                {
+                    "account_id": r["account_id"],
+                    "coc_username": r["coc_username"],
+                    "town_hall_level": r["town_hall_level"],
+                    "nickname": r["nickname"],
+                    "account_label": r["account_label"],
+                }
+                for r in rows
+            ]
 
     async def get_coc_record(self, discord_user_id):
         """Legacy method for backward compatibility - returns first record or None"""
@@ -122,33 +74,27 @@ class COC(commands.Cog):
         return records[0] if records else None
 
     async def get_all_coc_usernames(self):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                # Order by discord_user_id, then by account_label with Main first, then by coc_username
-                await cursor.execute(
-                    '''SELECT account_id, discord_user_id, coc_username, town_hall_level, nickname, account_label 
-                       FROM coc_usernames 
-                       ORDER BY discord_user_id, 
-                                CASE WHEN account_label = 'Main' THEN 1 
-                                     WHEN account_label = 'Alt' THEN 2 
-                                     ELSE 3 END, 
-                                coc_username'''
-                )
-                results = await cursor.fetchall()
-                return results
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT account_id, discord_user_id, coc_username, town_hall_level, nickname, account_label
+                FROM "{_SC}".coc_usernames
+                ORDER BY discord_user_id,
+                    CASE WHEN account_label = 'Main' THEN 1
+                         WHEN account_label = 'Alt' THEN 2
+                         ELSE 3 END,
+                    coc_username
+                '''
+            )
 
     async def remove_coc_account(self, account_id):
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('DELETE FROM coc_usernames WHERE account_id = ?', (account_id,))
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(f'DELETE FROM "{_SC}".coc_usernames WHERE account_id = $1', account_id)
 
     async def remove_coc_username(self, discord_user_id):
         """Legacy method - removes all accounts for a user"""
-        async with aiosqlite.connect(self.db_path) as conn:
-            async with conn.cursor() as cursor:
-                await cursor.execute('DELETE FROM coc_usernames WHERE discord_user_id = ?', (discord_user_id,))
-                await conn.commit()
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(f'DELETE FROM "{_SC}".coc_usernames WHERE discord_user_id = $1', discord_user_id)
 
     @nextcord.slash_command(name="coc", description="Clash of Clans username management", guild_ids=[GUILD_ID])
     async def coc(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):
@@ -192,7 +138,7 @@ class COC(commands.Cog):
                         )
                     
                     if can_edit:
-                        view = EditCOCView(self.db_path, member.display_name, str(user_id), coc_records, is_admin)
+                        view = EditCOCView(self, member.display_name, str(user_id), coc_records, is_admin)
                         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
                     else:
                         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -202,7 +148,7 @@ class COC(commands.Cog):
                     can_add = interaction.user.id in admin_user_ids or interaction.user.id == user_id
                     
                     if can_add:
-                        view = AccountLabelSelectView(self.db_path, member.display_name, str(user_id))
+                        view = AccountLabelSelectView(self, member.display_name, str(user_id))
                         await interaction.response.send_message(
                             "Select account type:",
                             view=view,
@@ -284,9 +230,9 @@ class COC(commands.Cog):
 
 
 class AccountLabelSelectView(nextcord.ui.View):
-    def __init__(self, db_path, username, user_id, existing_record=None, account_id=None):
+    def __init__(self, coc_cog, username, user_id, existing_record=None, account_id=None):
         super().__init__(timeout=300)  # 5 minute timeout
-        self.db_path = db_path
+        self.coc_cog = coc_cog
         self.username = username
         self.user_id = user_id
         self.existing_record = existing_record
@@ -294,12 +240,12 @@ class AccountLabelSelectView(nextcord.ui.View):
 
     @nextcord.ui.button(label="Main", style=nextcord.ButtonStyle.primary)
     async def main_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        modal = AddCOCUsernameModal(self.db_path, self.username, self.user_id, self.existing_record, "Main", self.account_id)
+        modal = AddCOCUsernameModal(self.coc_cog, self.username, self.user_id, self.existing_record, "Main", self.account_id)
         await interaction.response.send_modal(modal)
 
     @nextcord.ui.button(label="Alt", style=nextcord.ButtonStyle.secondary)
     async def alt_button(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        modal = AddCOCUsernameModal(self.db_path, self.username, self.user_id, self.existing_record, "Alt", self.account_id)
+        modal = AddCOCUsernameModal(self.coc_cog, self.username, self.user_id, self.existing_record, "Alt", self.account_id)
         await interaction.response.send_modal(modal)
     
     async def on_timeout(self):
@@ -332,9 +278,9 @@ def validate_town_hall_level(value):
 
 
 class AddCOCUsernameModal(nextcord.ui.Modal):
-    def __init__(self, db_path, username, user_id, existing_record=None, account_label=None, account_id=None):
+    def __init__(self, coc_cog, username, user_id, existing_record=None, account_label=None, account_id=None):
         super().__init__("Add Your COC", timeout=5 * 60)
-        self.db_path = db_path
+        self.coc_cog = coc_cog
         self.username = username
         self.user_id = user_id
         self.existing_record = existing_record
@@ -435,9 +381,9 @@ class AddCOCUsernameModal(nextcord.ui.Modal):
 
 
 class EditCOCView(nextcord.ui.View):
-    def __init__(self, db_path, username, user_id, coc_records, is_admin):
+    def __init__(self, coc_cog, username, user_id, coc_records, is_admin):
         super().__init__(timeout=300)  # 5 minute timeout
-        self.db_path = db_path
+        self.coc_cog = coc_cog
         self.username = username
         self.user_id = user_id
         self.coc_records = coc_records  # List of account records
@@ -478,7 +424,7 @@ class EditCOCView(nextcord.ui.View):
     def create_edit_callback(self, record):
         async def edit_callback(interaction: nextcord.Interaction):
             view = AccountLabelSelectView(
-                self.db_path, self.username, self.user_id, record, record['account_id']
+                self.coc_cog, self.username, self.user_id, record, record['account_id']
             )
             await interaction.response.send_message(
                 f"Select account type for {record['coc_username']}:",
@@ -512,7 +458,7 @@ class EditCOCView(nextcord.ui.View):
         return delete_callback
     
     async def add_account_callback(self, interaction: nextcord.Interaction):
-        view = AccountLabelSelectView(self.db_path, self.username, self.user_id)
+        view = AccountLabelSelectView(self.coc_cog, self.username, self.user_id)
         await interaction.response.send_message(
             "Select account type:",
             view=view,

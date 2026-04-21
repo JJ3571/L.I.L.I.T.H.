@@ -1,15 +1,13 @@
 import nextcord
 from nextcord.ext import commands
 from nextcord import Interaction
-import aiosqlite
 import datetime
 import logging
 from typing import Optional, Dict, Any
 
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.database_config import DATABASE_PATHS
 
-DB_PATH = DATABASE_PATHS["counter"]
+_CT = "counter"
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -29,7 +27,6 @@ class CounterNotFoundError(CounterError):
 class Counter(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = DB_PATH
 
     async def cog_load(self):
         """Initialize the cog and create database tables."""
@@ -41,51 +38,21 @@ class Counter(commands.Cog):
             raise
 
     async def create_tables(self):
-        """Create necessary database tables if they don't exist."""
-        try:
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS counters (
-                        user_id INTEGER PRIMARY KEY,
-                        current_count INTEGER NOT NULL DEFAULT 0,
-                        last_updated TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        category TEXT DEFAULT 'default'
-                    )
-                """)
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS multi_counters (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER NOT NULL,
-                        counter_name TEXT NOT NULL,
-                        option_labels TEXT NOT NULL,
-                        option_counts TEXT NOT NULL,
-                        last_updated TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        UNIQUE(user_id, counter_name)
-                    )
-                """)
-                await db.commit()
-                logger.info("Counter tables created/verified successfully")
-        except Exception as e:
-            logger.error(f"Failed to create tables: {e}")
-            raise DatabaseError(f"Failed to create tables: {e}")
+        return
 
     async def get_user_counter_data(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get counter data for a user."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                async with db.execute(
-                    "SELECT current_count, last_updated, category FROM counters WHERE user_id = ?",
-                    (user_id,)
-                ) as cursor:
-                    row = await cursor.fetchone()
+            async with self.bot.pg_pool.acquire() as db:
+                row = await db.fetchrow(
+                    f'SELECT current_count, last_updated, category FROM "{_CT}".counters WHERE user_id = $1',
+                    user_id,
+                )
             if row:
                 return {
                     "count": row["current_count"],
                     "last_updated": datetime.datetime.fromisoformat(row["last_updated"]),
-                    "category": row["category"]
+                    "category": row["category"],
                 }
             return None
         except Exception as e:
@@ -95,17 +62,24 @@ class Counter(commands.Cog):
     async def update_user_counter(self, user_id: int, count: int, category: str = 'default'):
         """Update or create a user's counter."""
         try:
+            import json
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT INTO counters (user_id, current_count, last_updated, created_at, category)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET
-                    current_count = excluded.current_count,
-                    last_updated = excluded.last_updated,
-                    category = excluded.category
-                """, (user_id, count, now_iso, now_iso, category))
-                await db.commit()
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(
+                    f'''
+                    INSERT INTO "{_CT}".counters (user_id, current_count, last_updated, created_at, category)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                    current_count = EXCLUDED.current_count,
+                    last_updated = EXCLUDED.last_updated,
+                    category = EXCLUDED.category
+                    ''',
+                    user_id,
+                    count,
+                    now_iso,
+                    now_iso,
+                    category,
+                )
             logger.info(f"Updated counter for user {user_id} to {count}")
         except Exception as e:
             logger.error(f"Failed to update counter for user {user_id}: {e}")
@@ -114,12 +88,13 @@ class Counter(commands.Cog):
     async def delete_user_counter(self, user_id: int):
         """Delete a user's counter."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("SELECT 1 FROM counters WHERE user_id = ?", (user_id,)) as cursor:
-                    if not await cursor.fetchone():
-                        raise CounterNotFoundError(f"No counter found for user {user_id}")
-                await db.execute("DELETE FROM counters WHERE user_id = ?", (user_id,))
-                await db.commit()
+            async with self.bot.pg_pool.acquire() as db:
+                row = await db.fetchrow(
+                    f'SELECT 1 FROM "{_CT}".counters WHERE user_id = $1', user_id
+                )
+                if not row:
+                    raise CounterNotFoundError(f"No counter found for user {user_id}")
+                await db.execute(f'DELETE FROM "{_CT}".counters WHERE user_id = $1', user_id)
             logger.info(f"Deleted counter for user {user_id}")
         except CounterNotFoundError:
             raise
@@ -130,19 +105,21 @@ class Counter(commands.Cog):
     async def get_multi_counter_data(self, user_id: int, counter_name: str) -> Optional[Dict[str, Any]]:
         """Get multi-counter data for a user."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                db.row_factory = aiosqlite.Row
-                async with db.execute(
-                    "SELECT option_labels, option_counts, last_updated FROM multi_counters WHERE user_id = ? AND counter_name = ?",
-                    (user_id, counter_name)
-                ) as cursor:
-                    row = await cursor.fetchone()
+            async with self.bot.pg_pool.acquire() as db:
+                row = await db.fetchrow(
+                    f'''
+                    SELECT option_labels, option_counts, last_updated FROM "{_CT}".multi_counters
+                    WHERE user_id = $1 AND counter_name = $2
+                    ''',
+                    user_id,
+                    counter_name,
+                )
             if row:
                 import json
                 return {
                     "labels": json.loads(row["option_labels"]),
                     "counts": json.loads(row["option_counts"]),
-                    "last_updated": datetime.datetime.fromisoformat(row["last_updated"])
+                    "last_updated": datetime.datetime.fromisoformat(row["last_updated"]),
                 }
             return None
         except Exception as e:
@@ -154,16 +131,23 @@ class Counter(commands.Cog):
         try:
             import json
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute("""
-                    INSERT INTO multi_counters (user_id, counter_name, option_labels, option_counts, last_updated, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, counter_name) DO UPDATE SET
-                    option_labels = excluded.option_labels,
-                    option_counts = excluded.option_counts,
-                    last_updated = excluded.last_updated
-                """, (user_id, counter_name, json.dumps(labels), json.dumps(counts), now_iso, now_iso))
-                await db.commit()
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(
+                    f'''
+                    INSERT INTO "{_CT}".multi_counters (user_id, counter_name, option_labels, option_counts, last_updated, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (user_id, counter_name) DO UPDATE SET
+                    option_labels = EXCLUDED.option_labels,
+                    option_counts = EXCLUDED.option_counts,
+                    last_updated = EXCLUDED.last_updated
+                    ''',
+                    user_id,
+                    counter_name,
+                    json.dumps(labels),
+                    json.dumps(counts),
+                    now_iso,
+                    now_iso,
+                )
             logger.info(f"Updated multi-counter for user {user_id}, counter: {counter_name}")
         except Exception as e:
             logger.error(f"Failed to update multi-counter for user {user_id}: {e}")
@@ -172,12 +156,23 @@ class Counter(commands.Cog):
     async def delete_multi_counter(self, user_id: int, counter_name: str):
         """Delete a user's multi-counter."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
-                async with db.execute("SELECT 1 FROM multi_counters WHERE user_id = ? AND counter_name = ?", (user_id, counter_name)) as cursor:
-                    if not await cursor.fetchone():
-                        raise CounterNotFoundError(f"No multi-counter found for user {user_id} with name {counter_name}")
-                await db.execute("DELETE FROM multi_counters WHERE user_id = ? AND counter_name = ?", (user_id, counter_name))
-                await db.commit()
+            async with self.bot.pg_pool.acquire() as db:
+                row = await db.fetchrow(
+                    f'''
+                    SELECT 1 FROM "{_CT}".multi_counters WHERE user_id = $1 AND counter_name = $2
+                    ''',
+                    user_id,
+                    counter_name,
+                )
+                if not row:
+                    raise CounterNotFoundError(
+                        f"No multi-counter found for user {user_id} with name {counter_name}"
+                    )
+                await db.execute(
+                    f'DELETE FROM "{_CT}".multi_counters WHERE user_id = $1 AND counter_name = $2',
+                    user_id,
+                    counter_name,
+                )
             logger.info(f"Deleted multi-counter for user {user_id}, counter: {counter_name}")
         except CounterNotFoundError:
             raise

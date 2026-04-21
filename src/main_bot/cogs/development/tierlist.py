@@ -6,20 +6,18 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
-import aiosqlite
 import nextcord
 from nextcord import Interaction
 from nextcord.ext import commands, tasks
 
 from main_bot.paths import PROJECT_ROOT
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.database_config import DATABASE_PATHS
 from main_bot.utils.brave_image_helper import BraveImageError, download_and_save_image, fetch_image_for_term
 from main_bot.utils.tierlist_image_generator import TIER_ORDER, generate_tierlist_image
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = DATABASE_PATHS["tierlist"]
+_TL = "tierlist"
 IMAGES_ROOT_DIR = os.fspath(PROJECT_ROOT / "databases" / "tierlist_images")
 
 TIER_SCORES: Dict[str, int] = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1, "F": 0}
@@ -119,7 +117,7 @@ class TierListTierSelect(nextcord.ui.Select):
 
 
 class TierListOptionSelect(nextcord.ui.Select):
-    def __init__(self, *, option_rows: List[aiosqlite.Row]):
+    def __init__(self, *, option_rows: List[Any]):
         options: List[nextcord.SelectOption] = []
         for r in option_rows:
             text = str(r["option_text"])
@@ -177,7 +175,7 @@ class TierListVotingView(nextcord.ui.View):
         await interaction.response.edit_message(view=self)
         self.stop()
 
-    async def attach_revote_dropdown(self, option_rows: List[aiosqlite.Row]) -> None:
+    async def attach_revote_dropdown(self, option_rows: List[Any]) -> None:
         # if already present, do nothing
         if self.option_select is not None:
             return
@@ -197,7 +195,6 @@ class TierListVotingView(nextcord.ui.View):
 class TierList(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db_path = DB_PATH
         self._session: Optional[aiohttp.ClientSession] = None
 
         self.bot.loop.create_task(self.add_persistent_views())
@@ -221,77 +218,19 @@ class TierList(commands.Cog):
         return self._session
 
     async def create_tables(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tier_lists (
-                    list_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id INTEGER NOT NULL,
-                    creator_id INTEGER NOT NULL,
-                    list_title TEXT NOT NULL,
-                    list_mode TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'active',
-                    duration_hours INTEGER DEFAULT 24,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    message_id INTEGER,
-                    channel_id INTEGER
-                )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tier_options (
-                    option_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    list_id INTEGER NOT NULL,
-                    option_text TEXT NOT NULL,
-                    option_index INTEGER NOT NULL,
-                    image_url TEXT,
-                    local_image_path TEXT,
-                    FOREIGN KEY (list_id) REFERENCES tier_lists(list_id)
-                )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tier_votes (
-                    vote_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    list_id INTEGER NOT NULL,
-                    option_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    tier_rank TEXT NOT NULL,
-                    tier_score INTEGER NOT NULL,
-                    voted_at TEXT NOT NULL,
-                    UNIQUE(list_id, option_id, user_id),
-                    FOREIGN KEY (list_id) REFERENCES tier_lists(list_id),
-                    FOREIGN KEY (option_id) REFERENCES tier_options(option_id)
-                )
-                """
-            )
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_voting_progress (
-                    progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    list_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    current_option_index INTEGER DEFAULT 0,
-                    is_complete INTEGER DEFAULT 0,
-                    UNIQUE(list_id, user_id),
-                    FOREIGN KEY (list_id) REFERENCES tier_lists(list_id)
-                )
-                """
-            )
-            await db.commit()
+        return
 
     @tasks.loop(minutes=60)
     async def auto_finish_expired(self):
         await self.bot.wait_until_ready()
         now = datetime.datetime.now(datetime.timezone.utc)
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await db.execute_fetchall(
-                "SELECT list_id FROM tier_lists WHERE status='active' AND expires_at <= ?",
-                (now.isoformat(),),
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT list_id FROM "{_TL}".tier_lists
+                WHERE status = 'active' AND expires_at <= $1
+                ''',
+                now.isoformat(),
             )
         for r in rows:
             try:
@@ -337,25 +276,37 @@ class TierList(commands.Cog):
         now = datetime.datetime.now(datetime.timezone.utc)
         expires = now + datetime.timedelta(hours=duration_hours)
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                """
-                INSERT INTO tier_lists (guild_id, creator_id, list_title, list_mode, status, duration_hours, created_at, expires_at)
-                VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
-                """,
-                (interaction.guild_id or 0, interaction.user.id, title, mode, duration_hours, now.isoformat(), expires.isoformat()),
-            )
-            list_id = cur.lastrowid
-
-            option_ids: List[int] = []
-            for idx, opt in enumerate(options):
-                cur2 = await db.execute(
-                    "INSERT INTO tier_options (list_id, option_text, option_index) VALUES (?, ?, ?)",
-                    (list_id, opt, idx),
+        async with self.bot.pg_pool.acquire() as db:
+            async with db.transaction():
+                list_id = await db.fetchval(
+                    f'''
+                    INSERT INTO "{_TL}".tier_lists
+                        (guild_id, creator_id, list_title, list_mode, status, duration_hours, created_at, expires_at)
+                    VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)
+                    RETURNING list_id
+                    ''',
+                    interaction.guild_id or 0,
+                    interaction.user.id,
+                    title,
+                    mode,
+                    duration_hours,
+                    now.isoformat(),
+                    expires.isoformat(),
                 )
-                option_ids.append(cur2.lastrowid)
-            await db.commit()
+
+                option_ids: List[int] = []
+                for idx, opt in enumerate(options):
+                    oid = await db.fetchval(
+                        f'''
+                        INSERT INTO "{_TL}".tier_options (list_id, option_text, option_index)
+                        VALUES ($1, $2, $3)
+                        RETURNING option_id
+                        ''',
+                        list_id,
+                        opt,
+                        idx,
+                    )
+                    option_ids.append(oid)
 
         # Fetch images best-effort (async, limited concurrency)
         try:
@@ -369,12 +320,15 @@ class TierList(commands.Cog):
         # Send main tier list message to channel (non-ephemeral)
         message = await interaction.channel.send(embed=embed, view=view)
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.bot.pg_pool.acquire() as db:
             await db.execute(
-                "UPDATE tier_lists SET message_id=?, channel_id=? WHERE list_id=?",
-                (message.id, message.channel.id, list_id),
+                f'''
+                UPDATE "{_TL}".tier_lists SET message_id = $1, channel_id = $2 WHERE list_id = $3
+                ''',
+                message.id,
+                message.channel.id,
+                list_id,
             )
-            await db.commit()
 
         await interaction.followup.send(f"Tier list created: [message link]({message.jump_url})", ephemeral=True)
 
@@ -383,17 +337,19 @@ class TierList(commands.Cog):
 
     async def _fetch_images_for_list(self, *, list_id: int, title: str, option_ids: List[int]) -> None:
         # Pull option text from DB; then for each option do Brave search + download.
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await db.execute_fetchall(
-                "SELECT option_id, option_text FROM tier_options WHERE list_id=? ORDER BY option_index ASC",
-                (list_id,),
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'''
+                SELECT option_id, option_text FROM "{_TL}".tier_options
+                WHERE list_id = $1 ORDER BY option_index ASC
+                ''',
+                list_id,
             )
 
         session = await self._get_session()
         sem = asyncio.Semaphore(3)
 
-        async def process_one(r: aiosqlite.Row):
+        async def process_one(r: Any):
             async with sem:
                 opt_id = int(r["option_id"])
                 opt_text = str(r["option_text"])
@@ -404,12 +360,15 @@ class TierList(commands.Cog):
                     out_dir = os.path.join(IMAGES_ROOT_DIR, str(list_id))
                     out_path = os.path.join(out_dir, f"{opt_id}.jpg")
                     saved_path = await download_and_save_image(session, result.url, output_path=out_path)
-                    async with aiosqlite.connect(self.db_path) as db2:
+                    async with self.bot.pg_pool.acquire() as db2:
                         await db2.execute(
-                            "UPDATE tier_options SET image_url=?, local_image_path=? WHERE option_id=?",
-                            (result.url, saved_path, opt_id),
+                            f'''
+                            UPDATE "{_TL}".tier_options SET image_url = $1, local_image_path = $2 WHERE option_id = $3
+                            ''',
+                            result.url,
+                            saved_path,
+                            opt_id,
                         )
-                        await db2.commit()
                 except BraveImageError:
                     # best-effort; ignore
                     return
@@ -419,14 +378,14 @@ class TierList(commands.Cog):
         await asyncio.gather(*[process_one(r) for r in rows])
 
     async def _build_main_embed(self, *, list_id: int) -> nextcord.Embed:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            row = await db.execute_fetchone("SELECT * FROM tier_lists WHERE list_id=?", (list_id,))
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
             if not row:
                 raise TierListError("Tier list not found")
 
-            options_count = await db.execute_fetchone(
-                "SELECT COUNT(*) AS c FROM tier_options WHERE list_id=?", (list_id,)
+            options_count = await db.fetchrow(
+                f'SELECT COUNT(*) AS c FROM "{_TL}".tier_options WHERE list_id = $1',
+                list_id,
             )
 
         embed = nextcord.Embed(
@@ -444,10 +403,9 @@ class TierList(commands.Cog):
 
     async def add_persistent_views(self):
         await self.bot.wait_until_ready()
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            rows = await db.execute_fetchall(
-                "SELECT list_id, creator_id FROM tier_lists WHERE status='active'"
+        async with self.bot.pg_pool.acquire() as db:
+            rows = await db.fetch(
+                f'SELECT list_id, creator_id FROM "{_TL}".tier_lists WHERE status = \'active\''
             )
         for r in rows:
             try:
@@ -457,9 +415,8 @@ class TierList(commands.Cog):
                 logger.exception("Failed to add persistent view for list_id=%s", r["list_id"])
 
     async def handle_vote_button(self, interaction: Interaction, list_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            tl = await db.execute_fetchone("SELECT * FROM tier_lists WHERE list_id=?", (list_id,))
+        async with self.bot.pg_pool.acquire() as db:
+            tl = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
             if not tl:
                 await interaction.response.send_message("Tier list not found.", ephemeral=True)
                 return
@@ -491,30 +448,31 @@ class TierList(commands.Cog):
         voter_id: int,
         option_id: Optional[int],
     ) -> nextcord.Embed:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            tl = await db.execute_fetchone("SELECT * FROM tier_lists WHERE list_id=?", (list_id,))
+        async with self.bot.pg_pool.acquire() as db:
+            tl = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
             if not tl:
                 raise TierListError("Tier list not found")
 
             option_row = None
             if option_id is not None:
-                option_row = await db.execute_fetchone(
-                    "SELECT * FROM tier_options WHERE option_id=? AND list_id=?",
-                    (option_id, list_id),
+                option_row = await db.fetchrow(
+                    f'SELECT * FROM "{_TL}".tier_options WHERE option_id = $1 AND list_id = $2',
+                    option_id,
+                    list_id,
                 )
 
-            total_row = await db.execute_fetchone(
-                "SELECT COUNT(*) AS c FROM tier_options WHERE list_id=?",
-                (list_id,),
+            total_row = await db.fetchrow(
+                f'SELECT COUNT(*) AS c FROM "{_TL}".tier_options WHERE list_id = $1',
+                list_id,
             )
-            voted_row = await db.execute_fetchone(
-                """
+            voted_row = await db.fetchrow(
+                f'''
                 SELECT COUNT(DISTINCT option_id) AS c
-                FROM tier_votes
-                WHERE list_id=? AND user_id=?
-                """,
-                (list_id, voter_id),
+                FROM "{_TL}".tier_votes
+                WHERE list_id = $1 AND user_id = $2
+                ''',
+                list_id,
+                voter_id,
             )
 
         desc = f"Progress: **{int(voted_row['c'])}/{int(total_row['c'])}** options voted."
@@ -539,29 +497,32 @@ class TierList(commands.Cog):
         return embed
 
     async def _get_next_option_to_vote(self, *, list_id: int, user_id: int) -> Optional[int]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            row = await db.execute_fetchone(
-                """
+        async with self.bot.pg_pool.acquire() as db:
+            row = await db.fetchrow(
+                f'''
                 SELECT o.option_id
-                FROM tier_options o
-                WHERE o.list_id=?
+                FROM "{_TL}".tier_options o
+                WHERE o.list_id = $1
                   AND o.option_id NOT IN (
-                    SELECT option_id FROM tier_votes WHERE list_id=? AND user_id=?
+                    SELECT option_id FROM "{_TL}".tier_votes WHERE list_id = $2 AND user_id = $3
                   )
                 ORDER BY o.option_index ASC
                 LIMIT 1
-                """,
-                (list_id, list_id, user_id),
+                ''',
+                list_id,
+                list_id,
+                user_id,
             )
             return int(row["option_id"]) if row else None
 
-    async def _get_all_options(self, *, list_id: int) -> List[aiosqlite.Row]:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            return await db.execute_fetchall(
-                "SELECT option_id, option_text FROM tier_options WHERE list_id=? ORDER BY option_index ASC",
-                (list_id,),
+    async def _get_all_options(self, *, list_id: int) -> List[Any]:
+        async with self.bot.pg_pool.acquire() as db:
+            return await db.fetch(
+                f'''
+                SELECT option_id, option_text FROM "{_TL}".tier_options
+                WHERE list_id = $1 ORDER BY option_index ASC
+                ''',
+                list_id,
             )
 
     async def handle_submit_vote(self, interaction: Interaction, *, view: TierListVotingView) -> None:
@@ -584,17 +545,23 @@ class TierList(commands.Cog):
         tier = view.selected_tier
         score = int(TIER_SCORES.get(tier, 0))
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self.bot.pg_pool.acquire() as db:
             await db.execute(
-                """
-                INSERT INTO tier_votes (list_id, option_id, user_id, tier_rank, tier_score, voted_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(list_id, option_id, user_id)
-                DO UPDATE SET tier_rank=excluded.tier_rank, tier_score=excluded.tier_score, voted_at=excluded.voted_at
-                """,
-                (view.list_id, option_id, view.voter_id, tier, score, utcnow_iso()),
+                f'''
+                INSERT INTO "{_TL}".tier_votes (list_id, option_id, user_id, tier_rank, tier_score, voted_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (list_id, option_id, user_id) DO UPDATE SET
+                    tier_rank = EXCLUDED.tier_rank,
+                    tier_score = EXCLUDED.tier_score,
+                    voted_at = EXCLUDED.voted_at
+                ''',
+                view.list_id,
+                option_id,
+                view.voter_id,
+                tier,
+                score,
+                utcnow_iso(),
             )
-            await db.commit()
 
         # Reset selection so user has to choose again
         view.selected_tier = None
@@ -610,9 +577,8 @@ class TierList(commands.Cog):
         await interaction.response.edit_message(embed=embed, view=view)
 
     async def handle_finish_button(self, interaction: Interaction, list_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            tl = await db.execute_fetchone("SELECT * FROM tier_lists WHERE list_id=?", (list_id,))
+        async with self.bot.pg_pool.acquire() as db:
+            tl = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
             if not tl:
                 await interaction.response.send_message("Tier list not found.", ephemeral=True)
                 return
@@ -633,16 +599,13 @@ class TierList(commands.Cog):
         finished_by_user_id: Optional[int],
         interaction: Optional[Interaction] = None,
     ) -> None:
-        # Mark finished
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            tl = await db.execute_fetchone("SELECT * FROM tier_lists WHERE list_id=?", (list_id,))
+        async with self.bot.pg_pool.acquire() as db:
+            tl = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
             if not tl:
                 return
             if tl["status"] != "active":
                 return
-            await db.execute("UPDATE tier_lists SET status='finished' WHERE list_id=?", (list_id,))
-            await db.commit()
+            await db.execute(f'UPDATE "{_TL}".tier_lists SET status = \'finished\' WHERE list_id = $1', list_id)
 
         # Build aggregated results + render image
         tier_to_items = await self.aggregate_votes(list_id=list_id)
@@ -689,17 +652,22 @@ class TierList(commands.Cog):
         # default empty lists
         tier_to_items: Dict[str, List[Dict[str, Any]]] = {t: [] for t in TIER_ORDER}
 
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            options = await db.execute_fetchall(
-                "SELECT option_id, option_text, local_image_path FROM tier_options WHERE list_id=? ORDER BY option_index ASC",
-                (list_id,),
+        async with self.bot.pg_pool.acquire() as db:
+            options = await db.fetch(
+                f'''
+                SELECT option_id, option_text, local_image_path FROM "{_TL}".tier_options
+                WHERE list_id = $1 ORDER BY option_index ASC
+                ''',
+                list_id,
             )
 
             for opt in options:
-                votes = await db.execute_fetchall(
-                    "SELECT tier_score FROM tier_votes WHERE list_id=? AND option_id=?",
-                    (list_id, opt["option_id"]),
+                votes = await db.fetch(
+                    f'''
+                    SELECT tier_score FROM "{_TL}".tier_votes WHERE list_id = $1 AND option_id = $2
+                    ''',
+                    list_id,
+                    opt["option_id"],
                 )
                 if not votes:
                     # If no votes, put in C as a neutral bucket
