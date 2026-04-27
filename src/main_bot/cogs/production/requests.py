@@ -8,7 +8,6 @@ import pytz
 
 import asyncpg
 
-from main_bot.db.ddl import resync_request_requests_id_sequence
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 
@@ -23,32 +22,33 @@ async def _insert_request_row(
     requester_name: str,
     timestamp: datetime,
 ) -> asyncpg.Record:
-    sql = (
-        f'''
-        INSERT INTO "{_RQ}".requests (type, description, status, requester_id, requester_name, timestamp)
-        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
-        '''
-    )
-    args = (
-        request_type,
-        description,
-        "active",
-        requester_id,
-        requester_name,
-        timestamp,
-    )
-    try:
-        return await conn.fetchrow(sql, *args)
-    except asyncpg.UniqueViolationError as e:
-        cn = getattr(e, "constraint_name", None)
-        if cn and cn != "requests_pkey":
-            raise
-        await conn.execute("ROLLBACK")
-        async with conn.transaction():
-            await conn.execute(f'LOCK TABLE "{_RQ}".requests IN EXCLUSIVE MODE')
-            await resync_request_requests_id_sequence(conn)
-            row = await conn.fetchrow(sql, *args)
-        return row
+    """Allocate id under an exclusive lock so we never rely on a possibly-miswired SERIAL."""
+
+    async with conn.transaction():
+        await conn.execute(f'LOCK TABLE "{_RQ}".requests IN EXCLUSIVE MODE')
+        next_id = await conn.fetchval(
+            f'''SELECT COALESCE(MAX(id), 0) + 1 FROM "{_RQ}".requests'''
+        )
+        row = await conn.fetchrow(
+            f'''
+            INSERT INTO "{_RQ}".requests (id, type, description, status, requester_id, requester_name, timestamp)
+            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
+            ''',
+            next_id,
+            request_type,
+            description,
+            "active",
+            requester_id,
+            requester_name,
+            timestamp,
+        )
+
+        seq = await conn.fetchval("SELECT pg_get_serial_sequence('request.requests', 'id')")
+        if seq:
+            await conn.execute("SELECT setval($1::regclass, $2::bigint, true)", seq, next_id)
+
+    assert row is not None
+    return row
 
 
 class RequestModal(Modal):
