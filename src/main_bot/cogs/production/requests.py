@@ -6,6 +6,7 @@ from datetime import datetime
 import math
 import pytz
 
+from main_bot.db.ddl import resync_request_requests_id_sequence
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 
@@ -35,6 +36,9 @@ class RequestModal(Modal):
         timestamp = datetime.utcnow()
 
         async with self.cog.bot.pg_pool.acquire() as conn:
+            # Same connection + DB as the bot: avoids sequence drift that startup DDL alone can miss
+            # (e.g. imports, or Neon SQL run against a different branch than DATABASE_URL).
+            await resync_request_requests_id_sequence(conn)
             row = await conn.fetchrow(
                 f'''
                 INSERT INTO "{_RQ}".requests (type, description, status, requester_id, requester_name, timestamp)

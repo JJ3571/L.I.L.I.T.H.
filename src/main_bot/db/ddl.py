@@ -392,10 +392,11 @@ async def _ddl_request(conn: asyncpg.Connection) -> None:
         )
         """
     )
-    # Resync the id sequence: it can fall behind MAX(id) if rows were ever inserted
-    # with explicit ids (import/restore), causing duplicate key on DEFAULT inserts.
-    # Empty table: setval(…, 1, false) so the next id is 1. Non-empty: set to MAX(id) with
-    # is_called true so the next id is MAX+1. (setval(…, 0) is invalid for this sequence.)
+    await resync_request_requests_id_sequence(conn)
+
+
+async def resync_request_requests_id_sequence(conn: asyncpg.Connection) -> None:
+    """Align ``request.requests`` id sequence with ``MAX(id)`` (same connection as the insert)."""
     await conn.execute(
         """
         SELECT setval(
