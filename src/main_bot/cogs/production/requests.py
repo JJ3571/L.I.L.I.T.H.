@@ -6,11 +6,49 @@ from datetime import datetime
 import math
 import pytz
 
+import asyncpg
+
 from main_bot.db.ddl import resync_request_requests_id_sequence
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import admin_user_ids
 
 _RQ = "request"
+
+
+async def _insert_request_row(
+    conn: asyncpg.Connection,
+    request_type: str,
+    description: str,
+    requester_id: int,
+    requester_name: str,
+    timestamp: datetime,
+) -> asyncpg.Record:
+    sql = (
+        f'''
+        INSERT INTO "{_RQ}".requests (type, description, status, requester_id, requester_name, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
+        '''
+    )
+    args = (
+        request_type,
+        description,
+        "active",
+        requester_id,
+        requester_name,
+        timestamp,
+    )
+    try:
+        return await conn.fetchrow(sql, *args)
+    except asyncpg.UniqueViolationError as e:
+        cn = getattr(e, "constraint_name", None)
+        if cn and cn != "requests_pkey":
+            raise
+        await conn.execute("ROLLBACK")
+        async with conn.transaction():
+            await conn.execute(f'LOCK TABLE "{_RQ}".requests IN EXCLUSIVE MODE')
+            await resync_request_requests_id_sequence(conn)
+            row = await conn.fetchrow(sql, *args)
+        return row
 
 
 class RequestModal(Modal):
@@ -36,17 +74,10 @@ class RequestModal(Modal):
         timestamp = datetime.utcnow()
 
         async with self.cog.bot.pg_pool.acquire() as conn:
-            # Same connection + DB as the bot: avoids sequence drift that startup DDL alone can miss
-            # (e.g. imports, or Neon SQL run against a different branch than DATABASE_URL).
-            await resync_request_requests_id_sequence(conn)
-            row = await conn.fetchrow(
-                f'''
-                INSERT INTO "{_RQ}".requests (type, description, status, requester_id, requester_name, timestamp)
-                VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
-                ''',
+            row = await _insert_request_row(
+                conn,
                 self.request_type,
                 description,
-                "active",
                 requester_id,
                 requester_name,
                 timestamp,
