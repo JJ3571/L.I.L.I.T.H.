@@ -25,11 +25,13 @@ This bot loads config from environment variables (typically injected by Doppler)
 - `DISCORD_BOT_TOKEN` (string)
 - `GUILD_ID` (int)
 - `APPLICATION_ID` (int)
+- `DATABASE_URL` (string): `postgresql://...` for asyncpg. Neon and most cloud hosts need TLS; use the dashboard connection string with `?sslmode=require` (or rely on the bot normalizing non-local URLs to append `sslmode=require` if it was omitted). If you still see “connection reset” during startup, check Neon project status, IP allowlisting, and VPN/firewall.
 
 ## Optional (feature-dependent)
 
 - `GEMINI_API_KEY` (string)
 - `ENVIRONMENT` (string: `development` or `production`) used by `is_development_environment()`
+- `LOAD_DEVELOPMENT_COGS` (optional): when set to `1`, `true`, `yes`, or `on`, the bot loads extensions under `main_bot.cogs.development` in addition to `production`. When set to `0`, `false`, `no`, or `off`, development extensions are not loaded even if `DEVELOPMENT_COG_EXTENSIONS_ENABLED` is True in `main.py`. If unset, the default comes from `DEVELOPMENT_COG_EXTENSIONS_ENABLED` in `main_bot/main.py`.
 
 ## Crafty Controller
 
@@ -66,6 +68,7 @@ This bot loads config from environment variables (typically injected by Doppler)
 - `OMDB_API_KEY` (string)
 - `OMDB_API_URL` (string)
 - `BRAVE_SEARCH_API_KEY` (string)
+- `BRAVE_IMAGE_SEARCH_MIN_INTERVAL` (optional, seconds) — default `1.05`; Brave Image Search free tier is ~1 request/s, so the bot serializes image searches. Increase if you still see `429` from Brave.
 
 ## TCG / Say (JSON + strings)
 

@@ -3,6 +3,12 @@
 # When True, selected cogs print verbose ``[DEBUG]`` lines to stdout (e.g. birthday and reminder loops).
 FULL_DEBUG_IN_TERMINAL = False
 
+# When True, ``on_ready`` also loads ``main_bot.cogs.development`` after production.
+# Production cogs always load. Set ``LOAD_DEVELOPMENT_COGS`` in the environment to
+# ``1`` / ``true`` / ``yes`` / ``on`` or ``0`` / ``false`` / ``no`` / ``off`` to override
+# this default without editing code (e.g. per Doppler config).
+DEVELOPMENT_COG_EXTENSIONS_ENABLED = False
+
 ### -------------------------------------------
 # nextcord.health_check imports pkg_resources; 
 # setuptools emits UserWarning until nextcord migrates.
@@ -18,6 +24,7 @@ warnings.filterwarnings(
 
 import logging
 import os
+import traceback
 from pathlib import Path
 
 import nextcord
@@ -60,6 +67,15 @@ def _setup_logging() -> None:
 COGS_ROOT = Path(__file__).resolve().parent / "cogs"
 
 
+def _should_load_development_cog_extensions() -> bool:
+    raw = os.environ.get("LOAD_DEVELOPMENT_COGS", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return DEVELOPMENT_COG_EXTENSIONS_ENABLED
+
+
 async def load_extensions(directory: str) -> None:
     path = COGS_ROOT / directory
     for filename in os.listdir(path):
@@ -97,7 +113,10 @@ install_error_alerts(bot)
 async def on_ready():
     await ensure_asyncio_exception_handler(bot)
     try:
-        await load_extensions("production") 
+        await load_extensions("production")
+        if _should_load_development_cog_extensions():
+            boot_print("Loading development cog extensions (toggle or LOAD_DEVELOPMENT_COGS is on).")
+            await load_extensions("development")
         await bot.sync_application_commands(guild_id=GUILD_ID)
         print("[STARTUP_SUCCESS] Bot is ready and running.")
     except nextcord.HTTPException as e:
@@ -112,3 +131,4 @@ def run() -> None:
         print(f"[SHUTDOWN] Bot has been stopped.")
     except Exception as e:
         print(f"An error occurred: {e}")
+        traceback.print_exception(type(e), e, e.__traceback__)

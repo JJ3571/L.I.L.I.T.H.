@@ -12,6 +12,7 @@ request.db
 wager.db
 *.db
 databases/*.db
+data/tierlist/
 
 .cursor/
 .cursor

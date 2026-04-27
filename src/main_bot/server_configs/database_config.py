@@ -62,5 +62,3 @@ SCHEMA_KEYS = [
     "trivia",
     "crafty_automation",
 ]
-
-os.makedirs(DB_DIR, exist_ok=True)

@@ -392,6 +392,16 @@ async def _ddl_request(conn: asyncpg.Connection) -> None:
         )
         """
     )
+    # Resync the id sequence: it can fall behind MAX(id) if rows were ever inserted
+    # with explicit ids (import/restore), causing duplicate key on DEFAULT inserts.
+    await conn.execute(
+        """
+        SELECT setval(
+            pg_get_serial_sequence('request.requests', 'id'),
+            COALESCE((SELECT MAX(id) FROM "request".requests), 0)
+        )
+        """
+    )
 
 
 async def _ddl_wager(conn: asyncpg.Connection) -> None:
