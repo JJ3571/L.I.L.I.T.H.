@@ -2,7 +2,7 @@
 
 HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a complete reference of all available slash commands.
 
-**Run locally (after [uv](https://docs.astral.sh/uv/) is installed):** from the repo root, `uv sync` then `uv run python -m main_bot` or `uv run bot`. Use Python **3.10–3.13** (see `pyproject.toml`; Nextcord 2.6 is not compatible with 3.14 yet). With [Doppler](https://www.doppler.com/), use `doppler run -- uv run python -m main_bot`. A simple Cron job can be setup to keep this bot running on a vps (with restart failure & scheduled daily bot restarts).
+**Run locally (after [uv](https://docs.astral.sh/uv/) is installed):** from the repo root, `uv sync` then `uv run python -m main_bot` or `uv run bot`. Use Python **3.12–3.13** (see `pyproject.toml`; Nextcord 3.1.x requires 3.12+ and is not compatible with 3.14 yet). With [Doppler](https://www.doppler.com/), use `doppler run -- uv run python -m main_bot`. A simple Cron job can be setup to keep this bot running on a vps (with restart failure & scheduled daily bot restarts).
 
 #### Secrets & Env Variables
 This bot is intended to be used with a single server/guild. All IDs, channels, roles, etc. are hardcoded as env variables. 

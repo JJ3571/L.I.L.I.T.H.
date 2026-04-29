@@ -146,6 +146,9 @@ class Economy(commands.Cog, CogLogMixin):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        if member.bot:
+            return
+
         user_id = member.id
 
         # Helper to safely encode names for printing

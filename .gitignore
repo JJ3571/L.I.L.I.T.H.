@@ -182,5 +182,10 @@ cython_debug/
 #.idea/
 
 
+# Lavalink local runtime (jar stays untracked; templates/scripts under lavalink/ remain tracked)
+lavalink/*.jar
+lavalink/application.yml
+lavalink/logs/
+lavalink/plugins/
 
 /local_music

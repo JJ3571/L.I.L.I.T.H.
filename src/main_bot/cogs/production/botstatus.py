@@ -23,6 +23,26 @@ class BotStatusCog(commands.Cog, CogLogMixin):
         self.status_cycle.cancel()
         self.cog_print("BotStatusCog has been unloaded.")
 
+    def pause_rotating_status_if_running(self) -> bool:
+        """Cancel the predefined status loop if it is running (e.g. music hijacks presence).
+
+        Returns True if the loop was running and was stopped so callers can resume later.
+        """
+        if self.status_cycle.is_running():
+            self.status_cycle.cancel()
+            return True
+        return False
+
+    async def resume_rotating_status_if_was_running(self, was_running: bool) -> None:
+        """Restart predefined cycling if it was paused by music; primes one immediate Game activity."""
+        if not was_running:
+            return
+        if self.status_cycle.is_running():
+            return
+        self.current_status = next(self.status_list)
+        await self.bot.change_presence(activity=nextcord.Game(name=self.current_status))
+        self.status_cycle.start()
+
     @tasks.loop(seconds=90)
     async def status_cycle(self):
         self.current_status = next(self.status_list)

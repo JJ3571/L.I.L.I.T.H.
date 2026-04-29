@@ -99,7 +99,7 @@ class ComplementaryColorView(nextcord.ui.View):
         # Set footer
         embed.set_footer(
             text=f"Complementary of {self.original_hex} • Requested by {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else nextcord.Embed.Empty
+            icon_url=interaction.user.display_avatar.url if interaction.user.display_avatar else None
         )
         embed.timestamp = nextcord.utils.utcnow()
         
@@ -2301,15 +2301,15 @@ class Say(commands.Cog, CogLogMixin):
             if character_name == "Community Note":
                 # Set the bot as the author for Community Notes
                 bot_user = self.bot.user
-                embed.set_author(name=f"{bot_user.display_name} [Community Note]", icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty)
+                embed.set_author(name=f"{bot_user.display_name} [Community Note]", icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None)
             elif character_name:
                 # For other characters, use the character_avatars
                 avatar_url = character_avatars.get(character_name)
-                author_icon_url = avatar_url if avatar_url and isinstance(avatar_url, str) and avatar_url.startswith(('http://', 'https://')) else nextcord.Embed.Empty
+                author_icon_url = avatar_url if avatar_url and isinstance(avatar_url, str) and avatar_url.startswith(('http://', 'https://')) else None
                 embed.set_author(name=character_name, icon_url=author_icon_url)
             
             # Add a footer to indicate it was triggered by a reaction
-            user_display_avatar_url = user.display_avatar.url if user.display_avatar else nextcord.Embed.Empty
+            user_display_avatar_url = user.display_avatar.url if user.display_avatar else None
             embed.set_footer(text=f"Triggered by {user.display_name}'s reaction", icon_url=user_display_avatar_url)
             embed.timestamp = nextcord.utils.utcnow()
 
@@ -2465,12 +2465,12 @@ Please respond to the user's reply in context of the previous conversation."""
                         bot_user = self.bot.user
                         embed.set_author(
                             name=f"{bot_user.display_name} [OP.GG]", 
-                            icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                            icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
                         )
                         
                         embed.set_footer(
                             text="Please include the tagline in your query",
-                            icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                            icon_url=message.author.display_avatar.url if message.author.display_avatar else None
                         )
                         embed.timestamp = nextcord.utils.utcnow()
                         
@@ -2523,11 +2523,11 @@ Please respond to the user's reply in context of the previous conversation."""
                     bot_user = self.bot.user
                     error_embed.set_author(
                         name=f"{bot_user.display_name} [OP.GG]", 
-                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
                     )
                     error_embed.set_footer(
                         text="Tip: Use /opgg_summoner for summoner analysis or /opgg_matchup for matchup guides",
-                        icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                        icon_url=message.author.display_avatar.url if message.author.display_avatar else None
                     )
                     error_embed.timestamp = nextcord.utils.utcnow()
                     try:
@@ -2551,7 +2551,7 @@ Please respond to the user's reply in context of the previous conversation."""
                 # Set up common embed properties
                 bot_user = self.bot.user
                 author_name = f"{bot_user.display_name} [OP.GG]" if query_method == 'mcp' else bot_user.display_name
-                user_display_avatar_url = message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+                user_display_avatar_url = message.author.display_avatar.url if message.author.display_avatar else None
                 data_source = "OP.GG MCP" if query_method == 'mcp' else "Web Search"
                 
                 # Build context link text
@@ -2587,7 +2587,7 @@ Please respond to the user's reply in context of the previous conversation."""
                     
                     embed.set_author(
                         name=author_name, 
-                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else nextcord.Embed.Empty
+                        icon_url=bot_user.display_avatar.url if bot_user.display_avatar else None
                     )
                     
                     # Add page number to footer if multiple sections
@@ -2693,7 +2693,7 @@ Please respond to the user's reply in context of the previous conversation."""
         # Set footer
         embed.set_footer(
             text=f"Color detected from {message.author.display_name}'s message",
-            icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+            icon_url=message.author.display_avatar.url if message.author.display_avatar else None
         )
         embed.timestamp = nextcord.utils.utcnow()
         
@@ -2776,7 +2776,7 @@ Please respond to the user's reply in context of the previous conversation."""
         # Set footer
         embed.set_footer(
             text=f"Gradient detected from {message.author.display_name}'s message • Horizontal gradient shown",
-            icon_url=message.author.display_avatar.url if message.author.display_avatar else nextcord.Embed.Empty
+            icon_url=message.author.display_avatar.url if message.author.display_avatar else None
         )
         embed.timestamp = nextcord.utils.utcnow()
         

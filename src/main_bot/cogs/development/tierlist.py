@@ -879,7 +879,8 @@ class TierList(commands.Cog):
         self.auto_finish_expired.start()
         self.item_cache_sweep.start()
 
-    async def cog_unload(self) -> None:
+    def cog_unload(self) -> None:
+        # Nextcord calls cog_unload() synchronously (does not await).
         try:
             self.auto_finish_expired.cancel()
         except Exception:
@@ -890,8 +891,13 @@ class TierList(commands.Cog):
             pass
         for t in list(self._main_refresh_tasks.values()):
             t.cancel()
-        if self._session:
-            await self._session.close()
+        sess = self._session
+        self._session = None
+        if sess is not None and not sess.closed:
+            try:
+                self.bot.loop.create_task(sess.close())
+            except RuntimeError:
+                pass
 
     async def cog_load(self) -> None:
         await self.create_tables()
