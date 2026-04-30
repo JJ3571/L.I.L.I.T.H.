@@ -7,30 +7,23 @@ FULL_DEBUG_IN_TERMINAL = False
 # Production cogs always load. Set ``LOAD_DEVELOPMENT_COGS`` in the environment to
 # ``1`` / ``true`` / ``yes`` / ``on`` or ``0`` / ``false`` / ``no`` / ``off`` to override
 # this default without editing code (e.g. per Doppler config).
-DEVELOPMENT_COG_EXTENSIONS_ENABLED = False
-
-### -------------------------------------------
-# nextcord.health_check imports pkg_resources; 
-# setuptools emits UserWarning until nextcord migrates.
-# dependency version <81 is already pinned in pyproject.toml 
-
-import warnings
-warnings.filterwarnings(
-    "ignore",
-    message="pkg_resources is deprecated as an API",
-    category=UserWarning,
-)
-### -------------------------------------------
+DEVELOPMENT_COG_EXTENSIONS_ENABLED = True
 
 import logging
 import os
+import sys
 import traceback
 from pathlib import Path
 
 import nextcord
+
+# Wavelink imports ``discord``; alias Nextcord so Lavalink voice protocol matches our Bot/VoiceChannel types.
+sys.modules["discord"] = nextcord
+
 from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
+from main_bot.nextcord_voice_gateway_patch import apply_nextcord_voice_gateway_v8_patch
 from main_bot.db.ddl import init_all_schemas
 from main_bot.db.pool import close_pool, create_pool
 from main_bot.error_alerts import ensure_asyncio_exception_handler, install_error_alerts
@@ -49,6 +42,12 @@ class MainBot(commands.Bot):
 
     async def close(self) -> None:
         await close_pool()
+        try:
+            import wavelink
+
+            await wavelink.Pool.close()
+        except Exception:
+            pass
         await super().close()
 
 
@@ -89,6 +88,13 @@ async def load_extensions(directory: str) -> None:
 
 _setup_logging()
 
+apply_nextcord_voice_gateway_v8_patch()
+boot_print(
+    "Voice WebSocket gateway patched to v=8 (PyPI nextcord uses legacy v=4 URL). "
+    "If logs show close 4017 (DAVE/E2EE required), nextcord cannot negotiate that yet — "
+    "see main_bot.nextcord_voice_gateway_patch module docstring.",
+)
+
 intents = nextcord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -127,8 +133,8 @@ def run() -> None:
     try:
         bot.run(DISCORD_BOT_TOKEN)
     except KeyboardInterrupt:
-        bot.close()
-        print(f"[SHUTDOWN] Bot has been stopped.")
+        # ``Client.run`` already closes the bot in ``finally`` (``await self.close()`` → ``wavelink.Pool.close()``).
+        print("[SHUTDOWN] Bot has been stopped.")
     except Exception as e:
         print(f"An error occurred: {e}")
         traceback.print_exception(type(e), e, e.__traceback__)

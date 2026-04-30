@@ -3,7 +3,7 @@ import os
 import re
 import socket
 import ast
-from typing import Any, Dict, List
+from typing import Any, Dict, FrozenSet, List
 
 
 def _get_str(name: str, default: str = "") -> str:
@@ -123,10 +123,35 @@ def _get_json_dict(name: str) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _get_json_str_list(name: str) -> List[str]:
+    raw = _get_json(name, [])
+    if not isinstance(raw, list):
+        return []
+    out: List[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _frozenset_lower(items: List[str]) -> FrozenSet[str]:
+    return frozenset(s.casefold().strip() for s in items if s and s.strip())
+
+
 # -------- Core bot config (Doppler env vars) --------
 
 DISCORD_BOT_TOKEN = _get_str("DISCORD_BOT_TOKEN", "")
 GUILD_ID = _get_int("GUILD_ID", 0)
+
+# Lavalink (music cog via Wavelink). Lavalink v4 expected — align credentials with ``application.yml`` server.password.
+LAVALINK_URI = _get_str("LAVALINK_URI", "http://127.0.0.1:2333")
+LAVALINK_PASSWORD = _get_str("LAVALINK_PASSWORD", "youshallnotpass")
+
+# Loopback HTTP used to expose ``local_music/{folder}`` (jazz, lofi, minecraft) to Lavalink (see ``jazz_http_server``).
+MUSIC_LOCAL_HTTP_HOST = _get_str("MUSIC_LOCAL_HTTP_HOST", "127.0.0.1")
+MUSIC_LOCAL_HTTP_PORT = _get_int("MUSIC_LOCAL_HTTP_PORT", 8765)
+# Voice channel IDs where slash music commands and VC controls are blocked (e.g. recording, watchparty). JSON array of ints; empty = disabled.
+MUSIC_VOICE_CHANNEL_DENYLIST_IDS = frozenset(_get_json_int_list("MUSIC_VOICE_CHANNEL_DENYLIST"))
 APPLICATION_ID = _get_int("APPLICATION_ID", 0)
 GEMINI_API_KEY = _get_str("GEMINI_API_KEY", "")
 ENVIRONMENT = _get_str("ENVIRONMENT", "")
@@ -220,12 +245,20 @@ birthday_channel_id = _get_int("BIRTHDAY_CHANNEL_ID", 0)
 # TCG config (JSON)
 MANA_SYMBOLS = _get_json_dict("MANA_SYMBOLS")
 
+# MTG autocard in allowed channels only; empty list = disabled
+mtg_autolink_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_CHANNEL_IDS"))
+mtg_autolink_blocked_names = _frozenset_lower(_get_json_str_list("MTG_AUTOLINK_BLOCKED_NAMES"))
+mtg_autolink_max_cards_per_message = _get_int("MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE", 5) # Not in Doppler
+mtg_autolink_max_word_span = max(1, min(_get_int("MTG_AUTOLINK_MAX_WORD_SPAN", 4), 8)) # Not in Doppler
+
 # Say config (JSON + strings)
 webhook_url = _get_str("WEBHOOK_URL", "")
 character_avatars = _get_json_dict("CHARACTER_AVATARS")
 ZERONI_REACTION_EMOJI = _get_str("ZERONI_REACTION_EMOJI", "")
 COMMUNITY_NOTES_REACTION_EMOJI = _get_str("COMMUNITY_NOTES_REACTION_EMOJI", "")
 
-# Bot log viewer (.logging): optional systemd unit on Linux (e.g. discord_bot_v2), else tail BOT_LOG_FILE or nextcord.log
+# Bot log viewer (.logging): optional systemd unit on Linux (e.g. discord_bot_v2), else tail BOT_LOG_FILE or nextcord.log.
+# BOT_LOG_JOURNAL_EXTRA_UNITS: comma-separated units for additional panes (e.g. lavalink.service).
 BOT_LOG_JOURNAL_UNIT = _get_str("BOT_LOG_JOURNAL_UNIT", "")
-BOT_LOG_FILE = _get_str("BOT_LOG_FILE", "")
+BOT_LOG_JOURNAL_EXTRA_UNITS = _get_str("BOT_LOG_JOURNAL_EXTRA_UNITS", "")
+BOT_LOG_FILE = _get_str("BOT_LOG_FILE", "") # Not in Doppler

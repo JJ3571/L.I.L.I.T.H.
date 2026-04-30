@@ -11,7 +11,12 @@ import nextcord
 from nextcord.ext import commands
 
 from main_bot.paths import PROJECT_ROOT
-from main_bot.server_configs.config import BOT_LOG_FILE, BOT_LOG_JOURNAL_UNIT, admin_user_ids
+from main_bot.server_configs.config import (
+    BOT_LOG_FILE,
+    BOT_LOG_JOURNAL_EXTRA_UNITS,
+    BOT_LOG_JOURNAL_UNIT,
+    admin_user_ids,
+)
 
 LOG_LINE_COUNT = 12
 MAX_EMBED_BODY = 3800
@@ -101,14 +106,53 @@ async def fetch_log_snippet() -> Tuple[str, str]:
     return _truncate_block(body), label
 
 
-def _make_embed(body: str, source: str, requester: nextcord.abc.User) -> nextcord.Embed:
+def _extra_journal_unit_names() -> list[str]:
+    primary = BOT_LOG_JOURNAL_UNIT.strip()
+    seen: Set[str] = set()
+    out: list[str] = []
+    for part in BOT_LOG_JOURNAL_EXTRA_UNITS.split(","):
+        u = part.strip()
+        if not u or u in seen:
+            continue
+        if primary and u == primary:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+def _display_title_for_journal_unit(unit: str) -> str:
+    stem = unit.removesuffix(".service").replace("_", " ").strip()
+    return f"{stem.title()} logs" if stem else f"{unit} logs"
+
+
+def _make_embed(title: str, body: str, source: str, requester: nextcord.abc.User) -> nextcord.Embed:
     embed = nextcord.Embed(
-        title="Bot logs",
+        title=title,
         description=f"Last ~{LOG_LINE_COUNT} lines.\n```\n{body}\n```",
         color=nextcord.Color.dark_teal(),
     )
     embed.set_footer(text=f"Source: {source} · requested by {requester}")
     return embed
+
+
+async def build_log_embeds(requester: nextcord.abc.User) -> list[nextcord.Embed]:
+    embeds: list[nextcord.Embed] = []
+    body, source = await fetch_log_snippet()
+    embeds.append(_make_embed("Bot logs", body, source, requester))
+    for unit in _extra_journal_unit_names():
+        extra = await _tail_journal(unit, LOG_LINE_COUNT)
+        if extra is None:
+            continue
+        embeds.append(
+            _make_embed(
+                _display_title_for_journal_unit(unit),
+                _truncate_block(extra),
+                f"journalctl -u {unit}",
+                requester,
+            )
+        )
+    return embeds
 
 
 class LogRefreshView(nextcord.ui.View):
@@ -125,9 +169,8 @@ class LogRefreshView(nextcord.ui.View):
             await interaction.response.send_message("You do not have permission to refresh this.", ephemeral=True)
             return
         await interaction.response.defer()
-        body, source = await fetch_log_snippet()
-        embed = _make_embed(body, source, interaction.user)
-        await interaction.edit_original_message(embed=embed, view=self)
+        embeds = await build_log_embeds(interaction.user)
+        await interaction.edit_original_message(embeds=embeds, view=self)
 
 
 class LoggingCog(commands.Cog):
@@ -140,10 +183,9 @@ class LoggingCog(commands.Cog):
             await ctx.send("You do not have permission to use this command.")
             return
 
-        body, source = await fetch_log_snippet()
-        embed = _make_embed(body, source, ctx.author)
+        embeds = await build_log_embeds(ctx.author)
         view = LogRefreshView(admin_ids=set(admin_user_ids))
-        await ctx.send(embed=embed, view=view)
+        await ctx.send(embeds=embeds, view=view)
 
 
 def setup(bot: commands.Bot) -> None:

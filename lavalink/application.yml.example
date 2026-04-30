@@ -1,0 +1,111 @@
+# Copy to ``application.yml`` in this folder (gitignored). Lavalink reads it next to the JAR on startup.
+# Align ``lavalink.server.password`` with env LAVALINK_PASSWORD for the bot (defaults match server_configs/config.py).
+#
+# Upstream reference: https://github.com/lavalink-devs/Lavalink/blob/master/LavalinkServer/application.yml.example
+#
+# YouTube playback requires the youtube-plugin below (built-in YouTube source is disabled in Lavalink v4).
+# You also need the **top-level** ``plugins:`` block (sibling of ``lavalink:``) — see below. Without it,
+# Lavalink uses plugin defaults and many videos fail with ``This video requires login`` / ``All clients failed``.
+#
+# Fix for login / sign-in errors: set ``plugins.youtube.oauth.enabled: true`` and complete the device flow once
+# (watch Lavalink logs for a URL + code), or paste a ``refreshToken`` from the logs. Use a **burner** Google account
+# (see https://github.com/lavalink-devs/youtube-source#using-oauth-tokens ). Optional: set
+# ``logging.level.dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO`` for clearer OAuth messages.
+#
+# Jazz folder playback uses loopback HTTP from the bot; keep ``sources.http: true``. Optional ``sources.local`` for manual ``file://`` loads.
+
+# Stuttering does not seem like a big issue. May need to edit bufferDurationMs and frameBufferDurationMs below if it's too much.
+# That would increase bot latency. 
+
+server:
+  port: 2333
+  # Bind localhost only for development machines (use 0.0.0.0 behind firewall/Docker on VPS).
+  address: 127.0.0.1
+  http2:
+    enabled: false
+
+lavalink:
+  plugins:
+    # Lavalink logs recommend staying current; see https://github.com/lavalink-devs/youtube-source/releases
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
+      snapshot: false
+  server:
+    password: "youshallnotpass"
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      nico: true
+      http: true
+      local: true
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    nonAllocatingFrameBuffer: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: LOW
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    # Max tracks Lavalink loads from a single YouTube playlist (youtube-plugin). Raise for long playlists (e.g. 50–100);
+    # the bot queues ``tracks[1:]`` in Wavelink after the first; this cap still limits how many you get per load.
+    youtubePlaylistLoadLimit: 50
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    soundcloudFilterOutPreviewTracks: false
+    gc-warnings: true
+    timeouts:
+      connectTimeoutMs: 3000
+      connectionRequestTimeoutMs: 3000
+      socketTimeoutMs: 3000
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+  environment: ""
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+    # dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
+
+# youtube-source (youtube-plugin) — must be top-level, not under ``lavalink:``
+# https://github.com/lavalink-devs/youtube-source/blob/main/README.md
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      # ``TV`` supports OAuth on playback; if oauth.enabled is true but TV is missing, Lavalink warns and
+      # ``This video requires login`` often persists. See youtube-source README "Available Clients".
+      - TV
+      - MUSIC
+      - ANDROID_VR
+      - WEB
+      - WEBEMBEDDED
+    oauth:
+      enabled: true
+      # After first successful device login, Lavalink logs your token — uncomment to skip the flow on restart:
+      # refreshToken: "paste-from-lavalink-logs"
+      # skipInitialization: true

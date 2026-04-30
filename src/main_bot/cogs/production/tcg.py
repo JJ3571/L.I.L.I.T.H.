@@ -1,15 +1,157 @@
-import nextcord
-from nextcord.ext import commands
+import asyncio
 import re
+
+import aiohttp
+import nextcord
 import requests
+from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.config import GUILD_ID
 from main_bot.server_configs.config import MANA_SYMBOLS
+from main_bot.server_configs.config import mtg_autolink_blocked_names
+from main_bot.server_configs.config import mtg_autolink_channel_ids
+from main_bot.server_configs.config import mtg_autolink_max_cards_per_message
+from main_bot.server_configs.config import mtg_autolink_max_word_span
+from main_bot.utils.mtg_autolink import distinct_span_phrases
+from main_bot.utils.mtg_autolink import greedy_resolve_cards
+from main_bot.utils.mtg_autolink import normalize_phrase
+from main_bot.utils.mtg_autolink import tokenize
+
+
+SCRYFALL_HEADERS = {
+    "User-Agent": "DiscordBot (JJ3571, v0.1)",
+    "Accept": "application/json",
+}
+
+
 class TCG(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
+        self._autolink_session: aiohttp.ClientSession | None = None
+
+    async def cog_load(self) -> None:
+        timeout = aiohttp.ClientTimeout(total=30)
+        self._autolink_session = aiohttp.ClientSession(
+            headers=SCRYFALL_HEADERS,
+            timeout=timeout,
+        )
+
+    def cog_unload(self) -> None:
+        # Nextcord calls cog_unload() synchronously (does not await); schedule aiohttp shutdown.
+        sess = self._autolink_session
+        self._autolink_session = None
+        if sess is not None and not sess.closed:
+            try:
+                self.bot.loop.create_task(sess.close())
+            except RuntimeError:
+                pass
+
+    @commands.Cog.listener()
+    async def on_message(self, message: nextcord.Message) -> None:
+        if not mtg_autolink_channel_ids:
+            return
+        if message.author.bot:
+            return
+        if message.guild is None:
+            return
+        if isinstance(message.channel, nextcord.DMChannel):
+            return
+
+        ch_id = message.channel.id
+        if ch_id not in mtg_autolink_channel_ids:
+            return
+
+        text = (message.content or "").strip()
+        if not text:
+            return
+
+        tokens = tokenize(text)
+        if not tokens:
+            return
+
+        phrases = distinct_span_phrases(
+            tokens,
+            mtg_autolink_max_word_span,
+            mtg_autolink_blocked_names,
+        )
+        if not phrases:
+            return
+
+        session = self._autolink_session
+        if not session:
+            timeout = aiohttp.ClientTimeout(total=30)
+            session = aiohttp.ClientSession(
+                headers=SCRYFALL_HEADERS,
+                timeout=timeout,
+            )
+            temporary_session = True
+        else:
+            temporary_session = False
+
+        try:
+            resolved = await self._scryfall_collection_named(session, phrases)
+            if not resolved:
+                return
+
+            cards = greedy_resolve_cards(
+                tokens,
+                mtg_autolink_max_word_span,
+                resolved,
+                blocked_normalized=mtg_autolink_blocked_names,
+                max_cards=mtg_autolink_max_cards_per_message,
+            )
+            if not cards:
+                return
+
+            for card in cards:
+                embed = self.create_card_embed(card)
+                try:
+                    await message.reply(embed=embed, mention_author=False)
+                except nextcord.Forbidden:
+                    self.cog_print(
+                        f"MTG autolink: missing permission to reply in channel {message.channel}"
+                    )
+                    return
+                await asyncio.sleep(0.075)
+        finally:
+            if temporary_session:
+                await session.close()
+
+    async def _scryfall_collection_named(
+        self,
+        session: aiohttp.ClientSession,
+        phrases: list[str],
+    ) -> dict:
+        """Maps ``normalize_phrase(card name)`` to card JSON for names Scryfall could resolve."""
+        if not phrases:
+            return {}
+
+        result: dict = {}
+        chunk_size = 375
+
+        for start in range(0, len(phrases), chunk_size):
+            chunk = phrases[start : start + chunk_size]
+            payload = {"identifiers": [{"name": p} for p in chunk]}
+
+            async with session.post(
+                "https://api.scryfall.com/cards/collection",
+                json=payload,
+            ) as resp:
+                if resp.status != 200:
+                    body = (await resp.text())[:240]
+                    self.cog_print(f"Scryfall /cards/collection HTTP {resp.status}: {body}")
+                    continue
+
+                data = await resp.json()
+                for card in data.get("data", []):
+                    k = normalize_phrase(card["name"])
+                    result[k] = card
+
+                if start + chunk_size < len(phrases):
+                    await asyncio.sleep(0.1)
+
+        return result
 
     @nextcord.slash_command(name="mtg", description="Magic: The Gathering commands")
     async def mtg(self, interaction: nextcord.Interaction):
@@ -28,18 +170,18 @@ class TCG(commands.Cog, CogLogMixin):
         else:
             await self.present_suggestions(interaction, suggestions)
 
-
     def get_card_suggestions(self, card_name):
         headers = {
             "User-Agent": "DiscordBot (JJ3571, v0.1)",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
-        response = requests.get(f"https://api.scryfall.com/cards/autocomplete?q={card_name}", headers=headers)
+        response = requests.get(
+            f"https://api.scryfall.com/cards/autocomplete?q={card_name}", headers=headers
+        )
         if response.status_code == 200:
             data = response.json()
-            return data.get('data', [])
+            return data.get("data", [])
         return None
-
 
     async def present_suggestions(self, interaction, suggestions):
         options = [nextcord.SelectOption(label=suggestion) for suggestion in suggestions]
@@ -53,7 +195,6 @@ class TCG(commands.Cog, CogLogMixin):
         view.add_item(select)
         await interaction.followup.send("Select a card:", view=view)
 
-
     async def display_card_details(self, interaction, card_name):
         card = self.get_card_data(card_name)
         if not card:
@@ -61,46 +202,45 @@ class TCG(commands.Cog, CogLogMixin):
             return
 
         embed = self.create_card_embed(card)
-        if interaction.response.is_done():
-            original_message = await interaction.followup.send(embed=embed)
-        else:
-            await interaction.response.send_message(embed=embed)
-            original_message = await interaction.followup.send(embed=embed)
+
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+        original_message = await interaction.followup.send(embed=embed)
 
         sets = self.get_card_sets(card)
         if sets:
             await self.present_set_options(interaction, card, sets, original_message)
 
-
     def get_card_data(self, card_name):
         headers = {
             "User-Agent": "DiscordBot (JJ3571, v0.1)",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
-        response = requests.get(f"https://api.scryfall.com/cards/named?exact={card_name}", headers=headers)
+        response = requests.get(
+            f"https://api.scryfall.com/cards/named?exact={card_name}", headers=headers
+        )
         if response.status_code == 200:
             return response.json()
         return None
 
-
     def get_card_sets(self, card):
         headers = {
             "User-Agent": "DiscordBot (JJ3571, v0.1)",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
-        response = requests.get(card['prints_search_uri'], headers=headers)
+        response = requests.get(card["prints_search_uri"], headers=headers)
         if response.status_code == 200:
             data = response.json()
-            return data.get('data', [])
+            return data.get("data", [])
         return None
 
-
     async def present_set_options(self, interaction, card, sets, original_message):
-        options = [nextcord.SelectOption(label=set['set_name'], value=set['id']) for set in sets]
+        options = [nextcord.SelectOption(label=s["set_name"], value=s["id"]) for s in sets]
         select = nextcord.ui.Select(placeholder="Choose a set", options=options)
 
         async def select_callback(interaction):
-            selected_set = next((set for set in sets if set['id'] == select.values[0]), None)
+            selected_set = next((s for s in sets if s["id"] == select.values[0]), None)
             if selected_set:
                 await self.update_card_image(interaction, selected_set, original_message)
 
@@ -109,76 +249,73 @@ class TCG(commands.Cog, CogLogMixin):
         view.add_item(select)
         await original_message.edit(content="Select a set:", view=view, embed=None)
 
-
     async def update_card_image(self, interaction, selected_set, original_message):
-        card = self.get_card_data_by_set(selected_set['id'])
+        card = self.get_card_data_by_set(selected_set["id"])
         if not card:
-            await interaction.followup.send(f"Could not retrieve details for the selected set.")
+            await interaction.followup.send("Could not retrieve details for the selected set.")
             return
 
         embed = self.create_card_embed(card)
         await original_message.edit(embed=embed, view=None, content=None)
 
-
     def create_card_embed(self, card):
         embed = nextcord.Embed(
-            title=card['name'],
-            description=self.format_mana(card.get('oracle_text', 'No description')),
-            color=0x00ff00
+            title=card["name"],
+            description=self.format_mana(card.get("oracle_text", "No description")),
+            color=0x00FF00,
         )
-        image_url = card.get("image_uris", {}).get("border_crop")
-        if image_url:
-            embed.set_image(url=image_url)
-        embed.add_field(name="Mana Cost", value=self.format_mana(card.get('mana_cost')), inline=True)
-        embed.add_field(name="Type", value=card['type_line'], inline=True)
-        if 'power' in card and 'toughness' in card:
-            embed.add_field(name="Power/Toughness", value=f"{card['power']}/{card['toughness']}", inline=True)
+
+        face_uris = card.get("image_uris") or {}
+        border_crop = face_uris.get("border_crop")
+        if not border_crop:
+            faces = card.get("card_faces") or []
+            if faces:
+                fu = faces[0].get("image_uris") or {}
+                border_crop = fu.get("border_crop")
+        if border_crop:
+            embed.set_image(url=border_crop)
+
+        embed.add_field(
+            name="Mana Cost",
+            value=self.format_mana(card.get("mana_cost")),
+            inline=True,
+        )
+        embed.add_field(name="Type", value=card["type_line"], inline=True)
+        if "power" in card and "toughness" in card:
+            embed.add_field(
+                name="Power/Toughness",
+                value=f"{card['power']}/{card['toughness']}",
+                inline=True,
+            )
         embed.set_footer(text=f"Set: {card['set_name']}")
         return embed
-
 
     def get_card_data_by_set(self, set_id):
         headers = {
             "User-Agent": "DiscordBot (JJ3571, v0.1)",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
         response = requests.get(f"https://api.scryfall.com/cards/{set_id}", headers=headers)
         if response.status_code == 200:
             return response.json()
         return None
 
-    async def send_card_embed(self, interaction, card):
-        embed = nextcord.Embed(
-            title=card['name'],
-            description=self.format_mana(card.get('oracle_text', 'No description')),
-            color=0x00ff00
-        )
-        image_url = card.get("image_uris", {}).get("border_crop")
-        if image_url:
-            embed.set_image(url=image_url)
-        embed.add_field(name="Mana Cost", value=self.format_mana(card.get('mana_cost')), inline=True)
-        embed.add_field(name="Type", value=card['type_line'], inline=True)
-        if 'power' in card and 'toughness' in card:
-            embed.add_field(name="Power/Toughness", value=f"{card['power']}/{card['toughness']}", inline=True)
-        embed.set_footer(text=f"Set: {card['set_name']}")
-        
-        await interaction.followup.send(embed=embed)
-
     def format_mana(self, text):
+        if text is None:
+            return "None"
+        text = str(text).strip()
         if not text:
             return "None"
 
         def replace_symbol(match):
             symbol = match.group(1)
             if symbol in MANA_SYMBOLS:
-                return MANA_SYMBOLS[symbol]
+                # JSON/env MANA_SYMBOLS values must be strings for re.sub; coerce numbers etc.
+                return str(MANA_SYMBOLS[symbol])
             return match.group(0)
 
-        if text is None:
-            self.cog_print("Warning: Mana cost text is None")
-            return "None"
+        return re.sub(r"\{(.*?)\}", replace_symbol, text)
 
-        return re.sub(r'\{(.*?)\}', replace_symbol, text)
 
 def setup(bot):
     bot.add_cog(TCG(bot))
