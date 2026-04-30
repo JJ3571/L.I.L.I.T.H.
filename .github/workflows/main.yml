@@ -1,12 +1,20 @@
 name: CI/CD Pipeline 
 
 on:
-  # Run tests on every branch; deploy remains main + push only (see deploy job `if`).
+  # Tests: all pushes; PR opened/sync/reopened/closed (closed-without-merge skips the test job).
+  # Deploy: push to main, or PR merged into main (`closed`, merged=true, base=main).
   push:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
 
 jobs:
   test:
+    # Do not waste CI closing a PR without merging (no usable signal for main).
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/testdb
@@ -40,9 +48,21 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    # JOB-LEVEL IF: We cannot check secrets here.
-    # Instead, we check if the event is a 'push' to 'main'.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # Merge fires `push` to main and `pull_request.closed`; same merge commit ⇒ second deploy waits.
+    concurrency:
+      group: production-deploy-${{ github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || github.sha }}
+      cancel-in-progress: false
+    if: |
+      success()
+      && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        || (
+          github.event_name == 'pull_request'
+          && github.event.action == 'closed'
+          && github.event.pull_request.merged == true
+          && github.event.pull_request.base.ref == 'main'
+        )
+      )
     steps:
       # v1.2.x supports `fingerprint` (SHA256 of droplet host key), not `known_hosts`.
       # Add secret SSH_HOST_FINGERPRINT only if you want strict host pinning; omit otherwise.
