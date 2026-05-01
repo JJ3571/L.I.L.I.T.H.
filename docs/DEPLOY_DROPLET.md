@@ -7,10 +7,12 @@ This guide walks through **one full setup** so [`.github/workflows/main.yml`](..
 | Placeholder | Example in this repo |
 |-------------|----------------------|
 | `BOT_USER` | `discord_bot` |
-| `REPO_PATH` | `/home/discord_bot_v2` |
-| `SERVICE_NAME` | `discord_bot_v2` (systemd unit is often `SERVICE_NAME.service`) |
+| `REPO_PATH` | `/home/discord_bot` (git working tree at `BOT_USER`’s home; same directory as `~/.ssh`) |
+| `SERVICE_NAME` | `discord_bot` (systemd unit is often `discord_bot.service`) |
 
 Edit the deploy **script** in `.github/workflows/main.yml` if your paths or user differ.
+
+**Legacy setups** used a separate checkout at `/home/discord_bot_v2` so the bot could keep running during CI/Doppler migration. New installs use **`/home/discord_bot`** as both `BOT_USER`’s home and the git root; the workflow matches that layout.
 
 ---
 
@@ -86,22 +88,36 @@ If you change install location, update the path in `.github/workflows/main.yml`.
 
 ---
 
-## 3. Clone the repository as `BOT_USER`
+## 3. Check out the repository as `BOT_USER`
 
-Use the **same** `REPO_PATH` you will put in the workflow.
+Use the **same** `REPO_PATH` as in the workflow: **`/home/discord_bot`** (repo root is `BOT_USER`’s home so paths match `scripts/run_bot.sh` and CI).
+
+`adduser` usually leaves dotfiles (`.bashrc`, etc.) in `/home/discord_bot`, so **`git clone … /home/discord_bot` will fail** (“destination path already exists and is not an empty directory”). Use **either** approach below.
+
+### 3a. Fresh home (rare): empty directory
+
+If `/home/discord_bot` is empty except what you need:
 
 ```bash
-sudo mkdir -p "$(dirname /home/discord_bot_v2)"
-sudo chown discord_bot:discord_bot /home/discord_bot  # parent if needed
-sudo -u discord_bot git clone git@github.com:OWNER/REPO.git /home/discord_bot_v2
+sudo chown discord_bot:discord_bot /home/discord_bot
+sudo -u discord_bot git clone git@github.com:OWNER/REPO.git /home/discord_bot
 ```
 
-For the first clone you must already have **either** Git working as `BOT_USER` (deploy key, see section 6) **or** use HTTPS with a token once, then switch remotes.
+### 3b. Normal case: home already has `.ssh` and profile files (recommended)
 
-Typical **SSH** remote:
+Set up the **Git deploy key** (section 6) first, then:
 
 ```bash
-sudo -u discord_bot git -C /home/discord_bot_v2 remote -v
+sudo chown discord_bot:discord_bot /home/discord_bot
+sudo -u discord_bot bash -c 'cd /home/discord_bot && git init && git remote add origin git@github.com:OWNER/REPO.git && git fetch origin && git checkout -b main origin/main'
+```
+
+If your default branch is not `main`, replace `main` / `origin/main` with your branch name.
+
+Typical **SSH** remote after setup:
+
+```bash
+sudo -u discord_bot git -C /home/discord_bot remote -v
 # expect: git@github.com:OWNER/REPO.git
 ```
 
@@ -117,13 +133,15 @@ The bot reads env from Doppler (or your chosen method). On the server:
    ```ini
    [Service]
    ExecStart=/usr/bin/doppler run -- /home/discord_bot/.local/bin/uv run python -m main_bot
-   WorkingDirectory=/home/discord_bot_v2
+   WorkingDirectory=/home/discord_bot
    User=discord_bot
    ```
 
    Or use [`scripts/run_bot.sh`](../scripts/run_bot.sh) inside `doppler run`.
 
-3. `systemctl enable --now SERVICE_NAME` and confirm the bot runs.
+3. `systemctl enable --now discord_bot` (unit file e.g. `/etc/systemd/system/discord_bot.service`) and confirm the bot runs.
+
+   If you still use an older unit name (e.g. `discord_bot_v2.service`), either rename the unit to match or change the `systemctl restart …` line in `.github/workflows/main.yml` to your unit name.
 
 ---
 
@@ -188,8 +206,8 @@ The workflow runs commands like `sudo -u BOT_USER git fetch`. That uses **`BOT_U
 ```bash
 sudo -u discord_bot mkdir -p /home/discord_bot/.ssh
 sudo -u discord_bot chmod 700 /home/discord_bot/.ssh
-sudo -u discord_bot ssh-keygen -t ed25519 -f /home/discord_bot/.ssh/github_deploy -N ""
-sudo cat /home/discord_bot/.ssh/github_deploy.pub
+sudo -u discord_bot ssh-keygen -t ed25519 -f /home/discord_bot/.ssh/github_discord_bot -N ""
+sudo cat /home/discord_bot/.ssh/github_discord_bot.pub
 ```
 
 ### 6.2 Add the deploy key in GitHub
@@ -209,7 +227,7 @@ sudo -u discord_bot tee /home/discord_bot/.ssh/config >/dev/null <<'EOF'
 Host github.com
   HostName github.com
   User git
-  IdentityFile ~/.ssh/github_deploy
+  IdentityFile ~/.ssh/github_discord_bot
   IdentitiesOnly yes
 EOF
 sudo chmod 600 /home/discord_bot/.ssh/config
@@ -231,7 +249,7 @@ The workflow also sets `GIT_SSH_COMMAND` with `StrictHostKeyChecking=accept-new`
 sudo -u discord_bot ssh -T git@github.com
 # expect: successfully authenticated …
 
-sudo -u discord_bot git -C /home/discord_bot_v2 fetch origin
+sudo -u discord_bot git -C /home/discord_bot fetch origin
 ```
 
 ---
@@ -248,7 +266,7 @@ If you SSH as `BOT_USER` instead, you need passwordless `sudo` for `systemctl` (
 Example **sudoers** snippet (edit with `visudo`), only if needed:
 
 ```text
-discord_bot ALL=(ALL) NOPASSWD: /bin/systemctl restart discord_bot_v2
+discord_bot ALL=(ALL) NOPASSWD: /bin/systemctl restart discord_bot
 ```
 
 ---
@@ -288,7 +306,7 @@ This repo does **not** use repository variables `DEPLOY_PATH` / `SYSTEMD_SERVICE
 **Diagnostic commands** (run on VPS as root; adjust paths):
 
 ```bash
-REPO=/home/discord_bot_v2
+REPO=/home/discord_bot
 sudo -u discord_bot git -C "$REPO" remote -v
 sudo ls -la /home/discord_bot/.ssh/
 sudo -u discord_bot ssh -o BatchMode=yes -T git@github.com

@@ -64,9 +64,9 @@ jobs:
         )
       )
     steps:
-      # v1.2.x supports `fingerprint` (SHA256 of droplet host key), not `known_hosts`.
+      # v1.2.x supports `fingerprint` (SHA256 of server host key), not `known_hosts`.
       # Add secret SSH_HOST_FINGERPRINT only if you want strict host pinning; omit otherwise.
-      - name: Deploy to DigitalOcean
+      - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -85,8 +85,8 @@ jobs:
             chmod 600 /home/discord_bot/.ssh/github_discord_bot
             chmod 644 /home/discord_bot/.ssh/github_discord_bot.pub
             chmod 600 /home/discord_bot/.ssh/known_hosts*
-            cd /home/discord_bot_v2
+            cd /home/discord_bot
             sudo -u discord_bot env GIT_SSH_COMMAND="$GIT_SSH" git fetch origin
             sudo -u discord_bot env GIT_SSH_COMMAND="$GIT_SSH" git reset --hard origin/main
-            sudo -i -u discord_bot bash -c 'cd /home/discord_bot_v2 && /home/discord_bot/.local/bin/uv sync --no-dev'
-            systemctl restart discord_bot_v2
+            sudo -i -u discord_bot bash -c 'cd /home/discord_bot && /home/discord_bot/.local/bin/uv sync --no-dev'
+            systemctl restart discord_bot
