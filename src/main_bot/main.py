@@ -7,7 +7,7 @@ FULL_DEBUG_IN_TERMINAL = False
 # Production cogs always load. Set ``LOAD_DEVELOPMENT_COGS`` in the environment to
 # ``1`` / ``true`` / ``yes`` / ``on`` or ``0`` / ``false`` / ``no`` / ``off`` to override
 # this default without editing code (e.g. per Doppler config).
-DEVELOPMENT_COG_EXTENSIONS_ENABLED = True
+DEVELOPMENT_COG_EXTENSIONS_ENABLED = False
 
 import logging
 import os
