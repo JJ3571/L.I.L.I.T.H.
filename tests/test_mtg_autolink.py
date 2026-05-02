@@ -4,6 +4,7 @@ import pytest
 
 from main_bot.utils.mtg_autolink import distinct_span_phrases
 from main_bot.utils.mtg_autolink import greedy_resolve_cards
+from main_bot.utils.mtg_autolink import normalize_for_autocard_match
 from main_bot.utils.mtg_autolink import normalize_phrase
 from main_bot.utils.mtg_autolink import tokenize
 
@@ -11,6 +12,10 @@ from main_bot.utils.mtg_autolink import tokenize
 def test_normalize_phrase_collapses_spaces_and_casefolds():
     assert normalize_phrase("  Lightning   Bolt ") == "lightning bolt"
     assert normalize_phrase("ANGER") == "anger"
+
+
+def test_normalize_for_autocard_match_drops_commas_for_lookup():
+    assert normalize_for_autocard_match("Shabraz, the Skyshark") == normalize_phrase("Shabraz the Skyshark")
 
 
 def test_tokenize_strips_words_from_punctuation_and_keeps_apostrophe():
@@ -50,6 +55,29 @@ def test_distinct_span_phrases_single_char_token_skipped_when_k_is_one():
     phrases2 = distinct_span_phrases(["Ok", "a"], 2, frozenset())
     lowers2 = {normalize_phrase(p) for p in phrases2}
     assert normalize_phrase("Ok a") in lowers2
+
+
+def test_greedy_resolve_legend_with_comma_in_title_chat_has_no_commas_between_tokens():
+    """Tokenizer omits commas, so lookups need a comma-stripped alias keyed like Scryfall fill."""
+    shabraz = {
+        "name": "Shabraz, the Skyshark",
+        "oracle_id": "shabraz",
+        "type_line": "Creature — Shark",
+        "set_name": "Test",
+    }
+    canonical = normalize_phrase(shabraz["name"])
+    stripped = normalize_for_autocard_match(shabraz["name"])
+    resolved = {canonical: shabraz, stripped: shabraz}
+
+    out = greedy_resolve_cards(
+        tokenize("I love Shabraz the Skyshark"),
+        max_span=8,
+        resolved_lower=resolved,
+        blocked_normalized=frozenset(),
+        max_cards=10,
+    )
+    assert len(out) == 1
+    assert out[0]["name"] == "Shabraz, the Skyshark"
 
 
 def test_greedy_longest_prefers_two_word_name_over_single_where_both_resolve():

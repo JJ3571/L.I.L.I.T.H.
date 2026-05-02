@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 
 import aiohttp
 import nextcord
@@ -8,15 +9,22 @@ from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.config import MANA_SYMBOLS
-from main_bot.server_configs.config import mtg_autolink_blocked_names
-from main_bot.server_configs.config import mtg_autolink_channel_ids
-from main_bot.server_configs.config import mtg_autolink_max_cards_per_message
-from main_bot.server_configs.config import mtg_autolink_max_word_span
-from main_bot.utils.mtg_autolink import distinct_span_phrases
-from main_bot.utils.mtg_autolink import greedy_resolve_cards
-from main_bot.utils.mtg_autolink import normalize_phrase
-from main_bot.utils.mtg_autolink import tokenize
+from main_bot.server_configs.config import (
+    GUILD_ID,
+    MANA_SYMBOLS,
+    mtg_autolink_blocked_names,
+    mtg_autolink_channel_ids,
+    mtg_autolink_cooldown_channel_ids,
+    mtg_autolink_max_cards_per_message,
+    mtg_autolink_max_word_span,
+)
+from main_bot.utils.mtg_autolink import (
+    distinct_span_phrases,
+    greedy_resolve_cards,
+    normalize_for_autocard_match,
+    normalize_phrase,
+    tokenize,
+)
 
 
 SCRYFALL_HEADERS = {
@@ -24,11 +32,15 @@ SCRYFALL_HEADERS = {
     "Accept": "application/json",
 }
 
+# Minimum seconds between replies in channels listed by MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS (not per-user).
+MTG_AUTOLINK_COOLDOWN_SEC = 90
+
 
 class TCG(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self._autolink_session: aiohttp.ClientSession | None = None
+        self._mtg_autolink_last_sent_at: dict[int, float] = {}
 
     async def cog_load(self) -> None:
         timeout = aiohttp.ClientTimeout(total=30)
@@ -61,6 +73,16 @@ class TCG(commands.Cog, CogLogMixin):
         ch_id = message.channel.id
         if ch_id not in mtg_autolink_channel_ids:
             return
+
+        cooldown_for_channel = (
+            bool(mtg_autolink_cooldown_channel_ids)
+            and ch_id in mtg_autolink_cooldown_channel_ids
+        )
+        if cooldown_for_channel:
+            now = time.monotonic()
+            last_at = self._mtg_autolink_last_sent_at.get(ch_id)
+            if last_at is not None and (now - last_at) < MTG_AUTOLINK_COOLDOWN_SEC:
+                return
 
         text = (message.content or "").strip()
         if not text:
@@ -105,7 +127,7 @@ class TCG(commands.Cog, CogLogMixin):
                 return
 
             for card in cards:
-                embed = self.create_card_embed(card)
+                embed = self.create_card_embed(card, art_as_thumbnail=True)
                 try:
                     await message.reply(embed=embed, mention_author=False)
                 except nextcord.Forbidden:
@@ -114,6 +136,8 @@ class TCG(commands.Cog, CogLogMixin):
                     )
                     return
                 await asyncio.sleep(0.075)
+            if cooldown_for_channel:
+                self._mtg_autolink_last_sent_at[ch_id] = time.monotonic()
         finally:
             if temporary_session:
                 await session.close()
@@ -123,7 +147,7 @@ class TCG(commands.Cog, CogLogMixin):
         session: aiohttp.ClientSession,
         phrases: list[str],
     ) -> dict:
-        """Maps ``normalize_phrase(card name)`` to card JSON for names Scryfall could resolve."""
+        """Maps normalized card names (and comma-stripped aliases) to card JSON from Scryfall."""
         if not phrases:
             return {}
 
@@ -147,13 +171,16 @@ class TCG(commands.Cog, CogLogMixin):
                 for card in data.get("data", []):
                     k = normalize_phrase(card["name"])
                     result[k] = card
+                    alt = normalize_for_autocard_match(card["name"])
+                    if alt != k:
+                        result.setdefault(alt, card)
 
                 if start + chunk_size < len(phrases):
                     await asyncio.sleep(0.1)
 
         return result
 
-    @nextcord.slash_command(name="mtg", description="Magic: The Gathering commands")
+    @nextcord.slash_command(name="mtg", description="Magic: The Gathering commands",guild_ids=[GUILD_ID])
     async def mtg(self, interaction: nextcord.Interaction):
         pass
 
@@ -258,7 +285,7 @@ class TCG(commands.Cog, CogLogMixin):
         embed = self.create_card_embed(card)
         await original_message.edit(embed=embed, view=None, content=None)
 
-    def create_card_embed(self, card):
+    def create_card_embed(self, card, *, art_as_thumbnail: bool = False):
         embed = nextcord.Embed(
             title=card["name"],
             description=self.format_mana(card.get("oracle_text", "No description")),
@@ -273,7 +300,10 @@ class TCG(commands.Cog, CogLogMixin):
                 fu = faces[0].get("image_uris") or {}
                 border_crop = fu.get("border_crop")
         if border_crop:
-            embed.set_image(url=border_crop)
+            if art_as_thumbnail:
+                embed.set_thumbnail(url=border_crop)
+            else:
+                embed.set_image(url=border_crop)
 
         embed.add_field(
             name="Mana Cost",

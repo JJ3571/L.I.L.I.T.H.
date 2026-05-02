@@ -247,6 +247,8 @@ MANA_SYMBOLS = _get_json_dict("MANA_SYMBOLS")
 
 # MTG autocard in allowed channels only; empty list = disabled
 mtg_autolink_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_CHANNEL_IDS"))
+# Subset where the autolink rate limit applies (e.g. general chat). Empty = no cooldown anywhere.
+mtg_autolink_cooldown_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS"))
 mtg_autolink_blocked_names = _frozenset_lower(_get_json_str_list("MTG_AUTOLINK_BLOCKED_NAMES"))
 mtg_autolink_max_cards_per_message = _get_int("MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE", 5) # Not in Doppler
 mtg_autolink_max_word_span = max(1, min(_get_int("MTG_AUTOLINK_MAX_WORD_SPAN", 4), 8)) # Not in Doppler

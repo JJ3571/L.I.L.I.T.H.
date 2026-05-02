@@ -16,6 +16,11 @@ def normalize_phrase(phrase: str) -> str:
     return " ".join(phrase.split()).casefold()
 
 
+def normalize_for_autocard_match(phrase: str) -> str:
+    """Match chat spans to oracle names that include commas without requiring comma tokens."""
+    return normalize_phrase(phrase.replace(",", ""))
+
+
 def distinct_span_phrases(
     tokens: List[str],
     max_span: int,
