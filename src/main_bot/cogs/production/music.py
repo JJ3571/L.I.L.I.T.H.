@@ -706,21 +706,31 @@ class MusicCog(commands.Cog):
         if await self._wait_for_pool_connected():
             return True
 
-        await wavelink.Pool.connect(
-            nodes=[
-                wavelink.Node(
-                    uri=LAVALINK_URI,
-                    password=LAVALINK_PASSWORD,
-                    client=self.bot,
-                    inactive_player_timeout=MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC,
-                    resume_timeout=MUSIC_LAVALINK_RESUME_TIMEOUT_SEC,
-                )
-            ],
+        node = wavelink.Node(
+            uri=LAVALINK_URI,
+            password=LAVALINK_PASSWORD,
             client=self.bot,
+            inactive_player_timeout=MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC,
+            resume_timeout=MUSIC_LAVALINK_RESUME_TIMEOUT_SEC,
         )
-
-        if await self._wait_for_pool_connected():
-            return True
+        try:
+            await wavelink.Pool.connect(nodes=[node], client=self.bot)
+            if await self._wait_for_pool_connected():
+                return True
+        finally:
+            # :meth:`wavelink.Pool.connect` catches ``AuthorizationFailedException`` and only logs;
+            # the Node is never registered but still holds an aiohttp session (unclosed-client warnings).
+            if node.identifier not in wavelink.Pool.nodes:
+                try:
+                    await node.close()
+                except Exception:
+                    pass
+                sess = getattr(node, "_session", None)
+                if sess is not None and not sess.closed:
+                    try:
+                        await sess.close()
+                    except Exception:
+                        pass
 
         print(
             f"Lavalink has no CONNECTED node at {LAVALINK_URI} (timed out waiting for WS ready). "

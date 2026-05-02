@@ -29,6 +29,8 @@ This bot loads config from environment variables (typically injected by Doppler)
 
 ## Optional (feature-dependent)
 
+- `LAVALINK_URI` (string): HTTP base URL for Lavalink v4 (default `http://127.0.0.1:2333`). Same host/port Lavalink binds.
+- `LAVALINK_PASSWORD` (string): **Must match** Lavalink `application.yml` → `lavalink.server.password`. If unset, the bot defaults to `youshallnotpass` (see `config.py`). A mismatch produces Lavalink log `Authentication failed` on `/v4/websocket` and wavelink `Failed to authenticate Node`.
 - `GEMINI_API_KEY` (string)
 - `ENVIRONMENT` (string: `development` or `production`) used by `is_development_environment()`
 - `LOAD_DEVELOPMENT_COGS` (optional): when set to `1`, `true`, `yes`, or `on`, the bot loads extensions under `main_bot.cogs.development` in addition to `production`. When set to `0`, `false`, `no`, or `off`, development extensions are not loaded even if `DEVELOPMENT_COG_EXTENSIONS_ENABLED` is True in `main.py`. If unset, the default comes from `DEVELOPMENT_COG_EXTENSIONS_ENABLED` in `main_bot/main.py`.
