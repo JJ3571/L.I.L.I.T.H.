@@ -7,6 +7,7 @@ Requires ``discord`` → Nextcord aliasing in ``main.py`` before this cog import
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 import urllib.parse
@@ -33,6 +34,8 @@ from main_bot.server_configs.config import (
 )
 from main_bot.utils.jazz_http_server import LocalMusicHttpServer
 from main_bot.utils.local_music_scan import list_audio_files
+
+_MUSIC_LOG = logging.getLogger("nextcord.music")
 
 SessionKind = Literal["idle", "stream", "local_folder"]
 LOCAL_MUSIC_ROOT = PROJECT_ROOT / "local_music"
@@ -469,6 +472,12 @@ class MusicCog(commands.Cog):
                 if player is None or player.channel is None or player.channel.id != bot_vc_id:
                     return
                 if _human_members_in_voice_channel(guild, bot_vc_id, self.bot.user.id) == 0:
+                    _MUSIC_LOG.info(
+                        "empty_channel_disconnect guild=%s bot_vc_id=%s %s",
+                        guild_id,
+                        bot_vc_id,
+                        self._music_voice_snapshot(guild),
+                    )
                     await self.full_disconnect_guild(guild_id)
             except asyncio.CancelledError:
                 raise
@@ -501,6 +510,65 @@ class MusicCog(commands.Cog):
         if isinstance(ch, (nextcord.VoiceChannel, nextcord.StageChannel)):
             return ch.id
         return None
+
+    def _music_voice_snapshot(self, guild: nextcord.Guild, player: Optional[wavelink.Player] = None) -> str:
+        """Compact, best-effort voice + Lavalink state for diagnosing desync/mute wedges (no awaits)."""
+        parts: list[str] = []
+
+        gw = guild.voice_client
+        parts.append(f"voice_client_cls={gw.__class__.__name__}")
+
+        gw_pl = gw if isinstance(gw, wavelink.Player) else None
+        if gw_pl is not None:
+            parts.append(f"gw_connected={gw_pl.connected}")
+            ch_gw = gw_pl.channel
+            parts.append(f"gw_ch_id={getattr(ch_gw, 'id', None)}")
+            parts.append(f"paused={gw_pl.paused}")
+            vol = getattr(gw_pl, "volume", None)
+            if vol is not None:
+                parts.append(f"vol={vol}")
+
+        resolved = player if player is not None else self._resolve_wavelink_player(guild.id)
+        parts.append(f"resolved_is_player={type(resolved).__name__}")
+        if resolved is not None and resolved is not gw_pl:
+            parts.append(f"resolved_connected={getattr(resolved, 'connected', None)}")
+            rch = getattr(resolved, "channel", None)
+            parts.append(f"resolved_ch_id={getattr(rch, 'id', None)}")
+
+        me = guild.me
+        me_vs = me.voice if me is not None else None
+        if me_vs is not None and me_vs.channel is not None:
+            parts.append(f"gateway_ch_id={me_vs.channel.id}")
+            parts.append(
+                f"guild_vs_flags=self_m={me_vs.self_mute}/self_d={me_vs.self_deaf}/m={me_vs.mute}/d={me_vs.deaf}",
+            )
+
+        try:
+            node = wavelink.Pool.get_node()
+            reg = node.get_player(guild.id)
+            parts.append(f"node_player_reg={'set' if reg is not None else 'none'}")
+            if reg is not None and gw_pl is not None:
+                parts.append(f"node_same_as_gw={reg is gw_pl}")
+        except InvalidNodeException:
+            parts.append("node_player_reg=no_connected_node")
+
+        ch_id_for_humans: Optional[int] = None
+        if gw_pl is not None and gw_pl.channel is not None:
+            ch_id_for_humans = gw_pl.channel.id
+        elif me_vs is not None and me_vs.channel is not None:
+            ch_id_for_humans = me_vs.channel.id
+        if ch_id_for_humans is not None:
+            try:
+                nh = _human_members_in_voice_channel(guild, ch_id_for_humans, self.bot.user.id)
+                parts.append(f"humans_in_bot_ch_excl_bot={nh}")
+            except Exception:
+                parts.append("humans=?")
+
+        st = self.guild_states.get(guild.id)
+        if st is not None:
+            parts.append(f"music_session={st.session}")
+
+        return " ".join(str(p) for p in parts)
 
     async def _alone_in_voice_sweep_loop(self) -> None:
         # Do not use ``wait_until_ready`` here: this task may start while ``on_ready`` is still running.
@@ -665,15 +733,33 @@ class MusicCog(commands.Cog):
         return self._local_http.url_for_file(folder, path)
 
     async def _connect_voice(self, guild: nextcord.Guild, voice_channel: nextcord.VoiceChannel) -> Optional[wavelink.Player]:
+        _MUSIC_LOG.info(
+            "_connect_voice start guild=%s target_ch=%s %s",
+            guild.id,
+            voice_channel.id,
+            self._music_voice_snapshot(guild),
+        )
         if not await self._ensure_lavalink():
             return None
         vc = guild.voice_client
         if isinstance(vc, wavelink.Player):
             if vc.channel and vc.channel.id == voice_channel.id:
                 vc.autoplay = AutoPlayMode.partial
+                _MUSIC_LOG.info(
+                    "_connect_voice reused existing player guild=%s ch=%s %s",
+                    guild.id,
+                    voice_channel.id,
+                    self._music_voice_snapshot(guild, vc),
+                )
                 return vc
             await vc.move_to(voice_channel)
             vc.autoplay = AutoPlayMode.partial
+            _MUSIC_LOG.info(
+                "_connect_voice move_to guild=%s ch=%s %s",
+                guild.id,
+                voice_channel.id,
+                self._music_voice_snapshot(guild, vc),
+            )
             return vc
         if vc is not None:
             try:
@@ -688,9 +774,22 @@ class MusicCog(commands.Cog):
             )
             pl = cast(wavelink.Player, player)
             pl.autoplay = AutoPlayMode.partial
+            _MUSIC_LOG.info(
+                "_connect_voice new_connection guild=%s ch=%s %s",
+                guild.id,
+                voice_channel.id,
+                self._music_voice_snapshot(guild, pl),
+            )
             return pl
         except Exception as e:
             print(f"Voice connect failed: {e}")
+            _MUSIC_LOG.warning(
+                "_connect_voice failed guild=%s ch=%s exc=%s %s",
+                guild.id,
+                voice_channel.id,
+                e,
+                self._music_voice_snapshot(guild),
+            )
             return None
 
     def _resolve_wavelink_player(self, guild_id: int) -> Optional[wavelink.Player]:
@@ -707,6 +806,15 @@ class MusicCog(commands.Cog):
         return node.get_player(guild_id)
 
     async def full_disconnect_guild(self, guild_id: int) -> None:
+        guild = self.bot.get_guild(guild_id)
+        if guild is not None:
+            _MUSIC_LOG.info(
+                "full_disconnect_guild guild=%s %s",
+                guild_id,
+                self._music_voice_snapshot(guild),
+            )
+        else:
+            _MUSIC_LOG.info("full_disconnect_guild guild=%s (guild not cached)", guild_id)
         self._cancel_empty_disconnect(guild_id)
         state = self.guild_states.get(guild_id)
         msg = state.controller_message if state else None
@@ -722,7 +830,6 @@ class MusicCog(commands.Cog):
             state.local_remaining.clear()
             state.local_history_paths.clear()
 
-        guild = self.bot.get_guild(guild_id)
         if guild is not None:
             vc = guild.voice_client
             pl: Optional[wavelink.Player] = vc if isinstance(vc, wavelink.Player) else None
@@ -740,6 +847,12 @@ class MusicCog(commands.Cog):
                         "[music] Player.disconnect timed out (voice leave was already sent); "
                         "Lavalink may need a restart if playback ghosts."
                     )
+                    if guild:
+                        _MUSIC_LOG.warning(
+                            "Player.disconnect timed out guild=%s %s",
+                            guild_id,
+                            self._music_voice_snapshot(guild, pl),
+                        )
                 except Exception as e:
                     print(f"[music] Player.disconnect: {e}")
 
@@ -1002,6 +1115,14 @@ class MusicCog(commands.Cog):
             tracks = await wavelink.Pool.fetch_tracks(url)
         except Exception as e:
             print(f"local track load failed: {e}")
+            gid = getattr(player.guild, "id", None)
+            sg = ""
+            try:
+                if player.guild:
+                    sg = self._music_voice_snapshot(player.guild, player)
+            except Exception:
+                pass
+            _MUSIC_LOG.warning("local_track_load_failed guild=%s path=%s err=%s %s", gid, path, e, sg)
             return False
         if not tracks:
             return False
@@ -1013,6 +1134,14 @@ class MusicCog(commands.Cog):
             await player.play(tracks[0], start=t0, replace=True)
         except Exception as e:
             print(f"local play failed: {e}")
+            gid = getattr(player.guild, "id", None)
+            sg = ""
+            try:
+                if player.guild:
+                    sg = self._music_voice_snapshot(player.guild, player)
+            except Exception:
+                pass
+            _MUSIC_LOG.warning("local_play_failed guild=%s path=%s err=%s %s", gid, path, e, sg)
             return False
         if append_history:
             state.local_history_paths.append(path)
@@ -1076,10 +1205,21 @@ class MusicCog(commands.Cog):
             return False
 
     @commands.Cog.listener()
-    async def on_wavelink_track_start(self, _payload: TrackStartEventPayload) -> None:
-        player = _payload.player
+    async def on_wavelink_track_start(self, payload: TrackStartEventPayload) -> None:
+        player = payload.player
+        track = getattr(payload, "track", None)
+        title = getattr(track, "title", None) if track is not None else None
         if player is None or player.guild is None:
+            _MUSIC_LOG.warning("on_wavelink_track_start missing player or guild title=%s", title)
             return
+        snap = self._music_voice_snapshot(player.guild, player)
+        _MUSIC_LOG.info(
+            "on_wavelink_track_start guild=%s title=%r paused=%s %s",
+            player.guild.id,
+            title,
+            getattr(player, "paused", None),
+            snap,
+        )
         await self.refresh_controller_embed(player.guild.id)
         await self._sync_music_presence(player.guild.id)
 
@@ -1088,7 +1228,14 @@ class MusicCog(commands.Cog):
         guild = player.guild
         if guild is None:
             return
+        snap = self._music_voice_snapshot(guild, player)
         print(f"[music] inactive player timeout ({MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC}s) — disconnecting guild={guild.id}")
+        _MUSIC_LOG.info(
+            "on_wavelink_inactive_player guild=%s (timeout %ss) %s",
+            guild.id,
+            MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC,
+            snap,
+        )
         await self.full_disconnect_guild(guild.id)
 
     @commands.Cog.listener()
@@ -1097,12 +1244,29 @@ class MusicCog(commands.Cog):
         if player is None or player.guild is None:
             return
         guild_id = player.guild.id
+        guild = player.guild
+        snap = self._music_voice_snapshot(guild, player)
+        reason_raw = payload.reason or ""
+        reason_lc = reason_raw.lower()
         state = self.guild_states.get(guild_id)
-        if state is None:
+
+        if reason_lc != "finished":
+            _MUSIC_LOG.warning(
+                "on_wavelink_track_end guild=%s reason=%r paused=%s guild_state_present=%s %s",
+                guild_id,
+                reason_raw,
+                getattr(player, "paused", None),
+                state is not None,
+                snap,
+            )
             return
 
-        reason = (payload.reason or "").lower()
-        if reason != "finished":
+        if state is None:
+            _MUSIC_LOG.warning(
+                "on_wavelink_track_end guild=%s reason=finished but no GuildMusicState %s",
+                guild_id,
+                snap,
+            )
             return
 
         if state.session == "local_folder":
@@ -1125,11 +1289,22 @@ class MusicCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_wavelink_websocket_closed(self, payload: WebsocketClosedEventPayload) -> None:
-        gid = payload.player.guild.id if payload.player and payload.player.guild else None
+        player = payload.player
+        gid = player.guild.id if player and player.guild else None
         code = payload.code
-        print(
+        guild = player.guild if player else None
+        snap = ""
+        if guild is not None:
+            snap = self._music_voice_snapshot(guild, player)
+        msg = (
             f"[music] Lavalink Discord voice WS closed: guild={gid} "
-            f"code={code.value} ({code.name}) reason={payload.reason!r} by_remote={payload.by_remote}",
+            f"code={code.value} ({code.name}) reason={payload.reason!r} by_remote={payload.by_remote}"
+        )
+        print(msg)
+        _MUSIC_LOG.warning(
+            "%s snapshot=%s",
+            msg,
+            snap or "(no guild snapshot)",
         )
         if code == DiscordVoiceCloseType.DAVE_PROTOCOL_REQUIRED:
             print(
@@ -1375,8 +1550,22 @@ class MusicCog(commands.Cog):
             state.local_folder = None
             state.local_remaining.clear()
             await self._slash_reply(interaction, f"Playback failed: {e}")
+            _MUSIC_LOG.warning(
+                "local_folder_play_failed guild=%s folder=%s err=%s %s",
+                guild.id,
+                folder,
+                e,
+                self._music_voice_snapshot(guild, vc),
+            )
             return
 
+        _MUSIC_LOG.info(
+            "local_folder_play_started guild=%s folder=%s start_ms=%s %s",
+            guild.id,
+            folder,
+            start_ms,
+            self._music_voice_snapshot(guild, vc),
+        )
         state.local_history_paths.append(first)
 
         posted = await self.upsert_controller(voice_channel, vc)
@@ -1433,6 +1622,34 @@ class MusicCog(commands.Cog):
             return
 
         bot_vc = bot_ch
+
+        if member.id == self.bot.user.id:
+            b_chan = getattr(before.channel, "id", None)
+            a_chan = getattr(after.channel, "id", None)
+            if (
+                b_chan != a_chan
+                or before.self_mute != after.self_mute
+                or before.self_deaf != after.self_deaf
+                or before.mute != after.mute
+                or before.deaf != after.deaf
+            ):
+                _MUSIC_LOG.info(
+                    "bot_voice_gateway_update guild=%s before_ch=%s after_ch=%s "
+                    "self_mute_before/after=%s/%s self_deaf_before/after=%s/%s mute=%s/%s deaf=%s/%s %s",
+                    guild.id,
+                    b_chan,
+                    a_chan,
+                    before.self_mute,
+                    after.self_mute,
+                    before.self_deaf,
+                    after.self_deaf,
+                    before.mute,
+                    after.mute,
+                    before.deaf,
+                    after.deaf,
+                    self._music_voice_snapshot(guild, player),
+                )
+            return
 
         if (
             before.channel is not None
