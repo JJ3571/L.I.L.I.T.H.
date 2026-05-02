@@ -1,4 +1,4 @@
-name: CI/CD Pipeline 
+name: CI/CD Pipeline
 
 on:
   # Tests: all pushes; PR opened/sync/reopened/closed (closed-without-merge skips the test job).
