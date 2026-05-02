@@ -20,6 +20,10 @@ permission APIs. Tests are layered like ``test_counter_cog.py``:
 The background ``cleanup_exempt_users`` loop is not started in tests: we patch
 ``Loop.start`` during ``WaterboardCog3.__init__`` and invoke the underlying coroutine
 via ``WaterboardCog3.cleanup_exempt_users.coro(cog)`` when we need to exercise cleanup SQL.
+
+PostgreSQL-backed tests use ``@pytest.mark.usefixtures("_clean_waterboard_tables")`` so
+helpers that never touch the DB can use ``waterboard_cog_unit`` and run without
+``DATABASE_URL``.
 """
 
 from __future__ import annotations
@@ -61,11 +65,21 @@ def waterboard_bot() -> MagicMock:
     return bot
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _clean_waterboard_tables(pg_pool) -> None:
+@pytest_asyncio.fixture
+async def _clean_waterboard_tables(pg_pool):
+    """Clear waterboard rows before each DB-backed test (requested via ``usefixtures``)."""
     async with pg_pool.acquire() as conn:
         await conn.execute('DELETE FROM "waterboard".exempt_users')
         await conn.execute('DELETE FROM "waterboard".waterboarded_users')
+    yield
+
+
+@pytest.fixture
+def waterboard_cog_unit(waterboard_bot: MagicMock) -> WaterboardCog3:
+    """Cog with a mocked pool for tests that never touch PostgreSQL."""
+    waterboard_bot.pg_pool = MagicMock()
+    with patch.object(WaterboardCog3.cleanup_exempt_users, "start", MagicMock()):
+        return WaterboardCog3(waterboard_bot)
 
 
 @pytest.fixture
@@ -140,6 +154,7 @@ class TestWaterboardStatic:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_clean_waterboard_tables")
 class TestWaterboardDatabase:
     @pytest.mark.asyncio
     async def test_create_tables_idempotent(self, waterboard_cog: WaterboardCog3) -> None:
@@ -204,56 +219,63 @@ class TestWaterboardDatabase:
 
 class TestWaterboardChannelHelpers:
     def test_get_waterboard_channels_sorts_by_position_and_caps(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cat = MagicMock()
+        cat.id = 9001
         ch_high = MagicMock(spec=nextcord.VoiceChannel)
         ch_high.position = 5
+        ch_high.type = nextcord.ChannelType.voice
         ch_low = MagicMock(spec=nextcord.VoiceChannel)
         ch_low.position = 1
+        ch_low.type = nextcord.ChannelType.voice
         text_ch = MagicMock()
         type(text_ch).__name__ = "TextChannel"
+        text_ch.type = nextcord.ChannelType.text
         cat.channels = [ch_high, text_ch, ch_low]
 
         guild = MagicMock(spec=nextcord.Guild)
         guild.categories = [cat]
 
         monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 9001)
-        with patch("nextcord.utils.get", return_value=cat):
-            out = waterboard_cog.get_waterboard_channels(guild, count=10)
+        out = waterboard_cog_unit.get_waterboard_channels(guild, count=10)
         assert out == [ch_low, ch_high]
 
     def test_get_waterboard_channels_missing_category(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 9001)
-        with patch("nextcord.utils.get", return_value=None):
-            out = waterboard_cog.get_waterboard_channels(MagicMock(), count=10)
+        guild = MagicMock(spec=nextcord.Guild)
+        guild.categories = []
+        out = waterboard_cog_unit.get_waterboard_channels(guild, count=10)
         assert out == []
 
     @pytest.mark.asyncio
     async def test_show_waterboard_category_success(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         category = MagicMock()
+        category.id = 42
         category.set_permissions = AsyncMock(return_value=None)
         guild = MagicMock()
         guild.default_role = MagicMock()
+        guild.categories = [category]
         monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 42)
-        with patch("nextcord.utils.get", return_value=category):
-            ok = await waterboard_cog.show_waterboard_category(guild)
+        ok = await waterboard_cog_unit.show_waterboard_category(guild)
         assert ok is True
         category.set_permissions.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_hide_waterboard_category_returns_false_on_error(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         category = MagicMock()
+        category.id = 42
         category.set_permissions = AsyncMock(side_effect=RuntimeError("api"))
         monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 42)
-        with patch("nextcord.utils.get", return_value=category):
-            ok = await waterboard_cog.hide_waterboard_category(MagicMock())
+        guild = MagicMock()
+        guild.categories = [category]
+        ok = await waterboard_cog_unit.hide_waterboard_category(guild)
         assert ok is False
 
 
@@ -265,20 +287,20 @@ class TestWaterboardChannelHelpers:
 class TestWaterboardMoveUser:
     @pytest.mark.asyncio
     async def test_move_user_with_rate_limit_success(
-        self, waterboard_cog: WaterboardCog3
+        self, waterboard_cog_unit: WaterboardCog3
     ) -> None:
         user = MagicMock(spec=nextcord.Member)
         user.name = "mover"
         user.move_to = AsyncMock()
         channel = MagicMock(spec=nextcord.VoiceChannel)
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            ok = await waterboard_cog.move_user_with_rate_limit(user, channel)
+            ok = await waterboard_cog_unit.move_user_with_rate_limit(user, channel)
         assert ok is True
         user.move_to.assert_awaited_once_with(channel)
 
     @pytest.mark.asyncio
     async def test_move_user_400_returns_false(
-        self, waterboard_cog: WaterboardCog3
+        self, waterboard_cog_unit: WaterboardCog3
     ) -> None:
         user = MagicMock(spec=nextcord.Member)
         user.name = "gone"
@@ -286,12 +308,12 @@ class TestWaterboardMoveUser:
         exc.status = 400
         user.move_to = AsyncMock(side_effect=exc)
         channel = MagicMock(spec=nextcord.VoiceChannel)
-        ok = await waterboard_cog.move_user_with_rate_limit(user, channel, max_retries=2)
+        ok = await waterboard_cog_unit.move_user_with_rate_limit(user, channel, max_retries=2)
         assert ok is False
 
     @pytest.mark.asyncio
     async def test_move_user_429_retries_then_success(
-        self, waterboard_cog: WaterboardCog3
+        self, waterboard_cog_unit: WaterboardCog3
     ) -> None:
         user = MagicMock(spec=nextcord.Member)
         user.name = "ratelimited"
@@ -300,25 +322,25 @@ class TestWaterboardMoveUser:
         user.move_to = AsyncMock(side_effect=[exc429, None])
         channel = MagicMock(spec=nextcord.VoiceChannel)
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            ok = await waterboard_cog.move_user_with_rate_limit(user, channel, max_retries=3)
+            ok = await waterboard_cog_unit.move_user_with_rate_limit(user, channel, max_retries=3)
         assert ok is True
         assert user.move_to.await_count == 2
 
     @pytest.mark.asyncio
     async def test_move_users_in_batches(
-        self, waterboard_cog: WaterboardCog3
+        self, waterboard_cog_unit: WaterboardCog3
     ) -> None:
         users = [MagicMock(spec=nextcord.Member) for _ in range(3)]
         for u in users:
             u.name = "u"
         channel = MagicMock(spec=nextcord.VoiceChannel)
         with patch.object(
-            waterboard_cog,
+            waterboard_cog_unit,
             "move_user_with_rate_limit",
             new=AsyncMock(return_value=True),
         ) as mover:
             with patch("asyncio.sleep", new_callable=AsyncMock):
-                moved = await waterboard_cog.move_users_in_batches(
+                moved = await waterboard_cog_unit.move_users_in_batches(
                     users, channel, batch_size=2
                 )
         assert moved == users
@@ -330,6 +352,7 @@ class TestWaterboardMoveUser:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_clean_waterboard_tables")
 class TestWaterboardPurchaseFlow:
     @pytest.mark.asyncio
     async def test_common_flow_exempt_user_returns_embed(
@@ -463,10 +486,10 @@ class TestWaterboardPurchaseFlow:
 
 
 class TestWaterboardSlashRegistration:
-    def test_root_slash_commands_exist(self, waterboard_cog: WaterboardCog3) -> None:
+    def test_root_slash_commands_exist(self, waterboard_cog_unit: WaterboardCog3) -> None:
         names = {
             cmd.name
-            for _, cmd in inspect_get_slash_commands(waterboard_cog)
+            for _, cmd in inspect_get_slash_commands(waterboard_cog_unit)
             if isinstance(cmd, SlashApplicationCommand)
         }
         assert names >= {
@@ -477,8 +500,8 @@ class TestWaterboardSlashRegistration:
             "executivepardon",
         }
 
-    def test_waterboard_callbacks_are_async(self, waterboard_cog: WaterboardCog3) -> None:
-        for _, cmd in inspect_get_slash_commands(waterboard_cog):
+    def test_waterboard_callbacks_are_async(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        for _, cmd in inspect_get_slash_commands(waterboard_cog_unit):
             assert inspect.iscoroutinefunction(cmd.callback)
 
 
@@ -496,6 +519,7 @@ def inspect_get_slash_commands(cog_instance):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_clean_waterboard_tables")
 class TestWaterboardSlashHandlers:
     @pytest.mark.asyncio
     async def test_executivepardon_denies_non_admin(
@@ -685,18 +709,18 @@ class TestWaterboardSlashHandlers:
 class TestWaterboardPrefixCreateChannels:
     @pytest.mark.asyncio
     async def test_create_water_channels_denies_non_admin(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(waterboard_mod, "admin_user_ids", [1])
         ctx = MagicMock()
         ctx.author.id = 2
         ctx.send = AsyncMock()
-        await waterboard_cog.create_water_channels.callback(waterboard_cog, ctx, None)
+        await waterboard_cog_unit.create_water_channels.callback(waterboard_cog_unit, ctx, None)
         ctx.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_water_channels_wrong_guild(
-        self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
+        self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(waterboard_mod, "admin_user_ids", [9])
         monkeypatch.setattr(waterboard_mod, "GUILD_ID", 111)
@@ -705,7 +729,7 @@ class TestWaterboardPrefixCreateChannels:
         ctx.guild = MagicMock()
         ctx.guild.id = 222
         ctx.send = AsyncMock()
-        await waterboard_cog.create_water_channels.callback(waterboard_cog, ctx, None)
+        await waterboard_cog_unit.create_water_channels.callback(waterboard_cog_unit, ctx, None)
         ctx.send.assert_awaited()
 
 
@@ -714,6 +738,7 @@ class TestWaterboardPrefixCreateChannels:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_clean_waterboard_tables")
 class TestWaterboardSetup:
     @pytest.mark.asyncio
     async def test_setup_adds_cog(

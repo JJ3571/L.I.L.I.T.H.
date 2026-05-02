@@ -45,3 +45,8 @@ asyncio_mode = "auto"
 # Module-scoped loop so asyncpg pools from ``tests/conftest.py`` stay on the same loop as async tests.
 asyncio_default_fixture_loop_scope = "module"
 asyncio_default_test_loop_scope = "module"
+# nextcord.tasks.Loop uses asyncio.get_event_loop() when the cog is constructed; sync tests
+# have no running loop, which triggers this deprecation until nextcord moves to get_running_loop().
+filterwarnings = [
+    "ignore:There is no current event loop:DeprecationWarning:nextcord.ext.tasks",
+]

@@ -91,7 +91,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         voice_channels = [
             ch
             for ch in category.channels
-            if isinstance(ch, nextcord.VoiceChannel)
+            if getattr(ch, "type", None) == nextcord.ChannelType.voice
         ]
         voice_channels.sort(key=lambda c: c.position)
         return voice_channels[:count]

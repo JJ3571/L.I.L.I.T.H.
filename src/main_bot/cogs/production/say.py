@@ -1762,11 +1762,11 @@ class Say(commands.Cog, CogLogMixin):
                       name="message",
                       description="The message to say"
                   ),
-                  channel: nextcord.abc.GuildChannel = nextcord.SlashOption(
+                  channel: nextcord.TextChannel | None = nextcord.SlashOption(
                       name="channel",
                       description="Channel to send the message to (optional)",
                       required=False,
-                      channel_types=[nextcord.ChannelType.text] 
+                      channel_types=[nextcord.ChannelType.text],
                   )):
         
         await interaction.response.defer(ephemeral=True)
