@@ -33,6 +33,13 @@ This bot loads config from environment variables (typically injected by Doppler)
 - `ENVIRONMENT` (string: `development` or `production`) used by `is_development_environment()`
 - `LOAD_DEVELOPMENT_COGS` (optional): when set to `1`, `true`, `yes`, or `on`, the bot loads extensions under `main_bot.cogs.development` in addition to `production`. When set to `0`, `false`, `no`, or `off`, development extensions are not loaded even if `DEVELOPMENT_COG_EXTENSIONS_ENABLED` is True in `main.py`. If unset, the default comes from `DEVELOPMENT_COG_EXTENSIONS_ENABLED` in `main_bot/main.py`.
 
+## Admin `.logging` command (`main_bot.cogs.production.logging`)
+
+- `BOT_LOG_JOURNAL_UNIT` (optional): systemd unit name for `journalctl -u …` (e.g. `discord_bot`). Must match the **actual** unit on the server. If your service was renamed from `discord_bot_v2` to `discord_bot`, update this in Doppler or `.logging` will show empty journal tails.
+- `BOT_LOG_JOURNAL_EXTRA_UNITS` (optional): comma-separated extra units (e.g. `lavalink`) for additional embeds.
+- If `BOT_LOG_JOURNAL_UNIT` is **unset or empty**, the cog tails **`nextcord.log`** in the repo root instead (same file as `tail -f` on the VPS).
+- `BOT_LOG_FILE` (optional): override path for file tailing when not using journal (see `main_bot/server_configs/config.py`).
+
 ## Crafty Controller
 
 - `CRAFTY_BASE_URL` (string)

@@ -127,21 +127,50 @@ sudo -u discord_bot git -C /home/discord_bot remote -v
 
 The bot reads env from Doppler (or your chosen method). On the server:
 
-1. Install/configure Doppler CLI and log in or use a service token where the unit runs.
-2. Create a **systemd** unit that starts the bot, e.g.:
+1. Install/configure Doppler CLI. Prefer a **service token** (`dp.st…`) scoped to your production config; see [Doppler service tokens](https://docs.doppler.com/docs/service-tokens).
+2. Install the unit below as e.g. **`/etc/systemd/system/discord_bot.service`**, then:
 
-   ```ini
-   [Service]
-   ExecStart=/usr/bin/doppler run -- /home/discord_bot/.local/bin/uv run python -m main_bot
-   WorkingDirectory=/home/discord_bot
-   User=discord_bot
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now discord_bot
    ```
 
-   Or use [`scripts/run_bot.sh`](../scripts/run_bot.sh) inside `doppler run`.
+3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f /home/discord_bot/nextcord.log`**. If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
 
-3. `systemctl enable --now discord_bot` (unit file e.g. `/etc/systemd/system/discord_bot.service`) and confirm the bot runs.
+**Example unit** (matches [`scripts/run_bot.sh`](../scripts/run_bot.sh); aligns with [`.github/workflows/main.yml`](../.github/workflows/main.yml) `systemctl restart discord_bot`):
 
-   If you still use an older unit name (e.g. `discord_bot_v2.service`), either rename the unit to match or change the `systemctl restart …` line in `.github/workflows/main.yml` to your unit name.
+```ini
+[Unit]
+Description=Discord Bot [UV]
+After=network.target
+
+[Service]
+Type=simple
+TimeoutStopSec=30
+User=discord_bot
+Group=discord_bot
+WorkingDirectory=/home/discord_bot
+Environment=PYTHONUNBUFFERED=1
+# Use your real service token from Doppler (never commit it to git).
+Environment=DOPPLER_TOKEN=dp.st.prd.REPLACE_ME
+# Include .local/bin so uv and project tools resolve.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/discord_bot/.local/bin
+ExecStart=/bin/bash /home/discord_bot/scripts/run_bot.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Notes:**
+
+- **`PYTHONUNBUFFERED=1`** — Makes `boot_print` / `print` lines show up in **`journalctl`** without long delays; Nextcord still logs heavily to **`nextcord.log`** (see `main_bot/main.py`).
+- **`PATH`** — Must end with **`…/discord_bot/.local/bin`** (your draft ended with **`/.local/`** — that is too broad and can miss `uv`; use **`bin`**). If commands still fail to resolve, add `Environment=HOME=/home/discord_bot`.
+- **Secrets in the unit file** — Default permissions can leave tokens readable; use **`chmod 600`** on the unit if you keep the token inline, or prefer **`EnvironmentFile=/etc/discord_bot/doppler.env`** with `DOPPLER_TOKEN=…` inside (mode `600`, root-owned) and remove the inline `DOPPLER_TOKEN` line.
+- **Quoting** — `Environment=KEY=value` is enough for tokens without spaces; quoted `Environment="KEY=val"` is also fine.
+
+If you still use an older unit name (e.g. **`discord_bot_v2.service`**), either rename the unit to **`discord_bot`** or change the `systemctl restart …` line in `.github/workflows/main.yml` to match. Update **`BOT_LOG_JOURNAL_UNIT`** in Doppler if you use the **`.logging`** admin command (see `docs/DOPPLER_ENV_KEYS.md`).
 
 ---
 
