@@ -15,6 +15,13 @@ def test_strip_hash_comments_outside_strings() -> None:
     assert data["b"] == "hash # inside string"
 
 
+def test_strip_hash_inline_after_number_keeps_bracket() -> None:
+    """'# label' same line must not swallow the closing `]` (Doppler-friendly array)."""
+    text = "[421980223391924231 #General]"
+    cleaned = cfg._strip_hash_comments_outside_strings(text)
+    assert json.loads(cleaned.strip()) == [421980223391924231]
+
+
 def test_relax_json_syntax_trailing_commas() -> None:
     raw = '{"x": [1, 2, ], "y": 3,}'
     relaxed = cfg._relax_json_syntax(raw)

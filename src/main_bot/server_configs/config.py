@@ -52,8 +52,9 @@ def _strip_hash_comments_outside_strings(text: str) -> str:
             continue
 
         if ch == "#":
-            # Skip until end of line
-            while i < len(text) and text[i] not in ("\n", "\r"):
+            # Skip until end of line / record end. Also stop at `]` or `}` so inline
+            # `# label` after a number does not swallow the closing bracket (e.g. `[1 #ch]`).
+            while i < len(text) and text[i] not in ("\n", "\r", "]", "}"):
                 i += 1
             continue
 
@@ -245,10 +246,12 @@ birthday_channel_id = _get_int("BIRTHDAY_CHANNEL_ID", 0)
 # TCG config (JSON)
 MANA_SYMBOLS = _get_json_dict("MANA_SYMBOLS")
 
-# MTG autocard in allowed channels only; empty list = disabled
-mtg_autolink_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_CHANNEL_IDS"))
-# Subset where the autolink rate limit applies (e.g. general chat). Empty = no cooldown anywhere.
+# MTG autocard: union of MTG_AUTOLINK_CHANNEL_IDS and MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS
+# (cooldown-listed channels are always autocard-eligible even if omitted from CHANNEL_IDS).
+_mtg_autolink_explicit_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_CHANNEL_IDS"))
+# Rate limit applies in these channels (see tcg.MTG_AUTOLINK_COOLDOWN_SEC). Empty = no throttle anywhere.
 mtg_autolink_cooldown_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS"))
+mtg_autolink_channel_ids = _mtg_autolink_explicit_ids | mtg_autolink_cooldown_channel_ids
 mtg_autolink_blocked_names = _frozenset_lower(_get_json_str_list("MTG_AUTOLINK_BLOCKED_NAMES"))
 mtg_autolink_max_cards_per_message = _get_int("MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE", 5) # Not in Doppler
 mtg_autolink_max_word_span = max(1, min(_get_int("MTG_AUTOLINK_MAX_WORD_SPAN", 4), 8)) # Not in Doppler

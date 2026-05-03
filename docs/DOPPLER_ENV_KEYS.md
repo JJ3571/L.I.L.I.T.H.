@@ -81,8 +81,9 @@ This bot loads config from environment variables (typically injected by Doppler)
 
 ## TCG / Say (JSON + strings)
 
-- `MTG_AUTOLINK_CHANNEL_IDS` (JSON array of int channel IDs): where MTG autocard replies are enabled; empty disables.
-- `MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS` (JSON array of int channel IDs): channels where at most one autocard reply runs every **180 seconds**, grouped across everyone in that channel (omit IDs for unrestricted channels like a dedicated MTG room). Empty or omitted = **no throttle** anywhere.
+- `MTG_AUTOLINK_CHANNEL_IDS` (JSON array of int channel IDs): extra autocard-enabled channels beyond the cooldown list. **Effective allowlist is** `MTG_AUTOLINK_CHANNEL_IDS` **∪** `MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS`; if **both are empty**, autocard is off.
+
+- `MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS` (JSON array of int channel IDs): channels throttled to at most one autocard reply every **90 seconds**, shared across everyone in that channel. **These IDs are also treated as autocard-enabled** (unioned with `MTG_AUTOLINK_CHANNEL_IDS`), so you can list “general chat” here even if it is omitted from `MTG_AUTOLINK_CHANNEL_IDS`. Empty or omitted = no throttle anywhere.
 - `MTG_AUTOLINK_BLOCKED_NAMES` (optional JSON string array)
 - `MANA_SYMBOLS` (JSON object)
 - `WEBHOOK_URL` (string)
