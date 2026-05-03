@@ -32,7 +32,6 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
 
     @tasks.loop(minutes=WATCH_PARTY_CHECK_INTERVAL)
     async def monitor_watch_party(self):
-        self.cog_print("Running monitor_watch_party task.")
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
             self.cog_print(f"Guild with ID {GUILD_ID} not found.")
@@ -54,7 +53,6 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
             self.cog_print(f"Watch Party channel '{watch_party_channel.name}' moved to seen category for the event and reserved until {self.reservation_end_time}.")
 
         if self.reservation_end_time and current_time < self.reservation_end_time:
-            self.cog_print(f"Watch Party channel '{watch_party_channel.name}' is reserved until {self.reservation_end_time}.")
             return
 
         if len(watch_party_channel.members) == 0:
@@ -64,9 +62,13 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
                 messages.append(message)
             last_message_time = max((message.created_at for message in messages), default=None)
             if last_message_time and (datetime.datetime.now(pytz.utc) - last_message_time) > WATCH_PARTY_AUTO_HIDE_TIMEOUT:
-                hidden_category = guild.get_channel(hidden_category_id)
-                await watch_party_channel.edit(category=hidden_category)
-                self.cog_print(f"Watch Party channel '{watch_party_channel.name}' moved back to hidden category due to inactivity.")
+                if watch_party_channel.category_id != hidden_category_id:
+                    hidden_category = guild.get_channel(hidden_category_id)
+                    if hidden_category:
+                        await watch_party_channel.edit(category=hidden_category)
+                        self.cog_print(
+                            f"Watch Party channel '{watch_party_channel.name}' moved back to hidden category due to inactivity."
+                        )
 
     @monitor_watch_party.before_loop
     async def before_monitor_watch_party(self):
