@@ -869,6 +869,21 @@ class MusicCog(commands.Cog):
         self.guild_states.pop(guild_id, None)
         await self._sync_music_presence()
 
+    async def _dispose_controller_message(self, state: GuildMusicState) -> None:
+        """Drop the previous VC controller before starting a new session (avoids duplicate embeds + views)."""
+        msg = state.controller_message
+        if msg is None:
+            return
+        try:
+            await msg.edit(view=None)
+        except Exception:
+            pass
+        try:
+            await msg.delete()
+        except Exception as e:
+            _MUSIC_LOG.warning("controller_message delete failed: %s", e)
+        state.controller_message = None
+
     async def _recover_controller_message(self, guild_id: int) -> None:
         """If the stored controller message was deleted, post a new one while playback is still active."""
         state = self.guild_states.get(guild_id)
@@ -1120,12 +1135,20 @@ class MusicCog(commands.Cog):
         start_ms: int = 0,
         append_history: bool = True,
     ) -> bool:
+        gid = getattr(player.guild, "id", None)
+        # Loadtracks probes the next HTTP URL while Lavalink may still be decoding the current stream
+        # (manual skip/next). Natural track end clears the active track first via TrackEnd, so skipping
+        # here matches that ordering and avoids load failures that only happen when replacing mid-playback.
+        if player.current is not None:
+            try:
+                await player.skip(force=True)
+            except Exception as e:
+                _MUSIC_LOG.warning("local preload skip-before-load failed guild=%s err=%s", gid, e)
         try:
             url = await self._local_http_track_url(folder, path)
             tracks = await wavelink.Pool.fetch_tracks(url)
         except Exception as e:
             print(f"local track load failed: {e}")
-            gid = getattr(player.guild, "id", None)
             sg = ""
             try:
                 if player.guild:
@@ -1436,6 +1459,8 @@ class MusicCog(commands.Cog):
             if more:
                 vc.queue.put(more)
 
+        await self._dispose_controller_message(state)
+
         try:
             await vc.play(tracks[0])
         except Exception as e:
@@ -1503,12 +1528,13 @@ class MusicCog(commands.Cog):
             await self._slash_reply(interaction, "Could not connect to voice.")
             return
 
+        state = self._get_state(guild.id)
+
         if definition.shuffle_files_on_start:
             random.shuffle(paths)
         first = paths[0]
         remaining = paths[1:]
 
-        state = self._get_state(guild.id)
         state.session = "local_folder"
         state.local_folder = folder
         state.local_remaining = remaining
@@ -1548,6 +1574,8 @@ class MusicCog(commands.Cog):
                 "Could not decode tracks (empty Lavalink response). Confirm `sources.http: true` and try another format.",
             )
             return
+
+        await self._dispose_controller_message(state)
 
         start_ms = 0
         if definition.start_offset_policy == "random_ms":
