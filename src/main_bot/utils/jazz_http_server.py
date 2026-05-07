@@ -9,7 +9,7 @@ from aiohttp import web
 
 
 class LocalMusicHttpServer:
-    """Serves ``local_music/{folder}`` (flat files only) at ``GET /{folder}/{name}``."""
+    """Serves ``local_audio/music/{folder}`` (flat files only) at ``GET /{folder}/{name}``."""
 
     __slots__ = ("_runner", "allowed_folders", "host", "local_music_root", "port")
 

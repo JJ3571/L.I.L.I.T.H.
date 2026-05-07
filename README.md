@@ -54,10 +54,10 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │       │   └── testing/
 │       ├── server_configs/
 │       └── utils/
-└── local_music/                # *optional* bundled audio (gitignored)
+└── local_audio/                # *optional* local audio (gitignored): music/jazz|lofi|gaming, brainrot/*.mp3, …
 ```
 
-**Not shown (typical machine-local):** `.venv/` or other virtualenvs, `.env` / editor env files, `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and audio under `local_music/` as needed when running the bot.
+**Not shown (typical machine-local):** `.venv/` or other virtualenvs, `.env` / editor env files, `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and tracks under `local_audio/music/` (and other `local_audio/` subfolders) as needed when running the bot.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Scan local audio folders (e.g. ``local_music/jazz`` at repo root)."""
+"""Scan local audio folders (e.g. ``local_audio/music/jazz`` at repo root)."""
 from __future__ import annotations
 
 from pathlib import Path

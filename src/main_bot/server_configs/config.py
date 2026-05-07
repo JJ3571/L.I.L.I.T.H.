@@ -148,7 +148,7 @@ GUILD_ID = _get_int("GUILD_ID", 0)
 LAVALINK_URI = _get_str("LAVALINK_URI", "http://127.0.0.1:2333")
 LAVALINK_PASSWORD = _get_str("LAVALINK_PASSWORD", "youshallnotpass")
 
-# Loopback HTTP used to expose ``local_music/{folder}`` (jazz, lofi, minecraft) to Lavalink (see ``jazz_http_server``).
+# Loopback HTTP used to expose ``local_audio/music/{folder}`` (jazz, lofi, gaming) to Lavalink (see ``jazz_http_server``).
 MUSIC_LOCAL_HTTP_HOST = _get_str("MUSIC_LOCAL_HTTP_HOST", "127.0.0.1")
 MUSIC_LOCAL_HTTP_PORT = _get_int("MUSIC_LOCAL_HTTP_PORT", 8765)
 # Voice channel IDs where slash music commands and VC controls are blocked (e.g. recording, watchparty). JSON array of ints; empty = disabled.

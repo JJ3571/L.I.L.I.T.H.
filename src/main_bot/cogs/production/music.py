@@ -7,10 +7,12 @@ Requires ``discord`` → Nextcord aliasing in ``main.py`` before this cog import
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import random
 import time
 import urllib.parse
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional, Any, cast, Union
@@ -23,7 +25,7 @@ from wavelink import Playlist, TrackEndEventPayload, TrackStartEventPayload, Web
 from wavelink.enums import AutoPlayMode, DiscordVoiceCloseType, TrackSource
 from wavelink.exceptions import InvalidNodeException, LavalinkLoadException, QueueEmpty
 
-from main_bot.paths import PROJECT_ROOT
+from main_bot.paths import LOCAL_MUSIC_ROOT
 from main_bot.server_configs.config import (
     GUILD_ID,
     LAVALINK_PASSWORD,
@@ -32,13 +34,14 @@ from main_bot.server_configs.config import (
     MUSIC_LOCAL_HTTP_PORT,
     MUSIC_VOICE_CHANNEL_DENYLIST_IDS,
 )
+from main_bot.utils.discord_voice import human_members_in_voice_channel, is_discord_unknown_message_error
 from main_bot.utils.jazz_http_server import LocalMusicHttpServer
 from main_bot.utils.local_music_scan import list_audio_files
+from main_bot.utils.local_track_artwork import extract_embedded_cover
 
 _MUSIC_LOG = logging.getLogger("nextcord.music")
 
 SessionKind = Literal["idle", "stream", "local_folder"]
-LOCAL_MUSIC_ROOT = PROJECT_ROOT / "local_music"
 
 BACK_RESTART_THRESHOLD_MS = 5000
 RANDOM_START_END_MARGIN_MS = 30_000
@@ -67,49 +70,34 @@ def _presence_local_line(folder: str) -> str:
 
 @dataclass(frozen=True)
 class LocalFolderDefinition:
-    """Slash name and ``local_music/{folder}`` are the same ``folder`` string."""
+    """Defines ``local_audio/music/{folder}`` playback for slash-invoked folder sessions.
+
+    ``shuffle_files_on_start``: random playback order among files when the session starts—i.e. which track is picked
+    first and the shuffle of the queue—not the seek position inside a track.
+
+    ``start_offset_policy``: ``random_ms`` seeks each track to a random timestamp; ``beginning`` plays from 0 ms.
+    """
 
     folder: str
     shuffle_files_on_start: bool
     start_offset_policy: Literal["beginning", "random_ms"]
+    prefer_embedded_album_art: bool = False
 
 
 LOCAL_FOLDER_DEFS: dict[str, LocalFolderDefinition] = {
     "jazz": LocalFolderDefinition("jazz", True, "random_ms"),
     "lofi": LocalFolderDefinition("lofi", True, "random_ms"),
-    "minecraft": LocalFolderDefinition("minecraft", True, "beginning"),
+    "gaming": LocalFolderDefinition(
+        "gaming",
+        True,
+        "beginning",
+        prefer_embedded_album_art=True,
+    ),
 }
 
 
 def _is_music_voice_channel_blocked(channel_id: int) -> bool:
     return channel_id in MUSIC_VOICE_CHANNEL_DENYLIST_IDS
-
-
-def _human_members_in_voice_channel(guild: nextcord.Guild, channel_id: int, bot_user_id: int) -> int:
-    """Count non-bot accounts Discord still lists as connected to ``channel_id``.
-
-    Uses ``guild._voice_states`` (gateway truth) instead of ``VoiceChannel.voice_states`` so we
-    do not depend on channel cache objects. ``bot_user_id`` should be ``bot.user.id``.
-    """
-    n = 0
-    for uid, vs in guild._voice_states.items():
-        ch = vs.channel
-        if ch is None or ch.id != channel_id:
-            continue
-        if uid == bot_user_id:
-            continue
-        member = guild.get_member(uid)
-        if member is not None and member.bot:
-            continue
-        n += 1
-    return n
-
-
-def _is_discord_unknown_message_error(exc: BaseException) -> bool:
-    """True when a message operation failed because the message no longer exists (deleted, purged, etc.)."""
-    if isinstance(exc, nextcord.NotFound):
-        return True
-    return getattr(exc, "code", None) == 10008
 
 
 def _format_duration_ms(ms: int) -> str:
@@ -194,7 +182,7 @@ LOCAL_FOLDER_COVER_FILENAMES: tuple[str, ...] = ("cover.png", "cover.jpg", "cove
 
 
 def _folder_static_cover_path(folder: str) -> Optional[Path]:
-    """Return ``local_music/{folder}/cover.*`` if present (flat folder layout)."""
+    """Return ``local_audio/music/{folder}/cover.*`` if present (flat folder layout)."""
     root = LOCAL_MUSIC_ROOT / folder
     for name in LOCAL_FOLDER_COVER_FILENAMES:
         candidate = root / name
@@ -207,6 +195,17 @@ def _local_cover_attachment_name(folder: str, path: Path) -> str:
     ext = (path.suffix or ".png").lower()
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in folder)[:64]
     return f"music_cover_{safe}{ext}"
+
+
+def _local_embed_art_filename(folder: str, audio_path: Path, ext: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in folder)[:32]
+    h = zlib.adler32(str(audio_path.resolve(strict=False)).encode("utf-8", errors="replace")) & 0xFFFF_FFFF
+    suf = (ext.lstrip(".").lower() if ext else "jpg") or "jpg"
+    if suf == "jpeg":
+        suf = "jpg"
+    if suf not in ("jpg", "png", "webp"):
+        suf = "jpg"
+    return f"music_embed_{safe}_{h:08x}.{suf}"
 
 
 @dataclass
@@ -268,11 +267,29 @@ def build_music_embed_and_files(
             if isinstance(art, str) and art.startswith(("http://", "https://")):
                 embed.set_image(url=art)
         elif state.session == "local_folder" and state.local_folder:
-            cover = _folder_static_cover_path(state.local_folder)
-            if cover is not None:
-                fname = _local_cover_attachment_name(state.local_folder, cover)
-                embed.set_image(url=f"attachment://{fname}")
-                files.append(nextcord.File(cover, filename=fname))
+            folder_key = state.local_folder
+            defn = LOCAL_FOLDER_DEFS.get(folder_key)
+
+            embedded_from_tags = False
+            if (
+                defn is not None
+                and defn.prefer_embedded_album_art
+                and state.local_history_paths
+            ):
+                embedded = extract_embedded_cover(state.local_history_paths[-1])
+                if embedded is not None:
+                    blob, suf = embedded
+                    fname = _local_embed_art_filename(folder_key, state.local_history_paths[-1], suf)
+                    embed.set_image(url=f"attachment://{fname}")
+                    files.append(nextcord.File(io.BytesIO(blob), filename=fname))
+                    embedded_from_tags = True
+
+            if not embedded_from_tags:
+                cover = _folder_static_cover_path(folder_key)
+                if cover is not None:
+                    fname = _local_cover_attachment_name(folder_key, cover)
+                    embed.set_image(url=f"attachment://{fname}")
+                    files.append(nextcord.File(cover, filename=fname))
 
     return embed, files
 
@@ -411,7 +428,7 @@ class MusicCog(commands.Cog):
             await self._local_http.start()
             print(
                 f"[music] Local music HTTP on http://{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}/"
-                "{{jazz,lofi,minecraft}}/… — keep this bot running while Lavalink streams local files.",
+                "{{jazz,lofi,gaming}}/… (paths under local_audio/music/) — keep this bot running while Lavalink streams local files.",
             )
         except OSError as e:
             print(
@@ -471,7 +488,7 @@ class MusicCog(commands.Cog):
                 player = self._resolve_wavelink_player(guild_id)
                 if player is None or player.channel is None or player.channel.id != bot_vc_id:
                     return
-                if _human_members_in_voice_channel(guild, bot_vc_id, self.bot.user.id) == 0:
+                if human_members_in_voice_channel(guild, bot_vc_id, self.bot.user.id) == 0:
                     _MUSIC_LOG.info(
                         "empty_channel_disconnect guild=%s bot_vc_id=%s %s",
                         guild_id,
@@ -495,6 +512,12 @@ class MusicCog(commands.Cog):
             return True
         st = self.guild_states.get(guild.id)
         return st is not None and st.session != "idle"
+
+    def _brainrot_blocks_voice(self, guild: nextcord.Guild) -> Optional[str]:
+        cog = self.bot.get_cog("BrainrotCog")
+        if cog is not None and cog.is_session_active(guild.id):
+            return "Brainrot is active. Use `/brainrot stop` before starting music."
+        return None
 
     def _music_voice_channel_id(self, guild: nextcord.Guild) -> Optional[int]:
         vc = guild.voice_client
@@ -559,7 +582,7 @@ class MusicCog(commands.Cog):
             ch_id_for_humans = me_vs.channel.id
         if ch_id_for_humans is not None:
             try:
-                nh = _human_members_in_voice_channel(guild, ch_id_for_humans, self.bot.user.id)
+                nh = human_members_in_voice_channel(guild, ch_id_for_humans, self.bot.user.id)
                 parts.append(f"humans_in_bot_ch_excl_bot={nh}")
             except Exception:
                 parts.append("humans=?")
@@ -587,7 +610,7 @@ class MusicCog(commands.Cog):
                                 continue
                             if _is_music_voice_channel_blocked(ch_id):
                                 continue
-                            if _human_members_in_voice_channel(guild, ch_id, self.bot.user.id) > 0:
+                            if human_members_in_voice_channel(guild, ch_id, self.bot.user.id) > 0:
                                 continue
                             await self.full_disconnect_guild(guild.id)
                         except Exception as e:
@@ -924,7 +947,7 @@ class MusicCog(commands.Cog):
             await state.controller_message.edit(**edit_kw)
         except (nextcord.NotFound, nextcord.HTTPException) as e:
             state.controller_message = None
-            if _is_discord_unknown_message_error(e):
+            if is_discord_unknown_message_error(e):
                 await self._recover_controller_message(guild_id)
             else:
                 print(f"refresh_controller_embed: {e}")
@@ -956,7 +979,7 @@ class MusicCog(commands.Cog):
             await state.controller_message.edit(**edit_kw)
         except (nextcord.NotFound, nextcord.HTTPException) as e:
             state.controller_message = None
-            if _is_discord_unknown_message_error(e):
+            if is_discord_unknown_message_error(e):
                 await self._recover_controller_message(guild_id)
             else:
                 print(f"_edit_control_message: {e}")
@@ -1163,9 +1186,13 @@ class MusicCog(commands.Cog):
         if t0 == 0 and folder in LOCAL_FOLDER_DEFS:
             if LOCAL_FOLDER_DEFS[folder].start_offset_policy == "random_ms":
                 t0 = self._random_start_ms(tracks[0])
+        if append_history:
+            state.local_history_paths.append(path)
         try:
             await player.play(tracks[0], start=t0, replace=True)
         except Exception as e:
+            if append_history and state.local_history_paths and state.local_history_paths[-1] == path:
+                state.local_history_paths.pop()
             print(f"local play failed: {e}")
             gid = getattr(player.guild, "id", None)
             sg = ""
@@ -1176,8 +1203,6 @@ class MusicCog(commands.Cog):
                 pass
             _MUSIC_LOG.warning("local_play_failed guild=%s path=%s err=%s %s", gid, path, e, sg)
             return False
-        if append_history:
-            state.local_history_paths.append(path)
         return True
 
     async def _advance_local_manual(self, player: wavelink.Player, state: GuildMusicState) -> bool:
@@ -1410,6 +1435,11 @@ class MusicCog(commands.Cog):
 
         guild = interaction.guild
 
+        blocked_br = self._brainrot_blocks_voice(guild)
+        if blocked_br:
+            await self._slash_reply(interaction, blocked_br)
+            return
+
         if not await self._ensure_lavalink():
             await self._slash_reply(
                 interaction,
@@ -1516,6 +1546,11 @@ class MusicCog(commands.Cog):
         guild = interaction.guild
         assert guild is not None
 
+        blocked_br = self._brainrot_blocks_voice(guild)
+        if blocked_br:
+            await self._slash_reply(interaction, blocked_br)
+            return
+
         if not await self._ensure_lavalink():
             await self._slash_reply(
                 interaction,
@@ -1581,9 +1616,12 @@ class MusicCog(commands.Cog):
         if definition.start_offset_policy == "random_ms":
             start_ms = self._random_start_ms(tracks[0])
 
+        state.local_history_paths.append(first)
         try:
             await vc.play(tracks[0], start=start_ms)
         except Exception as e:
+            if state.local_history_paths and state.local_history_paths[-1] == first:
+                state.local_history_paths.pop()
             state.session = "idle"
             state.local_folder = None
             state.local_remaining.clear()
@@ -1604,7 +1642,6 @@ class MusicCog(commands.Cog):
             start_ms,
             self._music_voice_snapshot(guild, vc),
         )
-        state.local_history_paths.append(first)
 
         posted = await self.upsert_controller(voice_channel, vc)
         extra = ""
@@ -1617,7 +1654,7 @@ class MusicCog(commands.Cog):
             f"**/{label}** started in {voice_channel.mention} ({len(paths)} tracks). Use the controller message in that channel.{extra}",
         )
 
-    @nextcord.slash_command(name="jazz", description="Shuffle and play tracks from local_music/jazz", guild_ids=[GUILD_ID])
+    @nextcord.slash_command(name="jazz", description="Shuffle and play tracks from local_audio/music/jazz", guild_ids=[GUILD_ID])
     async def jazz_slash(self, interaction: nextcord.Interaction) -> None:
         await interaction.response.defer()
         if interaction.guild is None:
@@ -1625,7 +1662,7 @@ class MusicCog(commands.Cog):
             return
         await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["jazz"])
 
-    @nextcord.slash_command(name="lofi", description="Shuffle and play tracks from local_music/lofi", guild_ids=[GUILD_ID])
+    @nextcord.slash_command(name="lofi", description="Shuffle and play tracks from local_audio/music/lofi", guild_ids=[GUILD_ID])
     async def lofi_slash(self, interaction: nextcord.Interaction) -> None:
         await interaction.response.defer()
         if interaction.guild is None:
@@ -1634,16 +1671,16 @@ class MusicCog(commands.Cog):
         await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["lofi"])
 
     @nextcord.slash_command(
-        name="minecraft",
-        description="Shuffle and play tracks from local_music/minecraft",
+        name="gaming",
+        description="Shuffle tracks from local_audio/music/gaming (tracks start from the beginning)",
         guild_ids=[GUILD_ID],
     )
-    async def minecraft_slash(self, interaction: nextcord.Interaction) -> None:
+    async def gaming_slash(self, interaction: nextcord.Interaction) -> None:
         await interaction.response.defer()
         if interaction.guild is None:
             await self._slash_reply(interaction, "This command can only be used in a server.")
             return
-        await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["minecraft"])
+        await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["gaming"])
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: nextcord.Member, before: nextcord.VoiceState, after: nextcord.VoiceState) -> None:
