@@ -3,29 +3,37 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 
 from aiohttp import web
 
 
 class LocalMusicHttpServer:
-    """Serves ``local_audio/music/{folder}`` (flat files only) at ``GET /{folder}/{name}``."""
+    """Serves flat audio folders over HTTP (e.g. ``local_audio/music/jazz``, mounted ``brainrot`` elsewhere)."""
 
-    __slots__ = ("_runner", "allowed_folders", "host", "local_music_root", "port")
+    __slots__ = ("_runner", "allowed_folders", "folder_roots", "host", "local_music_root", "port")
 
     def __init__(
         self,
         local_music_root: Path,
         *,
         allowed_folders: frozenset[str],
+        folder_roots: Optional[dict[str, Path]] = None,
         host: str = "127.0.0.1",
         port: int = 8765,
     ) -> None:
         self.local_music_root = local_music_root.resolve()
+        self.folder_roots = {k: v.resolve() for k, v in (folder_roots or {}).items()}
         self.allowed_folders = allowed_folders
         self.host = host
         self.port = port
         self._runner: web.AppRunner | None = None
+
+    def _physical_root(self, folder: str) -> Path:
+        if folder in self.folder_roots:
+            return self.folder_roots[folder]
+        return (self.local_music_root / folder).resolve()
 
     async def start(self) -> None:
         if self._runner is not None:
@@ -38,9 +46,12 @@ class LocalMusicHttpServer:
                 return web.Response(status=404)
             if "/" in name or "\\" in name or name in (".", ".."):
                 return web.Response(status=400)
-            root = (self.local_music_root / folder).resolve()
+            root = self._physical_root(folder).resolve()
             try:
-                root.relative_to(self.local_music_root)
+                if folder in self.folder_roots:
+                    root.relative_to(self.folder_roots[folder])
+                else:
+                    root.relative_to(self.local_music_root)
             except ValueError:
                 return web.Response(status=403)
             candidate = (root / name).resolve()
@@ -71,7 +82,7 @@ class LocalMusicHttpServer:
         if folder not in self.allowed_folders:
             raise ValueError(f"folder {folder!r} is not served by this server")
         resolved = path.resolve()
-        base = (self.local_music_root / folder).resolve()
+        base = self._physical_root(folder).resolve()
         rel = resolved.relative_to(base)
         if len(rel.parts) != 1:
             raise ValueError("local music folder must be flat (no subdirectories)")

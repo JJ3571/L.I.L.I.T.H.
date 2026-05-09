@@ -1,4 +1,4 @@
-"""Random short SFX bursts in voice; native FFmpeg playback (mutually exclusive with music / Lavalink)."""
+"""Random short SFX bursts in voice via Lavalink (DAVE-compatible); mutually exclusive with streaming/local music."""
 
 from __future__ import annotations
 
@@ -8,21 +8,30 @@ import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import nextcord
 import wavelink
 from nextcord import SlashOption
 from nextcord.ext import commands
+from wavelink.exceptions import InvalidNodeException, LavalinkLoadException
+
+from main_bot.cogs.production.music import MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC, MusicCog
 
 from main_bot.paths import LOCAL_AUDIO_ROOT, PROJECT_ROOT
-from main_bot.server_configs.config import GUILD_ID, MUSIC_VOICE_CHANNEL_DENYLIST_IDS
+from main_bot.server_configs.config import (
+    GUILD_ID,
+    MUSIC_VOICE_CHANNEL_DENYLIST_IDS,
+    coin_emoji_id,
+)
 from main_bot.utils.discord_voice import human_members_in_voice_channel
 
 _LOG = logging.getLogger("nextcord.brainrot")
 
 BRAINROT_FOLDER = "brainrot"
-BRAINROT_MAX_SILENCE_SEC = 420.0
+# Random hard cap for “must fire by” deadline each gap (hidden from UI).
+BRAINROT_SILENCE_CAP_MIN_SEC = 180.0  # 3 minutes
+BRAINROT_SILENCE_CAP_MAX_SEC = 900.0  # 15 minutes
 BRAINROT_MIN_GAP_SEC = 30.0
 BRAINROT_MAX_GAP_SEC = 180.0
 BRAINROT_ESCALATION_SEC = 60.0
@@ -35,10 +44,25 @@ BRAINROT_ALONE_SWEEP_INTERVAL_SEC = 30.0
 DODGEBALL_FILE = "dodgeball.mp3"
 PLANKTON_FILE = "plankton.mp3"
 STEEL_PIPE_FILE = "steel_pipe.mp3"
+SMOKE_DETECTOR_FILE = "smoke_detector.mp3"
+
+
+def brainrot_purchase_button_emoji() -> Union[str, nextcord.PartialEmoji]:
+    """Guild ``coin`` emoji when ``COIN_EMOJI_ID`` is set; else Unicode coin."""
+    if coin_emoji_id:
+        return nextcord.PartialEmoji(name="coin", id=coin_emoji_id)
+    return "\U0001FA99"
 
 
 def brainrot_asset_dir() -> Path:
     return (LOCAL_AUDIO_ROOT / BRAINROT_FOLDER).resolve()
+
+
+def roll_brainrot_silence_cap_sec(rng: random.Random) -> float:
+    """Sample max silence before a forced burst for the current gap (not shown in the embed)."""
+    lo = min(BRAINROT_SILENCE_CAP_MIN_SEC, BRAINROT_SILENCE_CAP_MAX_SEC)
+    hi = max(BRAINROT_SILENCE_CAP_MIN_SEC, BRAINROT_SILENCE_CAP_MAX_SEC)
+    return rng.uniform(lo, hi)
 
 
 def schedule_next_wake_seconds(
@@ -77,13 +101,16 @@ def build_burst_paths(
     dodgeball_path: Path,
     plankton_path: Path,
     steel_pipe_path: Path,
+    smoke_detector_path: Path,
     pending_plankton: int,
     pending_pipe: int,
+    pending_smoke: int = 0,
 ) -> list[Path]:
     n = dodgeball_burst_count(elapsed_since_last_trigger_sec)
     seq: list[Path] = [dodgeball_path] * n
     seq.extend([plankton_path] * pending_plankton)
     seq.extend([steel_pipe_path] * pending_pipe)
+    seq.extend([smoke_detector_path] * pending_smoke)
     rng.shuffle(seq)
     return seq
 
@@ -104,13 +131,16 @@ class BrainrotSession:
     rng: random.Random
     voice_channel_id: int
     last_trigger_mono: float
+    silence_cap_sec: float
     pending_plankton: int = 0
     pending_pipe: int = 0
+    pending_smoke: int = 0
     controller_message: Optional[nextcord.Message] = None
     loop_task: Optional[asyncio.Task[None]] = None
     dodgeball_path: Path = field(default_factory=lambda: brainrot_asset_dir() / DODGEBALL_FILE)
     plankton_path: Path = field(default_factory=lambda: brainrot_asset_dir() / PLANKTON_FILE)
     steel_pipe_path: Path = field(default_factory=lambda: brainrot_asset_dir() / STEEL_PIPE_FILE)
+    smoke_detector_path: Path = field(default_factory=lambda: brainrot_asset_dir() / SMOKE_DETECTOR_FILE)
 
 
 class BrainrotControlView(nextcord.ui.View):
@@ -120,7 +150,8 @@ class BrainrotControlView(nextcord.ui.View):
         self.guild_id = guild_id
 
         plankton_btn = nextcord.ui.Button(
-            label=f"Buy plankton ({BRAINROT_SFX_COST})",
+            label=f"[{BRAINROT_SFX_COST}] - Plankton",
+            emoji=brainrot_purchase_button_emoji(),
             style=nextcord.ButtonStyle.secondary,
             row=0,
         )
@@ -131,7 +162,8 @@ class BrainrotControlView(nextcord.ui.View):
         plankton_btn.callback = plankton_cb
 
         pipe_btn = nextcord.ui.Button(
-            label=f"Buy steel pipe ({BRAINROT_SFX_COST})",
+            label=f"[{BRAINROT_SFX_COST}] - Steel pipe",
+            emoji=brainrot_purchase_button_emoji(),
             style=nextcord.ButtonStyle.secondary,
             row=0,
         )
@@ -140,6 +172,18 @@ class BrainrotControlView(nextcord.ui.View):
             await cog.handle_buy_pipe(guild_id, interaction)
 
         pipe_btn.callback = pipe_cb
+
+        smoke_btn = nextcord.ui.Button(
+            label=f"[{BRAINROT_SFX_COST}] - Smoke detector",
+            emoji=brainrot_purchase_button_emoji(),
+            style=nextcord.ButtonStyle.secondary,
+            row=0,
+        )
+
+        async def smoke_cb(interaction: nextcord.Interaction) -> None:
+            await cog.handle_buy_smoke_detector(guild_id, interaction)
+
+        smoke_btn.callback = smoke_cb
 
         stop_btn = nextcord.ui.Button(label="Stop", style=nextcord.ButtonStyle.danger, row=1)
 
@@ -150,6 +194,7 @@ class BrainrotControlView(nextcord.ui.View):
 
         self.add_item(plankton_btn)
         self.add_item(pipe_btn)
+        self.add_item(smoke_btn)
         self.add_item(stop_btn)
 
 
@@ -241,31 +286,36 @@ class BrainrotCog(commands.Cog):
 
     def _embed_for_session(self, guild_id: int) -> nextcord.Embed:
         sess = self._sessions.get(guild_id)
-        deadline = (
-            sess.last_trigger_mono + BRAINROT_MAX_SILENCE_SEC if sess else time.monotonic() + BRAINROT_MAX_SILENCE_SEC
-        )
-        remaining_force = max(0.0, deadline - time.monotonic())
-        force_min = int(remaining_force // 60)
-        force_sec = int(remaining_force % 60)
         pend_p = sess.pending_plankton if sess else 0
         pend_sp = sess.pending_pipe if sess else 0
+        pend_sm = sess.pending_smoke if sess else 0
         body = (
             "Silence… possibly interrupted.\n\n"
-            f"**Forced burst within:** ~{force_min}m {force_sec}s\n"
-            f"**Pending extras:** plankton ×{pend_p}, steel pipe ×{pend_sp}\n"
-            "Purchases apply to the **next** burst (50 coins each)."
+            f"**Pending extras:** plankton ×{pend_p}, steel pipe ×{pend_sp}, smoke detector ×{pend_sm}\n"
+            f"Purchases apply to the **next** burst ({BRAINROT_SFX_COST} coins each)."
         )
         embed = nextcord.Embed(title="Brainrot", description=body, color=nextcord.Color.dark_grey())
-        embed.set_footer(text="Native voice SFX — mutually exclusive with /music")
+        embed.set_footer(text="(Uses Lavalink. Cannot be used at the same time as /music.)")
         return embed
+
+    def _brainrot_player(self, guild: nextcord.Guild) -> Optional[wavelink.Player]:
+        vc = guild.voice_client
+        if isinstance(vc, wavelink.Player):
+            return vc
+        try:
+            node = wavelink.Pool.get_node()
+        except InvalidNodeException:
+            return None
+        pl = node.get_player(guild.id)
+        return pl if isinstance(pl, wavelink.Player) else None
 
     async def refresh_controller(self, guild_id: int) -> None:
         sess = self._sessions.get(guild_id)
         guild = self.bot.get_guild(guild_id)
         if sess is None or guild is None or sess.controller_message is None:
             return
-        vc = guild.voice_client
-        if vc is None or isinstance(vc, wavelink.Player) or not vc.is_connected():
+        pl = self._brainrot_player(guild)
+        if pl is None or not pl.connected:
             return
         try:
             embed = self._embed_for_session(guild_id)
@@ -301,7 +351,6 @@ class BrainrotCog(commands.Cog):
             await interaction.followup.send("Could not deduct coins.", ephemeral=True)
             return
         sess.pending_plankton += 1
-        await interaction.followup.send("Added plankton to the next burst.", ephemeral=True)
         await self.refresh_controller(guild_id)
 
     async def handle_buy_pipe(self, guild_id: int, interaction: nextcord.Interaction) -> None:
@@ -331,7 +380,35 @@ class BrainrotCog(commands.Cog):
             await interaction.followup.send("Could not deduct coins.", ephemeral=True)
             return
         sess.pending_pipe += 1
-        await interaction.followup.send("Added steel pipe to the next burst.", ephemeral=True)
+        await self.refresh_controller(guild_id)
+
+    async def handle_buy_smoke_detector(self, guild_id: int, interaction: nextcord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        sess = self._sessions.get(guild_id)
+        if sess is None:
+            await interaction.followup.send("No active brainrot session.", ephemeral=True)
+            return
+        path = sess.smoke_detector_path
+        if not path.is_file():
+            await interaction.followup.send(f"Missing `{_path_display(path)}`.", ephemeral=True)
+            return
+        economy = self.bot.get_cog("Economy")
+        if economy is None:
+            await interaction.followup.send("Economy is unavailable.", ephemeral=True)
+            return
+        uid = interaction.user.id
+        balance = await economy.get_user_balance(uid)
+        if balance < BRAINROT_SFX_COST:
+            await interaction.followup.send(
+                f"You need {BRAINROT_SFX_COST} coins (balance: {balance}).",
+                ephemeral=True,
+            )
+            return
+        ok = await economy.deduct_user_balance(uid, BRAINROT_SFX_COST)
+        if not ok:
+            await interaction.followup.send("Could not deduct coins.", ephemeral=True)
+            return
+        sess.pending_smoke += 1
         await self.refresh_controller(guild_id)
 
     async def handle_stop_button(self, guild_id: int, interaction: nextcord.Interaction) -> None:
@@ -342,19 +419,28 @@ class BrainrotCog(commands.Cog):
         await self._full_stop(guild_id, disconnect_voice=True)
         await interaction.followup.send("Brainrot stopped.", ephemeral=True)
 
-    async def _play_one_clip(self, vc: nextcord.VoiceClient, path: Path) -> None:
-        source = nextcord.FFmpegOpusAudio(str(path))
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[Optional[Exception]] = loop.create_future()
-
-        def after_play(err: Optional[Exception]) -> None:
-            if not fut.done():
-                fut.set_result(err)
-
-        vc.play(source, after=after_play)
-        err = await fut
-        if err:
-            raise RuntimeError(str(err))
+    async def _lavalink_play_sfx(self, player: wavelink.Player, path: Path) -> None:
+        music_cog = self.bot.get_cog("MusicCog")
+        if not isinstance(music_cog, MusicCog):
+            raise RuntimeError("MusicCog is required for brainrot playback.")
+        url = await music_cog.brainrot_sfx_http_url(path)
+        try:
+            tracks = await wavelink.Pool.fetch_tracks(url)
+        except LavalinkLoadException as e:
+            _LOG.warning("brainrot Lavalink load failed path=%s err=%s", path, e)
+            raise
+        if not tracks:
+            raise RuntimeError(f"Lavalink returned no track for {path.name}")
+        await player.play(tracks[0], replace=True)
+        deadline = time.monotonic() + 120.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+            cur = player.current
+            playing = bool(getattr(player, "playing", False))
+            if cur is None and not playing:
+                break
+        else:
+            _LOG.warning("brainrot sfx wait timed out: %s", path)
 
     async def _scheduler_loop(self, guild_id: int) -> None:
         try:
@@ -364,13 +450,13 @@ class BrainrotCog(commands.Cog):
                 if guild is None:
                     await self._full_stop(guild_id, disconnect_voice=False)
                     return
-                vc = guild.voice_client
-                if vc is None or isinstance(vc, wavelink.Player) or not vc.is_connected():
+                player = self._brainrot_player(guild)
+                if player is None or not player.connected:
                     await self._full_stop(guild_id, disconnect_voice=False)
                     return
 
                 now = time.monotonic()
-                deadline = sess.last_trigger_mono + BRAINROT_MAX_SILENCE_SEC
+                deadline = sess.last_trigger_mono + sess.silence_cap_sec
                 delay = schedule_next_wake_seconds(
                     sess.rng,
                     now_mono=now,
@@ -387,8 +473,8 @@ class BrainrotCog(commands.Cog):
                 if guild is None:
                     await self._full_stop(guild_id, disconnect_voice=False)
                     return
-                vc = guild.voice_client
-                if vc is None or isinstance(vc, wavelink.Player) or not vc.is_connected():
+                player = self._brainrot_player(guild)
+                if player is None or not player.connected:
                     await self._full_stop(guild_id, disconnect_voice=False)
                     return
 
@@ -400,11 +486,14 @@ class BrainrotCog(commands.Cog):
                     dodgeball_path=sess.dodgeball_path,
                     plankton_path=sess.plankton_path,
                     steel_pipe_path=sess.steel_pipe_path,
+                    smoke_detector_path=sess.smoke_detector_path,
                     pending_plankton=sess.pending_plankton,
                     pending_pipe=sess.pending_pipe,
+                    pending_smoke=sess.pending_smoke,
                 )
                 sess.pending_plankton = 0
                 sess.pending_pipe = 0
+                sess.pending_smoke = 0
 
                 try:
                     for p in burst:
@@ -414,15 +503,16 @@ class BrainrotCog(commands.Cog):
                         if guild is None:
                             await self._full_stop(guild_id, disconnect_voice=False)
                             return
-                        vc = guild.voice_client
-                        if vc is None or isinstance(vc, wavelink.Player):
+                        player = self._brainrot_player(guild)
+                        if player is None or not player.connected:
                             await self._full_stop(guild_id, disconnect_voice=False)
                             return
-                        await self._play_one_clip(vc, p)
+                        await self._lavalink_play_sfx(player, p)
                 except Exception as e:
                     _LOG.warning("brainrot burst playback guild=%s: %s", guild_id, e)
 
                 sess.last_trigger_mono = time.monotonic()
+                sess.silence_cap_sec = roll_brainrot_silence_cap_sec(sess.rng)
                 await self.refresh_controller(guild_id)
         except asyncio.CancelledError:
             raise
@@ -432,7 +522,7 @@ class BrainrotCog(commands.Cog):
                 await self._full_stop(guild_id, disconnect_voice=True)
 
     async def _cleanup_session_record(self, guild_id: int, *, disconnect_voice: bool) -> None:
-        """Remove session metadata and optionally disconnect native voice (not Lavalink Player)."""
+        """Remove session metadata and optionally disconnect Lavalink voice."""
         self._cancel_empty_disconnect(guild_id)
         sess = self._sessions.pop(guild_id, None)
         if sess is None:
@@ -451,10 +541,25 @@ class BrainrotCog(commands.Cog):
         if disconnect_voice:
             guild = self.bot.get_guild(guild_id)
             if guild is not None:
-                vc = guild.voice_client
-                if vc is not None and not isinstance(vc, wavelink.Player):
+                pl: Optional[wavelink.Player] = (
+                    guild.voice_client if isinstance(guild.voice_client, wavelink.Player) else None
+                )
+                if pl is None:
                     try:
-                        await vc.disconnect(force=True)
+                        node = wavelink.Pool.get_node()
+                        cand = node.get_player(guild_id)
+                        pl = cand if isinstance(cand, wavelink.Player) else None
+                    except InvalidNodeException:
+                        pl = None
+                try:
+                    await guild.change_voice_state(channel=None)
+                except Exception as e:
+                    _LOG.warning("brainrot change_voice_state: %s", e)
+                if pl is not None:
+                    try:
+                        await asyncio.wait_for(pl.disconnect(), timeout=MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC)
+                    except TimeoutError:
+                        _LOG.warning("brainrot Player.disconnect timed out guild=%s", guild_id)
                     except Exception as e:
                         _LOG.warning("brainrot disconnect: %s", e)
 
@@ -563,6 +668,7 @@ class BrainrotCog(commands.Cog):
         dodge_path = asset_root / DODGEBALL_FILE
         plank_path = asset_root / PLANKTON_FILE
         pipe_path = asset_root / STEEL_PIPE_FILE
+        smoke_path = asset_root / SMOKE_DETECTOR_FILE
 
         if not dodge_path.is_file():
             await self._slash_reply(
@@ -573,28 +679,30 @@ class BrainrotCog(commands.Cog):
 
         rng = random.Random(seed) if seed is not None else random.Random()
 
-        try:
-            vc = await voice_channel.connect(timeout=30.0, reconnect=True)
-        except Exception as e:
-            await self._slash_reply(interaction, f"Could not connect to voice: {e}")
+        music_cog = self.bot.get_cog("MusicCog")
+        if not isinstance(music_cog, MusicCog):
+            await self._slash_reply(interaction, "Music cog is not loaded — brainrot needs Lavalink + loopback HTTP from music.")
             return
 
-        if isinstance(vc, wavelink.Player):
-            await self._slash_reply(interaction, "Voice conflict with Lavalink player.")
-            try:
-                await vc.disconnect(force=True)
-            except Exception:
-                pass
+        player = await music_cog.brainrot_connect_voice(guild, voice_channel)
+        if player is None:
+            await self._slash_reply(
+                interaction,
+                "Could not reach Lavalink or join voice. Start Lavalink (matching LAVALINK_URI / LAVALINK_PASSWORD) and try again.",
+            )
             return
 
         mono = time.monotonic()
+        cap = roll_brainrot_silence_cap_sec(rng)
         sess = BrainrotSession(
             rng=rng,
             voice_channel_id=voice_channel.id,
             last_trigger_mono=mono,
+            silence_cap_sec=cap,
             dodgeball_path=dodge_path,
             plankton_path=plank_path,
             steel_pipe_path=pipe_path,
+            smoke_detector_path=smoke_path,
         )
         self._sessions[guild.id] = sess
 
@@ -604,11 +712,7 @@ class BrainrotCog(commands.Cog):
             msg = await voice_channel.send(embed=embed, view=view)
             sess.controller_message = msg
         except Exception as e:
-            self._sessions.pop(guild.id, None)
-            try:
-                await vc.disconnect(force=True)
-            except Exception:
-                pass
+            await self._full_stop(guild.id, disconnect_voice=True)
             await self._slash_reply(interaction, f"Could not post controller: {e}")
             return
 
@@ -641,6 +745,8 @@ class BrainrotCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    if bot.get_cog("BrainrotCog") is not None:
+        return
     cog = BrainrotCog(bot)
     bot.add_cog(cog)
     cog._alone_sweep_task = asyncio.get_running_loop().create_task(cog._alone_in_voice_sweep_loop())

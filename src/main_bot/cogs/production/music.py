@@ -25,7 +25,7 @@ from wavelink import Playlist, TrackEndEventPayload, TrackStartEventPayload, Web
 from wavelink.enums import AutoPlayMode, DiscordVoiceCloseType, TrackSource
 from wavelink.exceptions import InvalidNodeException, LavalinkLoadException, QueueEmpty
 
-from main_bot.paths import LOCAL_MUSIC_ROOT
+from main_bot.paths import LOCAL_AUDIO_ROOT, LOCAL_MUSIC_ROOT
 from main_bot.server_configs.config import (
     GUILD_ID,
     LAVALINK_PASSWORD,
@@ -413,10 +413,11 @@ class MusicCog(commands.Cog):
         self._empty_disconnect_tasks: dict[int, asyncio.Task[None]] = {}
         self._alone_voice_sweep_task: Optional[asyncio.Task[None]] = None
         self._resume_rotating_after_music: bool = False
-        allowed = frozenset(LOCAL_FOLDER_DEFS.keys())
+        allowed = frozenset(LOCAL_FOLDER_DEFS.keys()) | frozenset({"brainrot"})
         self._local_http = LocalMusicHttpServer(
             LOCAL_MUSIC_ROOT,
             allowed_folders=allowed,
+            folder_roots={"brainrot": LOCAL_AUDIO_ROOT / "brainrot"},
             host=MUSIC_LOCAL_HTTP_HOST,
             port=MUSIC_LOCAL_HTTP_PORT,
         )
@@ -428,7 +429,8 @@ class MusicCog(commands.Cog):
             await self._local_http.start()
             print(
                 f"[music] Local music HTTP on http://{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}/"
-                "{{jazz,lofi,gaming}}/… (paths under local_audio/music/) — keep this bot running while Lavalink streams local files.",
+                "{{jazz,lofi,gaming,brainrot}}/… (music under local_audio/music/, brainrot sfx under local_audio/brainrot/) "
+                "— keep this bot running while Lavalink streams local files.",
             )
         except OSError as e:
             print(
@@ -506,12 +508,30 @@ class MusicCog(commands.Cog):
         self._empty_disconnect_tasks[guild_id] = asyncio.create_task(_run())
 
     def _guild_has_music_voice_session(self, guild: nextcord.Guild) -> bool:
+        brainrot = self.bot.get_cog("BrainrotCog")
+        if brainrot is not None and brainrot.is_session_active(guild.id):
+            return False
         if isinstance(guild.voice_client, wavelink.Player):
             return True
         if self._resolve_wavelink_player(guild.id) is not None:
             return True
         st = self.guild_states.get(guild.id)
         return st is not None and st.session != "idle"
+
+    async def brainrot_connect_voice(
+        self,
+        guild: nextcord.Guild,
+        voice_channel: Union[nextcord.VoiceChannel, nextcord.StageChannel],
+    ) -> Optional[wavelink.Player]:
+        """Brainrot cog: join VC via Lavalink (DAVE-capable). Requires Lavalink + loopback HTTP."""
+        if not await self._ensure_lavalink():
+            return None
+        vc = await self._connect_voice(guild, voice_channel)
+        return vc if isinstance(vc, wavelink.Player) else None
+
+    async def brainrot_sfx_http_url(self, path: Path) -> str:
+        """Public HTTP URL for ``local_audio/brainrot/{filename}`` (served by the music loopback server)."""
+        return await self._local_http_track_url("brainrot", path)
 
     def _brainrot_blocks_voice(self, guild: nextcord.Guild) -> Optional[str]:
         cog = self.bot.get_cog("BrainrotCog")
@@ -765,7 +785,11 @@ class MusicCog(commands.Cog):
         await self._local_http.start()
         return self._local_http.url_for_file(folder, path)
 
-    async def _connect_voice(self, guild: nextcord.Guild, voice_channel: nextcord.VoiceChannel) -> Optional[wavelink.Player]:
+    async def _connect_voice(
+        self,
+        guild: nextcord.Guild,
+        voice_channel: Union[nextcord.VoiceChannel, nextcord.StageChannel],
+    ) -> Optional[wavelink.Player]:
         _MUSIC_LOG.info(
             "_connect_voice start guild=%s target_ch=%s %s",
             guild.id,
@@ -1270,6 +1294,9 @@ class MusicCog(commands.Cog):
         if player is None or player.guild is None:
             _MUSIC_LOG.warning("on_wavelink_track_start missing player or guild title=%s", title)
             return
+        brainrot = self.bot.get_cog("BrainrotCog")
+        if brainrot is not None and brainrot.is_session_active(player.guild.id):
+            return
         snap = self._music_voice_snapshot(player.guild, player)
         _MUSIC_LOG.info(
             "on_wavelink_track_start guild=%s title=%r paused=%s %s",
@@ -1285,6 +1312,9 @@ class MusicCog(commands.Cog):
     async def on_wavelink_inactive_player(self, player: wavelink.Player) -> None:
         guild = player.guild
         if guild is None:
+            return
+        brainrot = self.bot.get_cog("BrainrotCog")
+        if brainrot is not None and brainrot.is_session_active(guild.id):
             return
         snap = self._music_voice_snapshot(guild, player)
         print(f"[music] inactive player timeout ({MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC}s) — disconnecting guild={guild.id}")
@@ -1303,6 +1333,9 @@ class MusicCog(commands.Cog):
             return
         guild_id = player.guild.id
         guild = player.guild
+        brainrot = self.bot.get_cog("BrainrotCog")
+        if brainrot is not None and brainrot.is_session_active(guild_id):
+            return
         snap = self._music_voice_snapshot(guild, player)
         reason_raw = payload.reason or ""
         reason_lc = reason_raw.lower()

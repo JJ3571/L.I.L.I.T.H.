@@ -8,6 +8,13 @@ from pathlib import Path
 from main_bot.cogs.production import brainrot as br
 
 
+def test_roll_brainrot_silence_cap_within_three_to_fifteen_minutes() -> None:
+    rng = random.Random(12345)
+    for _ in range(100):
+        cap = br.roll_brainrot_silence_cap_sec(rng)
+        assert br.BRAINROT_SILENCE_CAP_MIN_SEC <= cap <= br.BRAINROT_SILENCE_CAP_MAX_SEC
+
+
 def test_schedule_next_wake_respects_deadline() -> None:
     rng = random.Random(42)
     now = 1000.0
@@ -50,17 +57,21 @@ def test_build_burst_paths_same_seed_same_order() -> None:
     d = Path("dodge.mp3")
     p = Path("plank.mp3")
     s = Path("pipe.mp3")
+    sd = Path("smoke.mp3")
     elapsed = 120.0
     pend_p = 1
     pend_s = 2
+    pend_sm = 1
     paths_a = br.build_burst_paths(
         rng_a,
         elapsed_since_last_trigger_sec=elapsed,
         dodgeball_path=d,
         plankton_path=p,
         steel_pipe_path=s,
+        smoke_detector_path=sd,
         pending_plankton=pend_p,
         pending_pipe=pend_s,
+        pending_smoke=pend_sm,
     )
     paths_b = br.build_burst_paths(
         rng_b,
@@ -68,9 +79,11 @@ def test_build_burst_paths_same_seed_same_order() -> None:
         dodgeball_path=d,
         plankton_path=p,
         steel_pipe_path=s,
+        smoke_detector_path=sd,
         pending_plankton=pend_p,
         pending_pipe=pend_s,
+        pending_smoke=pend_sm,
     )
     assert paths_a == paths_b
     n_dodge = br.dodgeball_burst_count(elapsed, base=br.BRAINROT_BASE_DODGEBALLS, escalation_sec=br.BRAINROT_ESCALATION_SEC, max_dodgeballs=br.BRAINROT_MAX_DODGEBALLS)
-    assert len(paths_a) == n_dodge + pend_p + pend_s
+    assert len(paths_a) == n_dodge + pend_p + pend_s + pend_sm

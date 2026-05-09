@@ -235,6 +235,8 @@ BRAVE_SEARCH_API_KEY = _get_str("BRAVE_SEARCH_API_KEY", "")
 # Emoji IDs
 heads_emoji_id = _get_int("HEADS_EMOJI_ID", 0)
 tails_emoji_id = _get_int("TAILS_EMOJI_ID", 0)
+# Economy UI (brainrot purchase buttons, etc.): guild emoji typically named ``coin``.
+coin_emoji_id = _get_int("COIN_EMOJI_ID", 0)
 
 # Birthdays
 birthday_announcement_channel_id = _get_int("BIRTHDAY_ANNOUNCEMENT_CHANNEL_ID", 0)

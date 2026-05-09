@@ -29,6 +29,7 @@ This bot loads config from environment variables (typically injected by Doppler)
 
 ## Optional (feature-dependent)
 
+- `COIN_EMOJI_ID` (int): guild custom emoji ID used on brainrot “purchase” buttons (fallback is Unicode 🪙 if unset/`0`).
 - `LAVALINK_URI` (string): HTTP base URL for Lavalink v4 (default `http://127.0.0.1:2333`). Same host/port Lavalink binds.
 - `LAVALINK_PASSWORD` (string): **Must match** Lavalink `application.yml` → `lavalink.server.password`. If unset, the bot defaults to `youshallnotpass` (see `config.py`). A mismatch produces Lavalink log `Authentication failed` on `/v4/websocket` and wavelink `Failed to authenticate Node`.
 - `GEMINI_API_KEY` (string)
