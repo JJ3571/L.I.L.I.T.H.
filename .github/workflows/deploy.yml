@@ -14,9 +14,8 @@ permissions:
 jobs:
   deploy:
     # Only run if the Release workflow succeeded (not failed/cancelled).
-    # On workflow_run trigger, github.event.workflow.conclusion is only available
-    # inside the run's context — we gate via the if condition.
-    if: github.event_name != 'workflow_run' || github.event.workflow.conclusion == 'success'
+    # workflow_run payload exposes conclusion on github.event.workflow_run (see GH docs).
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to VPS
