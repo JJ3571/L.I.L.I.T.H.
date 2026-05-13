@@ -1,0 +1,19 @@
+name: Release Reminder
+
+# Cron: weekly nudge in case someone cut a release and forgot to trigger deploy.
+# The real deploy happens automatically via workflow_run from the Release workflow.
+# This is a safety net / notification for manual oversight.
+on:
+  schedule:
+    cron: "0 9 * * 1"  # Every Monday at 9 AM UTC
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reminder to check deploy status
+        run: |
+          echo "If a new release was cut recently, verify the Deploy workflow ran."
+          echo "Check: https://github.com/JJ3571/discord-bot/actions/workflows/deploy.yml"
+          echo "If it did not run, trigger manually: Actions → Deploy → Run workflow"

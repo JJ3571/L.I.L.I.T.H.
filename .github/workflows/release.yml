@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+    # v1.2.3
+      - v[0-9]+.[0-9]+.[0-9]+-* # v1.2.3-beta, v1.2.3+build123
+
+permissions:
+  contents: write   # needed to create GitHub releases
+  packages: write   # needed to push to GHCR
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u JJ3571 --password-stdin
+
+      - name: Build and push image
+        run: |
+          docker build \
+            --tag ghcr.io/jj3571/discord-bot:${{ steps.version.outputs.version }} \
+            --tag ghcr.io/jj3571/discord-bot:latest \
+            .
+
+          docker push ghcr.io/jj3571/discord-bot:${{ steps.version.outputs.version }}
+          docker push ghcr.io/jj3571/discord-bot:latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

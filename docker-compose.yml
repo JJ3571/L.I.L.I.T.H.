@@ -1,0 +1,47 @@
+services:
+  bot:
+    image: ghcr.io/jj3571/discord-bot:latest
+    # Run via: doppler run -- docker compose up -d
+    # Doppler injects all secrets as env vars at runtime (no .env file on disk).
+    env: {}
+    depends_on:
+      lavalink:
+        condition: service_healthy
+    volumes:
+      # Local audio assets (music, brainrot sfx) — bind mount so changes
+      # are reflected without rebuilding.
+      - ./local_audio:/app/local_audio:ro
+      # Persisted data (tierlist images, etc.). These survive image rebuilds.
+      - tierlist_data:/app/data
+      # Legacy SQLite dbs (economy.db, waterboard.db, etc.) if using local DB.
+      - db_data:/app/databases
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  lavalink:
+    # Pre-built official image. Mount your application.yml to override defaults
+    # (password, plugins, YouTube OAuth, etc.).
+    image: ghcr.io/lavalink-devs/lavalink:latest
+    volumes:
+      # Your tuned config. Create by copying lavalink/application.yml.example and
+      # editing server.password to match LAVALINK_PASSWORD in Doppler.
+      - ./lavalink/application.yml:/lavalink/application.yml:ro
+    ports:
+      - "127.0.0.1:2333:2333"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2333/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  # Named volumes survive container rebuilds — only image changes, data persists.
+  tierlist_data:
+  db_data:

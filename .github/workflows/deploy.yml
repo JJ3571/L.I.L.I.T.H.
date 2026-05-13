@@ -1,0 +1,40 @@
+name: Deploy
+
+# Triggered manually (workflow_dispatch) or by the release workflow via
+# workflow_run. Runs after a new image is pushed to GHCR.
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # Only run if the Release workflow succeeded (not failed/cancelled).
+    # On workflow_run trigger, github.event.workflow.conclusion is only available
+    # inside the run's context — we gate via the if condition.
+    if: github.event_name != 'workflow_run' || github.event.workflow.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ vars.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # Ensure strict ssh key permissions (defensive)
+            if [ -d /home/discord_bot/.ssh ]; then
+              chmod -R 700 /home/discord_bot/.ssh 2>/dev/null || true
+              chmod 600 /home/discord_bot/.ssh/github_discord_bot 2>/dev/null || true
+            fi
+
+            cd /home/discord_bot
+            doppler run -- docker compose up -d --pull always
