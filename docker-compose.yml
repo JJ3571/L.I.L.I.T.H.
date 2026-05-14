@@ -3,7 +3,6 @@ services:
     image: ghcr.io/jj3571/discord-bot:latest
     # Run via: doppler run -- docker compose up -d
     # Doppler injects all secrets as env vars at runtime (no .env file on disk).
-    env: {}
     depends_on:
       lavalink:
         condition: service_healthy
