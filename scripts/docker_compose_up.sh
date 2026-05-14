@@ -19,8 +19,15 @@ set -euo pipefail
 #   ./scripts/docker_compose_up.sh up --pull always -d
 #   ./scripts/docker_compose_up.sh logs -f bot
 #
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+# Repo root: parent of scripts/ when this file lives under scripts/;
+# otherwise the directory containing this script (so a repo-root copy still works).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(basename "$SCRIPT_DIR")" == "scripts" ]]; then
+	REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+else
+	REPO_ROOT="$SCRIPT_DIR"
+fi
+cd "$REPO_ROOT"
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/discord-bot-docker-.env.XXXXXX")"
 cleanup() { rm -f "$tmp"; }

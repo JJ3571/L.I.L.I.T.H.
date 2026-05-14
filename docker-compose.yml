@@ -6,7 +6,7 @@
 #
 # Recommended invocations:
 #   doppler run -- docker compose up --pull always
-#   ./scripts/docker_compose_up.sh    # refreshes `.env` then `docker compose up`
+#   ./scripts/docker_compose_up.sh   # (or ./docker_compose_up.sh if copied to repo root)
 #
 # Passing only `DOPPLER_TOKEN=… docker compose up` does NOT set DATABASE_URL etc.
 # Use `doppler run` or write `.env` first — see:
@@ -15,9 +15,8 @@
 services:
   bot:
     image: ghcr.io/jj3571/discord-bot:latest
-    depends_on:
-      lavalink:
-        condition: service_healthy
+    # No depends_on on Lavalink: music features need it, but Postgres/DISCORD_LOGIN
+    # should not wait on Lavalink health (slow JVM / curl probe). Restart policy covers retries.
     volumes:
       # Local audio assets (music, brainrot sfx) — bind mount so changes
       # are reflected without rebuilding.
@@ -65,6 +64,7 @@ services:
       LAVALINK_URI: ${LAVALINK_URI:-http://lavalink:2333}
       LEAGUE_CHANNEL_ID: ${LEAGUE_CHANNEL_ID}
       LOAD_DEVELOPMENT_COGS: ${LOAD_DEVELOPMENT_COGS}
+      FULL_DEBUG_IN_TERMINAL: ${FULL_DEBUG_IN_TERMINAL}
       MANA_SYMBOLS: ${MANA_SYMBOLS}
       MTG_AUTOLINK_BLOCKED_NAMES: ${MTG_AUTOLINK_BLOCKED_NAMES}
       MTG_AUTOLINK_CHANNEL_IDS: ${MTG_AUTOLINK_CHANNEL_IDS}
