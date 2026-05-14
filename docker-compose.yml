@@ -1,8 +1,20 @@
+# Docker Compose + Doppler
+#
+# `environment` uses ${VAR} so Compose substitutes from:
+#   • Your shell (e.g. secrets injected by `doppler run`), or
+#   • Repo-root `.env` (Compose loads it automatically for substitution — gitignored).
+#
+# Recommended invocations:
+#   doppler run -- docker compose up --pull always
+#   ./scripts/docker_compose_up.sh    # refreshes `.env` then `docker compose up`
+#
+# Passing only `DOPPLER_TOKEN=… docker compose up` does NOT set DATABASE_URL etc.
+# Use `doppler run` or write `.env` first — see:
+# https://docs.doppler.com/docs/docker-compose#option-2-container-env-vars
+#
 services:
   bot:
     image: ghcr.io/jj3571/discord-bot:latest
-    # Run via: doppler run -- docker compose up -d
-    # Doppler injects all secrets as env vars at runtime (no .env file on disk).
     depends_on:
       lavalink:
         condition: service_healthy
@@ -15,6 +27,63 @@ services:
       # Legacy SQLite dbs (economy.db, waterboard.db, etc.) if using local DB.
       - db_data:/app/databases
     restart: unless-stopped
+    environment:
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS}
+      AFK_CHANNEL_ID: ${AFK_CHANNEL_ID}
+      APPLICATION_ID: ${APPLICATION_ID}
+      BACKUP_CHANNEL_ID: ${BACKUP_CHANNEL_ID}
+      BOT_LOG_FILE: ${BOT_LOG_FILE}
+      BOT_LOG_JOURNAL_EXTRA_UNITS: ${BOT_LOG_JOURNAL_EXTRA_UNITS}
+      BOT_LOG_JOURNAL_UNIT: ${BOT_LOG_JOURNAL_UNIT}
+      BOT_SPAM_ID: ${BOT_SPAM_ID}
+      BRAVE_IMAGE_SEARCH_MIN_INTERVAL: ${BRAVE_IMAGE_SEARCH_MIN_INTERVAL}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY}
+      BRAVE_TIERLIST_IMAGE_MIN_HEIGHT: ${BRAVE_TIERLIST_IMAGE_MIN_HEIGHT}
+      BRAVE_TIERLIST_IMAGE_MIN_WIDTH: ${BRAVE_TIERLIST_IMAGE_MIN_WIDTH}
+      BIRTHDAY_ANNOUNCEMENT_CHANNEL_ID: ${BIRTHDAY_ANNOUNCEMENT_CHANNEL_ID}
+      BIRTHDAY_CHANNEL_ID: ${BIRTHDAY_CHANNEL_ID}
+      BIRTHDAY_EMOJI_ID: ${BIRTHDAY_EMOJI_ID}
+      BIRTHDAY_REACTION_CHANNEL_ID: ${BIRTHDAY_REACTION_CHANNEL_ID}
+      BIRTHDAY_ROLE_ID: ${BIRTHDAY_ROLE_ID}
+      CHARACTER_AVATARS: ${CHARACTER_AVATARS}
+      COIN_EMOJI_ID: ${COIN_EMOJI_ID}
+      COMMUNITY_NOTES_REACTION_EMOJI: ${COMMUNITY_NOTES_REACTION_EMOJI}
+      CRAFTY_BASE_URL: ${CRAFTY_BASE_URL}
+      CRAFTY_PASSWORD: ${CRAFTY_PASSWORD}
+      CRAFTY_USERNAME: ${CRAFTY_USERNAME}
+      CREATE_FIRETEAM_CHANNEL_ID: ${CREATE_FIRETEAM_CHANNEL_ID}
+      DATABASE_URL: ${DATABASE_URL}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      ENVIRONMENT: ${ENVIRONMENT}
+      ERROR_ALERT_CHANNEL_ID: ${ERROR_ALERT_CHANNEL_ID}
+      ERROR_ALERT_USER_ID: ${ERROR_ALERT_USER_ID}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GUILD_ID: ${GUILD_ID}
+      HEADS_EMOJI_ID: ${HEADS_EMOJI_ID}
+      HIDDEN_CATEGORY_ID: ${HIDDEN_CATEGORY_ID}
+      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD}
+      LAVALINK_URI: ${LAVALINK_URI:-http://lavalink:2333}
+      LEAGUE_CHANNEL_ID: ${LEAGUE_CHANNEL_ID}
+      LOAD_DEVELOPMENT_COGS: ${LOAD_DEVELOPMENT_COGS}
+      MANA_SYMBOLS: ${MANA_SYMBOLS}
+      MTG_AUTOLINK_BLOCKED_NAMES: ${MTG_AUTOLINK_BLOCKED_NAMES}
+      MTG_AUTOLINK_CHANNEL_IDS: ${MTG_AUTOLINK_CHANNEL_IDS}
+      MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS: ${MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS}
+      MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE: ${MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE}
+      MTG_AUTOLINK_MAX_WORD_SPAN: ${MTG_AUTOLINK_MAX_WORD_SPAN}
+      MUSIC_LOCAL_HTTP_HOST: ${MUSIC_LOCAL_HTTP_HOST}
+      MUSIC_LOCAL_HTTP_PORT: ${MUSIC_LOCAL_HTTP_PORT}
+      MUSIC_VOICE_CHANNEL_DENYLIST: ${MUSIC_VOICE_CHANNEL_DENYLIST}
+      OMDB_API_KEY: ${OMDB_API_KEY}
+      OMDB_API_URL: ${OMDB_API_URL}
+      SEEN_CATEGORY_ID: ${SEEN_CATEGORY_ID}
+      TAILS_EMOJI_ID: ${TAILS_EMOJI_ID}
+      VOICE_CHANNEL_IDS: ${VOICE_CHANNEL_IDS}
+      WATCH_PARTY_CHANNEL_ID: ${WATCH_PARTY_CHANNEL_ID}
+      WATCH_PARTY_EVENT_ID: ${WATCH_PARTY_EVENT_ID}
+      WATERBOARD_CATEGORY_ID: ${WATERBOARD_CATEGORY_ID}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      ZERONI_REACTION_EMOJI: ${ZERONI_REACTION_EMOJI}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
