@@ -2,17 +2,60 @@
 
 HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a complete reference of all available slash commands.
 
-**Run locally (after [uv](https://docs.astral.sh/uv/) is installed):** from the repo root, `uv sync` then `uv run python -m main_bot` or `uv run bot`. Use Python **3.12–3.13** (see `pyproject.toml`; Nextcord 3.1.x requires 3.12+ and is not compatible with 3.14 yet). With [Doppler](https://www.doppler.com/), use `doppler run -- uv run python -m main_bot`. A simple Cron job can be setup to keep this bot running on a vps (with restart failure & scheduled daily bot restarts).
+This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see `.env.example`). To contribute, read **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
-#### Secrets & Env Variables
-This bot is intended to be used with a single server/guild. All IDs, channels, roles, etc. are hardcoded as env variables. 
+---
 
-(*If you're not using Doppler, there is an .env template in /src/main_bot/server_configs that you will need to populate with secrets. This will not be loaded automatically, and will require an edit in main.py or similar .env injection!*)
+## Setup & secrets
 
+### Layout you should prepare
 
+These paths matter if you run **Docker Compose** or Lavalink-backed music:
+
+| Path | Purpose |
+|------|---------|
+| **`lavalink/application.yml`** | Runtime Lavalink config (gitignored). Copy [`lavalink/application.yml.example`](lavalink/application.yml.example) → `lavalink/application.yml` and set `lavalink.server.password` to match **`LAVALINK_PASSWORD`** in your secrets (same value as in `.env.example` / Doppler). |
+| **`local_audio/`** | Repo-root folder mounted read-only into the bot container for music/SFX assets (see `docker-compose.yml`). Create it before `docker compose up` if it does not exist; subfolders depend on what your cogs expect (for example under `local_audio/music/`). |
+
+Named Docker volumes (`tierlist_data`, `db_data`) need no manual directories.
+
+### Secrets: Doppler **or** repo-root `.env`
+
+Use either workflow (or mix: Doppler locally and `.env` only on a CI host—whatever fits).
+
+**Option A — [Doppler](https://www.doppler.com/)**
+
+1. Install the [Doppler CLI](https://docs.doppler.com/docs/cli) and link this repo to your project/config (`doppler configure`, or `doppler setup`).
+2. **Docker Compose:** either  
+   - `./scripts/docker_compose_up.sh` (or a copy at repo root: `./docker_compose_up.sh`) — same as `doppler run -- docker compose up --pull always` (secrets in the Compose process; no need for a plaintext `.env` from `doppler secrets download`), or  
+   - `doppler run -- docker compose up --pull always` — same injection, run manually.
+3. **Local Python:** use Python **3.12–3.13** (Nextcord on PyPI does not support 3.14 yet). From repo root: `uv sync`, then `doppler run -- uv run python -m main_bot` or `doppler run -- uv run bot`.
+
+**Option B — Local `.env` file**
+
+1. Copy `.env.example` → `.env` at the **repository root** and fill in values. `.env` is gitignored—never commit real secrets.
+2. **Docker Compose:** run `docker compose up` (or `docker compose up --pull always -d`) from the repo root. Compose substitutes `${VAR}` from `.env` into the bot service per [`docker-compose.yml`](docker-compose.yml).
+3. **Local `uv run`:** the app does **not** auto-load `.env`; export variables into your shell or IDE, use Option A for development, or rely on Compose when testing in containers.
+
+Cron/systemd on a VPS often wraps the bot with `doppler run -- …` or an equivalent env file—same variables as `.env.example`.
+
+### Published VPS bundle (no Git clone)
+
+Running from **[GHCR](https://docs.github.com/en/packages/getting-started-with-github-container-registry)** only (no repo clone)? Download **`discord-bot-standalone.zip`** from the repo’s **[Releases](https://github.com/jj3571/Discord-Bot-Sandbox/releases)** (built each time you **publish** a GitHub Release) and unpack into **one folder** on the machine. It ships **`docker-compose.yml`**, **`.env.template`**, **`startup_script.sh`**, **`rollout.sh`**, **`lavalink/application.yml.example`**, plus **`README.md`** with the standalone layout explained. Typical upgrade:
+
+```bash
+cd /path/to/discord-bot-standalone
+chmod +x startup_script.sh rollout.sh
+./rollout.sh
+```
+
+Developers regenerate the artifact locally anytime with **`./scripts/build_deploy_bundle.sh`** (**`dist/discord-bot-standalone.zip`** plus an unpacked **`dist/discord-bot-standalone/`**). That script copies Compose from root **`docker-compose.yml`** (service definitions unchanged; only comments above **`services:`** are swapped for ZIP readers), **`.env.example` → `.env.template`**, **`lavalink/application.yml.example`**, and **`scripts/deploy_bundle/`** helpers — nothing is duplicated manually in-tree.
+
+---
 
 ## 📋 Table of Contents
 
+- [Setup & secrets](#setup--secrets)
 - [📁 Project layout](#project-layout)
 - [🎮 Entertainment & Games](#-entertainment--games)
 - [💰 Economy System](#-economy-system)
@@ -32,9 +75,15 @@ Overview of how the repository is organized. Paths marked *optional* or *local* 
 ```text
 discord_bot/                    # clone URL may still show Discord-Bot-Sandbox until renamed
 ├── pyproject.toml              # Dependencies (uv); lockfile: uv.lock
+├── docker-compose.yml          # Bot + Lavalink; secrets via .env or doppler run
+├── Dockerfile                  # Bot image (optional remote image in compose)
+├── CONTRIBUTING.md             # How to contribute, env/cog expectations, PR flow
+├── .env.example                # Env template → copy to repo-root .env (gitignored)
 ├── main.py                     # Thin entrypoint → main_bot.main.run()
 ├── opgg_mcp_test.py            # Local MCP / tooling experiment
 ├── README.md
+├── lavalink/
+│   └── application.yml.example # Copy to application.yml locally (password ↔ LAVALINK_PASSWORD)
 ├── admin_tools/                # One-off maintenance & verification scripts
 │   ├── README.md
 │   ├── birthday_cleanup.py
@@ -44,7 +93,14 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │   └── verify_databases.py
 ├── databases/                  # *local* SQLite databases (*.db gitignored)
 ├── docs/                       # Guides, env key notes, example snippets
-├── scripts/                    # Optional helpers (e.g. run_bot.sh)
+├── scripts/
+│   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
+│   ├── deploy_bundle/          # Sources for standalone ZIP (startup/rollout/README + compose header frag)
+│   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
+│   ├── run_bot_doppler.sh      # doppler run + uv (local clone)
+│   ├── run_bot_env.sh           # uv only (load env yourself)
+│   ├── deploy.sh                # clone layout: compose down + compose up with pull
+│   └── run_bot.sh               # Maintainer VPS paths only; see CONTRIBUTING.md
 ├── src/
 │   └── main_bot/               # Installable package (uv run python -m main_bot)
 │       ├── cogs/
@@ -57,7 +113,7 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 └── local_audio/                # *optional* local audio (gitignored): music/jazz|lofi|gaming, brainrot/*.mp3, …
 ```
 
-**Not shown (typical machine-local):** `.venv/` or other virtualenvs, `.env` / editor env files, `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and tracks under `local_audio/music/` (and other `local_audio/` subfolders) as needed when running the bot.
+**Not shown (typical machine-local):** `.venv/` or other virtualenvs, repo-root `.env`, `lavalink/application.yml` (generated from the example), `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and tracks under `local_audio/music/` (and other `local_audio/` subfolders) as needed when running the bot.
 
 ---
 

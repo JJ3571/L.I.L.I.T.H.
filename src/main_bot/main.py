@@ -1,14 +1,5 @@
 """Discord bot: intents, bot instance, cog loading, and run()."""
 
-# When True, selected cogs print verbose ``[DEBUG]`` lines to stdout (e.g. birthday and reminder loops).
-FULL_DEBUG_IN_TERMINAL = False
-
-# When True, ``on_ready`` also loads ``main_bot.cogs.development`` after production.
-# Production cogs always load. Set ``LOAD_DEVELOPMENT_COGS`` in the environment to
-# ``1`` / ``true`` / ``yes`` / ``on`` or ``0`` / ``false`` / ``no`` / ``off`` to override
-# this default without editing code (e.g. per Doppler config).
-DEVELOPMENT_COG_EXTENSIONS_ENABLED = True
-
 import logging
 import os
 import sys
@@ -29,6 +20,23 @@ from main_bot.db.pool import close_pool, create_pool
 from main_bot.error_alerts import ensure_asyncio_exception_handler, install_error_alerts
 from main_bot.paths import PROJECT_ROOT
 from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
+
+
+def _env_bool_override(name: str, *, code_default: bool) -> bool:
+    """True/false from env; unset falls back to ``code_default`` (same tokens as LOAD_DEVELOPMENT_COGS)."""
+    raw = os.environ.get(name, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return code_default
+
+
+# Verbose ``[DEBUG]`` lines on stdout from selected cogs. Env overrides code default ``False``.
+FULL_DEBUG_IN_TERMINAL = _env_bool_override("FULL_DEBUG_IN_TERMINAL", code_default=False)
+
+# When ``LOAD_DEVELOPMENT_COGS`` env is unset: whether ``development`` cogs load follows this constant.
+DEVELOPMENT_COG_EXTENSIONS_ENABLED = True
 
 
 class MainBot(commands.Bot):
@@ -67,12 +75,7 @@ COGS_ROOT = Path(__file__).resolve().parent / "cogs"
 
 
 def _should_load_development_cog_extensions() -> bool:
-    raw = os.environ.get("LOAD_DEVELOPMENT_COGS", "").strip().lower()
-    if raw in ("1", "true", "yes", "on"):
-        return True
-    if raw in ("0", "false", "no", "off"):
-        return False
-    return DEVELOPMENT_COG_EXTENSIONS_ENABLED
+    return _env_bool_override("LOAD_DEVELOPMENT_COGS", code_default=DEVELOPMENT_COG_EXTENSIONS_ENABLED)
 
 
 async def load_extensions(directory: str) -> None:

@@ -35,6 +35,7 @@ This bot loads config from environment variables (typically injected by Doppler)
 - `GEMINI_API_KEY` (string)
 - `ENVIRONMENT` (string: `development` or `production`) used by `is_development_environment()`
 - `LOAD_DEVELOPMENT_COGS` (optional): when set to `1`, `true`, `yes`, or `on`, the bot loads extensions under `main_bot.cogs.development` in addition to `production`. When set to `0`, `false`, `no`, or `off`, development extensions are not loaded even if `DEVELOPMENT_COG_EXTENSIONS_ENABLED` is True in `main.py`. If unset, the default comes from `DEVELOPMENT_COG_EXTENSIONS_ENABLED` in `main_bot/main.py`.
+- `FULL_DEBUG_IN_TERMINAL` (optional): same truthy/falsy tokens as `LOAD_DEVELOPMENT_COGS`. When truthy, selected cogs emit verbose `[DEBUG]` lines to stdout (see `main_bot/main.py`). If unset, defaults to **false**.
 
 ## Admin `.logging` command (`main_bot.cogs.production.logging`)
 
