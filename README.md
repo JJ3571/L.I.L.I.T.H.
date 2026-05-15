@@ -27,8 +27,8 @@ Use either workflow (or mix: Doppler locally and `.env` only on a CI host—what
 
 1. Install the [Doppler CLI](https://docs.doppler.com/docs/cli) and link this repo to your project/config (`doppler configure`, or `doppler setup`).
 2. **Docker Compose:** either  
-   - `./scripts/docker_compose_up.sh` (or a copy at repo root: `./docker_compose_up.sh`) — refreshes `.env` from Doppler then runs `docker compose up --pull always`, or  
-   - `doppler run -- docker compose up --pull always` — injects secrets into the Compose process without writing `.env`.
+   - `./scripts/docker_compose_up.sh` (or a copy at repo root: `./docker_compose_up.sh`) — same as `doppler run -- docker compose up --pull always` (secrets in the Compose process; no need for a plaintext `.env` from `doppler secrets download`), or  
+   - `doppler run -- docker compose up --pull always` — same injection, run manually.
 3. **Local Python:** use Python **3.12–3.13** (Nextcord on PyPI does not support 3.14 yet). From repo root: `uv sync`, then `doppler run -- uv run python -m main_bot` or `doppler run -- uv run bot`.
 
 **Option B — Local `.env` file**
@@ -96,7 +96,7 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 ├── scripts/
 │   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
 │   ├── deploy_bundle/          # Sources for standalone ZIP (startup/rollout/README + compose header frag)
-│   ├── docker_compose_up.sh     # Doppler → .env + docker compose (supports repo root vs scripts/)
+│   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
 │   ├── run_bot_doppler.sh      # doppler run + uv (local clone)
 │   ├── run_bot_env.sh           # uv only (load env yourself)
 │   ├── deploy.sh                # clone layout: compose down + compose up with pull

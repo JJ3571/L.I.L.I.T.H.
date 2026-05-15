@@ -6,7 +6,7 @@
 #
 # Recommended invocations:
 #   doppler run -- docker compose up --pull always
-#   ./scripts/docker_compose_up.sh   # (or ./docker_compose_up.sh if copied to repo root)
+#   ./scripts/docker_compose_up.sh   # wraps the same (or ./docker_compose_up.sh if copied to repo root)
 #
 # Passing only `DOPPLER_TOKEN=… docker compose up` does NOT set DATABASE_URL etc.
 # Use `doppler run` or write `.env` first — see:

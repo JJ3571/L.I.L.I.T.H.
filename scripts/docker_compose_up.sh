@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Refresh repo-root `.env` from your active Doppler project/config for this directory,
-# then invoke Docker Compose. `.env` is gitignored — do not commit it.
+# Run Docker Compose with secrets from your active Doppler project/config for this directory.
+# Compose substitutes `${DATABASE_URL}`, etc. from the **process environment** — `doppler run`
+# injects decrypted values, so you do not need a repo-root `.env` for interpolation.
 #
-# Compose substitutes ${DATABASE_URL}, etc. from that `.env` into container env — no need
-# for `env_file:` when using this workflow.
+# Use this when `doppler secrets download --format env` is not plain `KEY=value` (e.g. some
+# configs or CLI/API paths yield ciphertext like `4:base64:...` in the file — Compose cannot
+# parse that). `doppler run` always resolves secrets the same way the CLI does for execution.
 #
-# Alternative (no `.env` on disk): `doppler run -- docker compose up --pull always`
+# Optional plaintext `.env` in the compose directory is still read by Compose for any keys you
+# keep only on disk; prefer not committing secrets.
+#
+# Alternative: put secrets only in `.env` and run `docker compose up` directly (no Doppler).
+#
 # Passing only `DOPPLER_TOKEN=… docker compose up` does **not** inject app secrets.
 #
-# Requires: doppler CLI configured for this repo (e.g. `doppler configure` or a
-# `doppler.yaml` / scoped settings). Same project/config `doppler run` would use here.
+# Requires: doppler CLI configured for this repo (e.g. `doppler configure` or `doppler.yaml`).
 #
 # Usage:
 #   ./scripts/docker_compose_up.sh
-#       → docker compose up --pull always (default when no args)
+#       → doppler run -- docker compose up --pull always (default when no args)
 #   ./scripts/docker_compose_up.sh up --pull always -d
 #   ./scripts/docker_compose_up.sh logs -f bot
 #
@@ -29,16 +34,7 @@ else
 fi
 cd "$REPO_ROOT"
 
-tmp="$(mktemp "${TMPDIR:-/tmp}/discord-bot-docker-.env.XXXXXX")"
-cleanup() { rm -f "$tmp"; }
-trap cleanup EXIT
-
-doppler secrets download --format env "$tmp"
-mv "$tmp" .env
-trap - EXIT
-chmod 600 .env || true
-
 if [[ $# -eq 0 ]]; then
 	set -- up --pull always
 fi
-exec docker compose "$@"
+exec doppler run -- docker compose "$@"
