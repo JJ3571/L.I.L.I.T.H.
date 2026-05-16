@@ -46,18 +46,13 @@ jobs:
             ghcr.io/jj3571/discord-bot:${{ steps.version.outputs.version }}
             ghcr.io/jj3571/discord-bot:latest
 
-      # Built here (not a separate `on: release` workflow): events caused by
-      # GITHUB_TOKEN do not trigger other workflows — see:
-      # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
-      - name: Build discord-bot-standalone.zip
-        run: chmod +x scripts/build_deploy_bundle.sh && ./scripts/build_deploy_bundle.sh
-
+      # Standalone ZIP is attached by `.github/workflows/release-standalone-bundle.yml`
+      # via `workflow_run` (release events from GITHUB_TOKEN do not start workflows).
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           make_latest: true
-          files: dist/discord-bot-standalone.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

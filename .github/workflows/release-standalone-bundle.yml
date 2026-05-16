@@ -1,9 +1,21 @@
 name: Release standalone bundle
 
-# Runs when a release is published outside tag CI (e.g. GitHub UI). Releases
-# created by `.github/workflows/release.yml` use GITHUB_TOKEN — those do NOT
-# fire `release` workflow triggers; that workflow attaches the ZIP itself.
+# Attach discord-bot-standalone.zip to a GitHub Release.
+#
+# - Tag releases from CI: `release` events from GITHUB_TOKEN do not start workflows,
+#   so we run after the `Release` workflow completes (`workflow_run`).
+# - Releases published outside that path (e.g. GitHub UI): `release` still triggers this.
+# - Manual: Actions → this workflow → Run workflow (optional tag; blank = latest release).
 on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag (e.g. v0.4.1). Leave empty to use the latest GitHub Release tag.
+        required: false
+        type: string
   release:
     types: [published]
 
@@ -13,8 +25,67 @@ permissions:
 jobs:
   bundle:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout (after Release workflow)
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve tag (after Release workflow)
+        id: tag_wr
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -euo pipefail
+          TAG=$(git describe --tags --exact-match 2>/dev/null || true)
+          if [ -z "$TAG" ]; then
+            echo "Expected an annotated/lightweight tag on the Release workflow commit."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (release published)
+        if: github.event_name == 'release'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Resolve tag (workflow_dispatch)
+        id: tag_dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release view --json tagName -q .tagName)
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.tag_dispatch.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Export release tag for upload
+        id: pick
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = workflow_run ]; then
+            echo "tag=${{ steps.tag_wr.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = release ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ steps.tag_dispatch.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build discord-bot-standalone.zip
         run: chmod +x scripts/build_deploy_bundle.sh && ./scripts/build_deploy_bundle.sh
@@ -22,6 +93,8 @@ jobs:
       - name: Upload bundle to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.pick.outputs.tag }}
           files: dist/discord-bot-standalone.zip
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
