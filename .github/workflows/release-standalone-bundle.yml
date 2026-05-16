@@ -3,12 +3,12 @@ name: Release standalone bundle
 # Attach discord-bot-standalone.zip to a GitHub Release.
 #
 # - Tag releases from CI: `release` events from GITHUB_TOKEN do not start workflows,
-#   so we run after the `Release` workflow completes (`workflow_run`).
+#   so this workflow runs when `.github/workflows/release.yml` completes (`workflow_run`).
 # - Releases published outside that path (e.g. GitHub UI): `release` still triggers this.
 # - Manual: Actions → this workflow → Run workflow (required tag, e.g. v0.4.1).
 on:
   workflow_run:
-    workflows: [Release]
+    workflows: [.github/workflows/release.yml]
     types: [completed]
   workflow_dispatch:
     inputs:

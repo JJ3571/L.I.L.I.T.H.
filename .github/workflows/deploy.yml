@@ -1,11 +1,11 @@
 name: Deploy
 
-# Triggered manually (workflow_dispatch) or by the release workflow via
-# workflow_run. Runs after a new image is pushed to GHCR.
+# Triggered manually (workflow_dispatch) or after Release completes (workflow_run).
+# Expects `docker-compose.yml` (or `compose.yaml`) under DEPLOY_COMPOSE_DIR on the VPS.
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ["Release"]
+    workflows: [.github/workflows/release.yml]
     types: [completed]
 
 permissions:
@@ -13,18 +13,22 @@ permissions:
 
 jobs:
   deploy:
-    # Only run if the Release workflow succeeded (not failed/cancelled).
-    # workflow_run payload exposes conclusion on github.event.workflow_run (see GH docs).
+    # Only run if the Release workflow succeeded (when triggered via workflow_run).
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          # Optional repo variable: absolute path to the compose project on the VPS.
+          # Defaults to /home/discord_bot when unset or empty.
+          DEPLOY_COMPOSE_DIR: ${{ vars.DEPLOY_COMPOSE_DIR }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ vars.SSH_PORT || 22 }}
+          envs: DEPLOY_COMPOSE_DIR
           script_stop: true
           script: |
             set -euo pipefail
@@ -35,5 +39,15 @@ jobs:
               chmod 600 /home/discord_bot/.ssh/github_discord_bot 2>/dev/null || true
             fi
 
-            cd /home/discord_bot
+            DEPLOY_DIR="${DEPLOY_COMPOSE_DIR:-/home/discord_bot}"
+            cd "$DEPLOY_DIR"
+
+            if [ ! -f docker-compose.yml ] && [ ! -f compose.yaml ]; then
+              echo "No Compose file in ${DEPLOY_DIR}."
+              echo "Set GitHub repo variable DEPLOY_COMPOSE_DIR to the directory that contains docker-compose.yml."
+              ls -la
+              exit 1
+            fi
+
+            docker compose down
             doppler run -- docker compose up -d --pull always

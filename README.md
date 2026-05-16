@@ -6,6 +6,27 @@ This bot targets a single Discord guild; channels, roles, and IDs come from envi
 
 ---
 
+## 📋 Table of Contents
+
+- [Setup & secrets](#setup--secrets)
+- [📁 Project layout](#project-layout)
+- [🎮 Entertainment & Games](#-entertainment--games)
+- [💰 Economy System](#-economy-system)
+- [🏆 Gambling & Betting](#-gambling--betting)
+- [🎉 Social Features](#-social-features)
+- [🔧 Utilities](#-utilities)
+- [📊 Information](#-information)
+- [⚙️ Administration](#️-administration)
+- [🛠️ Request System](#️-request-system)
+- [💪 Powerups System](#-powerups-system)
+- [🎵 Music & local audio](#-music--local-audio)
+- [🧩 More production commands](#-more-production-commands)
+- [🎮 How Coins Work](#-how-coins-work)
+- [🔒 Permission Levels](#-permission-levels)
+- [🆘 Support](#-support)
+
+---
+
 ## Setup & secrets
 
 ### Layout you should prepare
@@ -56,27 +77,6 @@ chmod +x startup_script.sh rollout.sh
 ```
 
 Developers regenerate the artifact locally anytime with **`./scripts/build_deploy_bundle.sh`** (**`dist/discord-bot-standalone.zip`** plus an unpacked **`dist/discord-bot-standalone/`**). That script copies Compose from root **`docker-compose.yml`** (service definitions unchanged; only comments above **`services:`** are swapped for ZIP readers), **`.env.example` → `.env.template`**, **`lavalink/application.yml.example`**, and **`scripts/deploy_bundle/`** helpers — nothing is duplicated manually in-tree.
-
----
-
-## 📋 Table of Contents
-
-- [Setup & secrets](#setup--secrets)
-- [📁 Project layout](#project-layout)
-- [🎮 Entertainment & Games](#-entertainment--games)
-- [💰 Economy System](#-economy-system)
-- [🏆 Gambling & Betting](#-gambling--betting)
-- [🎉 Social Features](#-social-features)
-- [🔧 Utilities](#-utilities)
-- [📊 Information](#-information)
-- [⚙️ Administration](#️-administration)
-- [🛠️ Request System](#️-request-system)
-- [💪 Powerups System](#-powerups-system)
-- [🎵 Music & local audio](#-music--local-audio)
-- [🧩 More production commands](#-more-production-commands)
-- [🎮 How Coins Work](#-how-coins-work)
-- [🔒 Permission Levels](#-permission-levels)
-- [🆘 Support](#-support)
 
 ---
 
