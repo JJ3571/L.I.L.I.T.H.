@@ -5,7 +5,7 @@ name: Release Reminder
 # This is a safety net / notification for manual oversight.
 on:
   schedule:
-    cron: "0 9 * * 1"  # Every Monday at 9 AM UTC
+    - cron: "0 9 * * 1" # Every Monday at 9 AM UTC
   workflow_dispatch:
 
 jobs:
