@@ -11,6 +11,7 @@ import io
 import logging
 import random
 import time
+import traceback
 import urllib.parse
 import zlib
 from dataclasses import dataclass, field
@@ -25,18 +26,28 @@ from wavelink import Playlist, TrackEndEventPayload, TrackStartEventPayload, Web
 from wavelink.enums import AutoPlayMode, DiscordVoiceCloseType, TrackSource
 from wavelink.exceptions import InvalidNodeException, LavalinkLoadException, QueueEmpty
 
+from main_bot.cog_log_mixin import CogLogMixin, cog_console_line
 from main_bot.paths import LOCAL_AUDIO_ROOT, LOCAL_MUSIC_ROOT
 from main_bot.server_configs.config import (
     GUILD_ID,
     LAVALINK_PASSWORD,
     LAVALINK_URI,
+    MUSIC_CONFIGURED_FOLDER_SLOTS,
+    MUSIC_LOCAL_HTTP_BIND_HOST,
     MUSIC_LOCAL_HTTP_HOST,
     MUSIC_LOCAL_HTTP_PORT,
     MUSIC_VOICE_CHANNEL_DENYLIST_IDS,
 )
 from main_bot.utils.discord_voice import human_members_in_voice_channel, is_discord_unknown_message_error
 from main_bot.utils.jazz_http_server import LocalMusicHttpServer
-from main_bot.utils.local_music_scan import list_audio_files
+from main_bot.utils.local_music_scan import (
+    GAMING_AUDIO_SUBFOLDER_LIMIT,
+    collect_gaming_audio_paths,
+    format_music_folder_button_label,
+    gaming_track_subslug,
+    list_audio_files,
+    list_gaming_audio_subfolders,
+)
 from main_bot.utils.local_track_artwork import extract_embedded_cover
 
 _MUSIC_LOG = logging.getLogger("nextcord.music")
@@ -84,16 +95,25 @@ class LocalFolderDefinition:
     prefer_embedded_album_art: bool = False
 
 
-LOCAL_FOLDER_DEFS: dict[str, LocalFolderDefinition] = {
-    "jazz": LocalFolderDefinition("jazz", True, "random_ms"),
-    "lofi": LocalFolderDefinition("lofi", True, "random_ms"),
-    "gaming": LocalFolderDefinition(
+def _build_folder_playback_settings() -> dict[str, LocalFolderDefinition]:
+    out: dict[str, LocalFolderDefinition] = {}
+    for spec in MUSIC_CONFIGURED_FOLDER_SLOTS:
+        out[spec.folder] = LocalFolderDefinition(
+            spec.folder,
+            shuffle_files_on_start=True,
+            start_offset_policy="random_ms" if spec.shuffle_random_start else "beginning",
+            prefer_embedded_album_art=False,
+        )
+    out["gaming"] = LocalFolderDefinition(
         "gaming",
-        True,
-        "beginning",
+        shuffle_files_on_start=True,
+        start_offset_policy="beginning",
         prefer_embedded_album_art=True,
-    ),
-}
+    )
+    return out
+
+
+FOLDER_PLAYBACK_SETTINGS: dict[str, LocalFolderDefinition] = _build_folder_playback_settings()
 
 
 def _is_music_voice_channel_blocked(channel_id: int) -> bool:
@@ -181,13 +201,17 @@ def _is_playlist_style_youtube_url(url: str) -> bool:
 LOCAL_FOLDER_COVER_FILENAMES: tuple[str, ...] = ("cover.png", "cover.jpg", "cover.jpeg", "cover.webp")
 
 
-def _folder_static_cover_path(folder: str) -> Optional[Path]:
-    """Return ``local_audio/music/{folder}/cover.*`` if present (flat folder layout)."""
-    root = LOCAL_MUSIC_ROOT / folder
-    for name in LOCAL_FOLDER_COVER_FILENAMES:
-        candidate = root / name
-        if candidate.is_file():
-            return candidate
+def _static_cover_path_for_track(local_folder: str, audio_path: Path) -> Optional[Path]:
+    """``cover.*`` next to the track, or under ``music/gaming`` for gaming fallback."""
+    if local_folder == "gaming":
+        bases = [audio_path.parent.resolve(), (LOCAL_MUSIC_ROOT / "gaming").resolve()]
+    else:
+        bases = [(LOCAL_MUSIC_ROOT / local_folder).resolve()]
+    for base in bases:
+        for name in LOCAL_FOLDER_COVER_FILENAMES:
+            candidate = base / name
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -216,6 +240,11 @@ class GuildMusicState:
     local_history_paths: list[Path] = field(default_factory=list)
     controller_message: Optional[nextcord.Message] = None
     shuffle_highlight: bool = False
+    # ``/gaming`` mix: second controller message + per-subfolder pool (see gaming_paths_master).
+    gaming_selector_message: Optional[nextcord.Message] = None
+    gaming_enabled_slugs: set[str] = field(default_factory=set)
+    gaming_paths_master: list[Path] = field(default_factory=list)
+    gaming_slug_order: list[str] = field(default_factory=list)
 
 
 def _embed_source_kind(state: GuildMusicState) -> str:
@@ -268,7 +297,7 @@ def build_music_embed_and_files(
                 embed.set_image(url=art)
         elif state.session == "local_folder" and state.local_folder:
             folder_key = state.local_folder
-            defn = LOCAL_FOLDER_DEFS.get(folder_key)
+            defn = FOLDER_PLAYBACK_SETTINGS.get(folder_key) if folder_key else None
 
             embedded_from_tags = False
             if (
@@ -279,13 +308,18 @@ def build_music_embed_and_files(
                 embedded = extract_embedded_cover(state.local_history_paths[-1])
                 if embedded is not None:
                     blob, suf = embedded
-                    fname = _local_embed_art_filename(folder_key, state.local_history_paths[-1], suf)
+                    fname = _local_embed_art_filename(folder_key or "music", state.local_history_paths[-1], suf)
                     embed.set_image(url=f"attachment://{fname}")
                     files.append(nextcord.File(io.BytesIO(blob), filename=fname))
                     embedded_from_tags = True
 
-            if not embedded_from_tags:
-                cover = _folder_static_cover_path(folder_key)
+            if not embedded_from_tags and folder_key:
+                audio_path = (
+                    state.local_history_paths[-1]
+                    if state.local_history_paths
+                    else (LOCAL_MUSIC_ROOT / folder_key)
+                )
+                cover = _static_cover_path_for_track(folder_key, audio_path)
                 if cover is not None:
                     fname = _local_cover_attachment_name(folder_key, cover)
                     embed.set_image(url=f"attachment://{fname}")
@@ -406,35 +440,106 @@ class MusicControlView(nextcord.ui.View):
         return True
 
 
-class MusicCog(commands.Cog):
+class GamingMixToggleView(nextcord.ui.View):
+    """Toggle ``music/gaming/<slug>`` folders in the live shuffle pool (``/gaming``)."""
+
+    def __init__(
+        self,
+        cog: MusicCog,
+        guild_id: int,
+        slugs_ordered: list[str],
+        enabled_slugs: set[str],
+    ) -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+        for i, slug in enumerate(slugs_ordered):
+            row = min(i // 5, 4)
+            label = format_music_folder_button_label(slug)[:80] or slug[:80]
+            style = (
+                nextcord.ButtonStyle.success
+                if slug in enabled_slugs
+                else nextcord.ButtonStyle.secondary
+            )
+            btn = nextcord.ui.Button(label=label, style=style, row=row)
+
+            async def toggle_cb(
+                interaction: nextcord.Interaction,
+                *,
+                _slug: str = slug,
+            ) -> None:
+                await cog.handle_gaming_mix_toggle(guild_id, interaction, _slug)
+
+            btn.callback = toggle_cb
+            self.add_item(btn)
+
+    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild.id != self.guild_id:
+            return False
+        vc = interaction.guild.voice_client
+        if not isinstance(vc, wavelink.Player) or not vc.connected:
+            await interaction.response.send_message("Nothing is connected.", ephemeral=True)
+            return False
+        vc_ch = vc.channel
+        if vc_ch is None:
+            await interaction.response.send_message("Voice channel unavailable.", ephemeral=True)
+            return False
+        if _is_music_voice_channel_blocked(vc_ch.id):
+            await interaction.response.send_message(
+                "Music controls aren't available in this voice channel.",
+                ephemeral=True,
+            )
+            return False
+        member = interaction.user
+        if member.bot:
+            return False
+        g = interaction.guild
+        resolved = g.get_member(member.id) if g is not None else None
+        if resolved is None:
+            resolved = member
+        if resolved.voice is None or resolved.voice.channel is None:
+            await interaction.response.send_message("Join the bot's voice channel to use controls.", ephemeral=True)
+            return False
+        if resolved.voice.channel.id != vc_ch.id:
+            await interaction.response.send_message("Use controls from the same voice channel.", ephemeral=True)
+            return False
+        return True
+
+
+class MusicCog(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.guild_states: dict[int, GuildMusicState] = {}
         self._empty_disconnect_tasks: dict[int, asyncio.Task[None]] = {}
         self._alone_voice_sweep_task: Optional[asyncio.Task[None]] = None
         self._resume_rotating_after_music: bool = False
-        allowed = frozenset(LOCAL_FOLDER_DEFS.keys()) | frozenset({"brainrot"})
+        allowed = frozenset(FOLDER_PLAYBACK_SETTINGS.keys()) | frozenset({"brainrot"})
+        _bind = MUSIC_LOCAL_HTTP_BIND_HOST if MUSIC_LOCAL_HTTP_BIND_HOST.strip() else None
         self._local_http = LocalMusicHttpServer(
             LOCAL_MUSIC_ROOT,
             allowed_folders=allowed,
             folder_roots={"brainrot": LOCAL_AUDIO_ROOT / "brainrot"},
             host=MUSIC_LOCAL_HTTP_HOST,
+            bind_host=_bind,
             port=MUSIC_LOCAL_HTTP_PORT,
         )
-        print("MusicCog initialized")
+        self.cog_print("MusicCog initialized")
 
     async def _start_music_background_services(self) -> None:
         """Nextcord does not run ``cog_load``; call this from :func:`setup` after :meth:`Bot.add_cog`."""
         try:
             await self._local_http.start()
-            print(
-                f"[music] Local music HTTP on http://{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}/"
-                "{{jazz,lofi,gaming,brainrot}}/… (music under local_audio/music/, brainrot sfx under local_audio/brainrot/) "
+            listen = MUSIC_LOCAL_HTTP_BIND_HOST.strip() if MUSIC_LOCAL_HTTP_BIND_HOST.strip() else MUSIC_LOCAL_HTTP_HOST
+            self.cog_print(
+                f"[music] Local music HTTP listen {listen}:{MUSIC_LOCAL_HTTP_PORT}; "
+                f"Lavalink URLs use http://{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}/"
+                "{folder}/… (nested paths only for `gaming`; flat env-driven folders + `brainrot`) "
                 "— keep this bot running while Lavalink streams local files.",
             )
         except OSError as e:
-            print(
-                f"[music] Local music HTTP could not bind {MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}: {e}. "
+            _listen_fail = MUSIC_LOCAL_HTTP_BIND_HOST.strip() if MUSIC_LOCAL_HTTP_BIND_HOST.strip() else MUSIC_LOCAL_HTTP_HOST
+            self.cog_print(
+                f"[music] Local music HTTP could not bind {_listen_fail}:{MUSIC_LOCAL_HTTP_PORT}: {e}. "
                 "Local folder slash commands will fail until this port is available.",
             )
         loop = asyncio.get_running_loop()
@@ -471,7 +576,7 @@ class MusicCog(commands.Cog):
                 try:
                     await vc.disconnect()
                 except Exception as e:
-                    print(f"[music] on_ready idle disconnect {guild.id}: {e}")
+                    self.cog_print(f"[music] on_ready idle disconnect {guild.id}: {e}")
 
     def _cancel_empty_disconnect(self, guild_id: int) -> None:
         task = self._empty_disconnect_tasks.pop(guild_id, None)
@@ -501,7 +606,7 @@ class MusicCog(commands.Cog):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                print(f"[music] empty-channel disconnect task: {e}")
+                self.cog_print(f"[music] empty-channel disconnect task: {e}")
             finally:
                 self._empty_disconnect_tasks.pop(guild_id, None)
 
@@ -634,9 +739,9 @@ class MusicCog(commands.Cog):
                                 continue
                             await self.full_disconnect_guild(guild.id)
                         except Exception as e:
-                            print(f"[music] alone-voice sweep guild={guild.id}: {e}")
+                            self.cog_print(f"[music] alone-voice sweep guild={guild.id}: {e}")
                 except Exception as e:
-                    print(f"[music] alone-voice sweep: {e}")
+                    self.cog_print(f"[music] alone-voice sweep: {e}")
                 await asyncio.sleep(MUSIC_ALONE_VOICE_SWEEP_INTERVAL_SEC)
         except asyncio.CancelledError:
             raise
@@ -705,9 +810,9 @@ class MusicCog(commands.Cog):
         await asyncio.sleep(1.5)
         try:
             if await self._ensure_lavalink():
-                print("[music] Lavalink node warmed up in the background.")
+                self.cog_print("[music] Lavalink node warmed up in the background.")
         except Exception as e:
-            print(f"[music] Lavalink warmup (non-fatal): {e}")
+            self.cog_print(f"[music] Lavalink warmup (non-fatal): {e}")
 
     async def _slash_reply(
         self,
@@ -718,7 +823,7 @@ class MusicCog(commands.Cog):
         try:
             await interaction.edit_original_message(content=content)
         except (nextcord.HTTPException, nextcord.NotFound) as e:
-            print(f"_slash_reply: {e}")
+            self.cog_print(f"_slash_reply: {e}")
             try:
                 await interaction.followup.send(content, ephemeral=False)
             except Exception:
@@ -744,7 +849,7 @@ class MusicCog(commands.Cog):
         try:
             await wavelink.Pool.reconnect()
         except Exception as e:
-            print(f"Lavalink Pool.reconnect: {e}")
+            self.cog_print(f"Lavalink Pool.reconnect: {e}")
 
         if await self._wait_for_pool_connected():
             return True
@@ -775,9 +880,9 @@ class MusicCog(commands.Cog):
                     except Exception:
                         pass
 
-        print(
+        self.cog_print(
             f"Lavalink has no CONNECTED node at {LAVALINK_URI} (timed out waiting for WS ready). "
-            "Start Lavalink before music commands; confirm LAVALINK_PASSWORD matches application.yml."
+            "Start Lavalink before music commands; confirm LAVALINK_PASSWORD matches application.yml.",
         )
         return False
 
@@ -839,7 +944,6 @@ class MusicCog(commands.Cog):
             )
             return pl
         except Exception as e:
-            print(f"Voice connect failed: {e}")
             _MUSIC_LOG.warning(
                 "_connect_voice failed guild=%s ch=%s exc=%s %s",
                 guild.id,
@@ -875,6 +979,16 @@ class MusicCog(commands.Cog):
         self._cancel_empty_disconnect(guild_id)
         state = self.guild_states.get(guild_id)
         msg = state.controller_message if state else None
+        gmsg = state.gaming_selector_message if state else None
+        if gmsg:
+            try:
+                await gmsg.edit(view=None)
+            except Exception:
+                pass
+            try:
+                await gmsg.delete()
+            except Exception:
+                pass
         if msg:
             try:
                 await msg.delete()
@@ -882,10 +996,14 @@ class MusicCog(commands.Cog):
                 pass
         if state:
             state.controller_message = None
+            state.gaming_selector_message = None
             state.session = "idle"
             state.local_folder = None
             state.local_remaining.clear()
             state.local_history_paths.clear()
+            state.gaming_enabled_slugs.clear()
+            state.gaming_paths_master.clear()
+            state.gaming_slug_order.clear()
 
         if guild is not None:
             vc = guild.voice_client
@@ -895,15 +1013,11 @@ class MusicCog(commands.Cog):
             try:
                 await guild.change_voice_state(channel=None)
             except Exception as e:
-                print(f"[music] change_voice_state(channel=None): {e}")
+                self.cog_print(f"[music] change_voice_state(channel=None): {e}")
             if pl is not None:
                 try:
                     await asyncio.wait_for(pl.disconnect(), timeout=MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC)
                 except TimeoutError:
-                    print(
-                        "[music] Player.disconnect timed out (voice leave was already sent); "
-                        "Lavalink may need a restart if playback ghosts."
-                    )
                     if guild:
                         _MUSIC_LOG.warning(
                             "Player.disconnect timed out guild=%s %s",
@@ -911,13 +1025,28 @@ class MusicCog(commands.Cog):
                             self._music_voice_snapshot(guild, pl),
                         )
                 except Exception as e:
-                    print(f"[music] Player.disconnect: {e}")
+                    self.cog_print(f"[music] Player.disconnect: {e}")
 
         self.guild_states.pop(guild_id, None)
         await self._sync_music_presence()
 
+    async def _dispose_gaming_selector_message(self, state: GuildMusicState) -> None:
+        gmsg = state.gaming_selector_message
+        if gmsg is None:
+            return
+        try:
+            await gmsg.edit(view=None)
+        except Exception:
+            pass
+        try:
+            await gmsg.delete()
+        except Exception as e:
+            _MUSIC_LOG.warning("gaming_selector_message delete failed: %s", e)
+        state.gaming_selector_message = None
+
     async def _dispose_controller_message(self, state: GuildMusicState) -> None:
         """Drop the previous VC controller before starting a new session (avoids duplicate embeds + views)."""
+        await self._dispose_gaming_selector_message(state)
         msg = state.controller_message
         if msg is None:
             return
@@ -952,7 +1081,7 @@ class MusicCog(commands.Cog):
         else:
             return
         if await self.upsert_controller(ch, vc):
-            print(f"[music] reposted controller (previous message missing) guild={guild_id}")
+            self.cog_print(f"[music] reposted controller (previous message missing) guild={guild_id}")
 
     async def refresh_controller_embed(self, guild_id: int) -> None:
         state = self.guild_states.get(guild_id)
@@ -974,9 +1103,9 @@ class MusicCog(commands.Cog):
             if is_discord_unknown_message_error(e):
                 await self._recover_controller_message(guild_id)
             else:
-                print(f"refresh_controller_embed: {e}")
+                self.cog_print(f"refresh_controller_embed: {e}")
         except Exception as e:
-            print(f"refresh_controller_embed: {e}")
+            self.cog_print(f"refresh_controller_embed: {e}")
 
     async def _edit_control_message(self, interaction: nextcord.Interaction, guild_id: int) -> None:
         """Acknowledge the interaction, then edit the stored controller message.
@@ -1006,9 +1135,9 @@ class MusicCog(commands.Cog):
             if is_discord_unknown_message_error(e):
                 await self._recover_controller_message(guild_id)
             else:
-                print(f"_edit_control_message: {e}")
+                self.cog_print(f"_edit_control_message: {e}")
         except Exception as e:
-            print(f"_edit_control_message: {e}")
+            self.cog_print(f"_edit_control_message: {e}")
 
     async def handle_control_toggle_pause(self, guild_id: int, interaction: nextcord.Interaction) -> None:
         vc = cast(Optional[wavelink.Player], interaction.guild.voice_client if interaction.guild else None)
@@ -1195,7 +1324,6 @@ class MusicCog(commands.Cog):
             url = await self._local_http_track_url(folder, path)
             tracks = await wavelink.Pool.fetch_tracks(url)
         except Exception as e:
-            print(f"local track load failed: {e}")
             sg = ""
             try:
                 if player.guild:
@@ -1207,8 +1335,9 @@ class MusicCog(commands.Cog):
         if not tracks:
             return False
         t0 = start_ms
-        if t0 == 0 and folder in LOCAL_FOLDER_DEFS:
-            if LOCAL_FOLDER_DEFS[folder].start_offset_policy == "random_ms":
+        if t0 == 0:
+            spec = FOLDER_PLAYBACK_SETTINGS.get(folder)
+            if spec is not None and spec.start_offset_policy == "random_ms":
                 t0 = self._random_start_ms(tracks[0])
         if append_history:
             state.local_history_paths.append(path)
@@ -1217,7 +1346,6 @@ class MusicCog(commands.Cog):
         except Exception as e:
             if append_history and state.local_history_paths and state.local_history_paths[-1] == path:
                 state.local_history_paths.pop()
-            print(f"local play failed: {e}")
             gid = getattr(player.guild, "id", None)
             sg = ""
             try:
@@ -1282,7 +1410,7 @@ class MusicCog(commands.Cog):
             state.controller_message = await voice_channel.send(**send_kw)
             return True
         except Exception as e:
-            print(f"Could not post controller to VC chat: {e}")
+            self.cog_print(f"Could not post controller to VC chat: {e}")
             state.controller_message = None
             return False
 
@@ -1317,7 +1445,6 @@ class MusicCog(commands.Cog):
         if brainrot is not None and brainrot.is_session_active(guild.id):
             return
         snap = self._music_voice_snapshot(guild, player)
-        print(f"[music] inactive player timeout ({MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC}s) — disconnecting guild={guild.id}")
         _MUSIC_LOG.info(
             "on_wavelink_inactive_player guild=%s (timeout %ss) %s",
             guild.id,
@@ -1391,14 +1518,13 @@ class MusicCog(commands.Cog):
             f"[music] Lavalink Discord voice WS closed: guild={gid} "
             f"code={code.value} ({code.name}) reason={payload.reason!r} by_remote={payload.by_remote}"
         )
-        print(msg)
         _MUSIC_LOG.warning(
             "%s snapshot=%s",
             msg,
             snap or "(no guild snapshot)",
         )
         if code == DiscordVoiceCloseType.DAVE_PROTOCOL_REQUIRED:
-            print(
+            self.cog_print(
                 "[music] 4017 DAVE: Discord requires E2EE voice. Lavalink 4.2+ includes DAVE via Koe/libdave — "
                 "stay on current Lavalink; ensure Wavelink forwards voice payloads with channelId (you have 3.5.x). "
                 "If this persists, check Lavalink logs/koe TRACE (lavalink.dev changelog v4.2.x) and Lavalink Discord.",
@@ -1597,6 +1723,9 @@ class MusicCog(commands.Cog):
             return
 
         state = self._get_state(guild.id)
+        state.gaming_enabled_slugs.clear()
+        state.gaming_paths_master.clear()
+        state.gaming_slug_order.clear()
 
         if definition.shuffle_files_on_start:
             random.shuffle(paths)
@@ -1687,25 +1816,255 @@ class MusicCog(commands.Cog):
             f"**/{label}** started in {voice_channel.mention} ({len(paths)} tracks). Use the controller message in that channel.{extra}",
         )
 
-    @nextcord.slash_command(name="jazz", description="Shuffle and play tracks from local_audio/music/jazz", guild_ids=[GUILD_ID])
-    async def jazz_slash(self, interaction: nextcord.Interaction) -> None:
-        await interaction.response.defer()
-        if interaction.guild is None:
-            await self._slash_reply(interaction, "This command can only be used in a server.")
+    async def _start_gaming_mix_session(self, interaction: nextcord.Interaction) -> None:
+        gaming_root = LOCAL_MUSIC_ROOT / "gaming"
+        slugs = list_gaming_audio_subfolders(gaming_root)
+        if len(slugs) > GAMING_AUDIO_SUBFOLDER_LIMIT:
+            await self._slash_reply(
+                interaction,
+                f"Too many game folders under `{gaming_root}` with audio ({len(slugs)}). "
+                f"Maximum is {GAMING_AUDIO_SUBFOLDER_LIMIT}; remove or merge folders before using **/gaming**.",
+            )
             return
-        await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["jazz"])
+        paths_master = collect_gaming_audio_paths(gaming_root)
+        if not paths_master:
+            await self._slash_reply(
+                interaction,
+                f"No audio found under `{gaming_root}/<game>/`. Add subfolders with `.mp3`/`.flac`/etc. inside each.",
+            )
+            return
 
-    @nextcord.slash_command(name="lofi", description="Shuffle and play tracks from local_audio/music/lofi", guild_ids=[GUILD_ID])
-    async def lofi_slash(self, interaction: nextcord.Interaction) -> None:
-        await interaction.response.defer()
-        if interaction.guild is None:
-            await self._slash_reply(interaction, "This command can only be used in a server.")
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await self._slash_reply(interaction, "You need to be in a voice channel to use this command!")
             return
-        await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["lofi"])
+
+        voice_channel = interaction.user.voice.channel
+        if _is_music_voice_channel_blocked(voice_channel.id):
+            await self._slash_reply(
+                interaction,
+                "Music bot can't be used from this voice channel. Join a different voice channel.",
+            )
+            return
+
+        guild = interaction.guild
+        assert guild is not None
+
+        blocked_br = self._brainrot_blocks_voice(guild)
+        if blocked_br:
+            await self._slash_reply(interaction, blocked_br)
+            return
+
+        if not await self._ensure_lavalink():
+            await self._slash_reply(
+                interaction,
+                f"Could not reach Lavalink at `{LAVALINK_URI}`. Start Lavalink v4 and check LAVALINK_URI / LAVALINK_PASSWORD.",
+            )
+            return
+
+        vc = await self._connect_voice(guild, voice_channel)
+        if vc is None:
+            await self._slash_reply(interaction, "Could not connect to voice.")
+            return
+
+        definition = FOLDER_PLAYBACK_SETTINGS["gaming"]
+        state = self._get_state(guild.id)
+        paths = list(paths_master)
+        if definition.shuffle_files_on_start:
+            random.shuffle(paths)
+        first = paths[0]
+        remaining = paths[1:]
+
+        state.session = "local_folder"
+        state.local_folder = "gaming"
+        state.local_remaining = remaining
+        state.local_history_paths.clear()
+        state.shuffle_highlight = False
+        state.gaming_paths_master = list(paths_master)
+        state.gaming_slug_order = list(slugs)
+        state.gaming_enabled_slugs = set(slugs)
+        vc.queue.reset()
+
+        try:
+            url = await self._local_http_track_url("gaming", first)
+            tracks = await wavelink.Pool.fetch_tracks(url)
+        except OSError as e:
+            state.session = "idle"
+            state.local_folder = None
+            state.local_remaining.clear()
+            state.gaming_enabled_slugs.clear()
+            state.gaming_paths_master.clear()
+            state.gaming_slug_order.clear()
+            await self._slash_reply(
+                interaction,
+                f"Could not start loopback HTTP for `{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}`: {e}",
+            )
+            return
+        except LavalinkLoadException as e:
+            state.session = "idle"
+            state.local_folder = None
+            state.local_remaining.clear()
+            state.gaming_enabled_slugs.clear()
+            state.gaming_paths_master.clear()
+            state.gaming_slug_order.clear()
+            await self._slash_reply(
+                interaction,
+                "Lavalink could not load local tracks over HTTP. Ensure ``sources.http: true`` in Lavalink "
+                f"`application.yml`.\nDetail: {e}",
+            )
+            return
+
+        if not tracks:
+            state.session = "idle"
+            state.local_folder = None
+            state.local_remaining.clear()
+            state.gaming_enabled_slugs.clear()
+            state.gaming_paths_master.clear()
+            state.gaming_slug_order.clear()
+            await self._slash_reply(
+                interaction,
+                "Could not decode tracks (empty Lavalink response). Confirm `sources.http: true` and try another format.",
+            )
+            return
+
+        await self._dispose_controller_message(state)
+
+        state.local_history_paths.append(first)
+        try:
+            await vc.play(tracks[0], start=0)
+        except Exception as e:
+            if state.local_history_paths and state.local_history_paths[-1] == first:
+                state.local_history_paths.pop()
+            state.session = "idle"
+            state.local_folder = None
+            state.local_remaining.clear()
+            state.gaming_enabled_slugs.clear()
+            state.gaming_paths_master.clear()
+            state.gaming_slug_order.clear()
+            await self._slash_reply(interaction, f"Playback failed: {e}")
+            _MUSIC_LOG.warning(
+                "gaming_mix_play_failed guild=%s err=%s %s",
+                guild.id,
+                e,
+                self._music_voice_snapshot(guild, vc),
+            )
+            return
+
+        _MUSIC_LOG.info(
+            "gaming_mix_started guild=%s tracks=%s games=%s %s",
+            guild.id,
+            len(paths_master),
+            len(slugs),
+            self._music_voice_snapshot(guild, vc),
+        )
+
+        posted = await self.upsert_controller(voice_channel, vc)
+        await self._post_gaming_mix_selector(voice_channel, state, slugs)
+        extra = ""
+        if not posted:
+            extra = " Could not post the controller in the voice channel — check permissions there."
+        await self._sync_music_presence(guild.id)
+        await self._slash_reply(
+            interaction,
+            f"**/gaming** started in {voice_channel.mention} ({len(paths_master)} tracks, {len(slugs)} folders). "
+            f"Use the controller and mix toggles in that channel.{extra}",
+        )
+
+    async def _post_gaming_mix_selector(
+        self,
+        voice_channel: nextcord.VoiceChannel | nextcord.StageChannel,
+        state: GuildMusicState,
+        slugs_ordered: list[str],
+    ) -> None:
+        await self._dispose_gaming_selector_message(state)
+        embed = nextcord.Embed(
+            title="Gaming mix",
+            description="Toggle game folders to include or exclude them from the shuffle.",
+            color=nextcord.Color.dark_teal(),
+        )
+        view = GamingMixToggleView(
+            self,
+            voice_channel.guild.id,
+            slugs_ordered,
+            set(state.gaming_enabled_slugs),
+        )
+        try:
+            state.gaming_selector_message = await voice_channel.send(embed=embed, view=view)
+        except Exception as e:
+            _MUSIC_LOG.warning("gaming mix selector post failed: %s", e)
+            state.gaming_selector_message = None
+
+    async def _refresh_gaming_selector(self, guild_id: int) -> None:
+        state = self.guild_states.get(guild_id)
+        if state is None or state.gaming_selector_message is None or state.local_folder != "gaming":
+            return
+        embed = nextcord.Embed(
+            title="Gaming mix",
+            description="Toggle game folders to include or exclude them from the shuffle.",
+            color=nextcord.Color.dark_teal(),
+        )
+        view = GamingMixToggleView(
+            self,
+            guild_id,
+            state.gaming_slug_order,
+            set(state.gaming_enabled_slugs),
+        )
+        try:
+            await state.gaming_selector_message.edit(embed=embed, view=view)
+        except (nextcord.NotFound, nextcord.HTTPException) as e:
+            state.gaming_selector_message = None
+            if is_discord_unknown_message_error(e):
+                return
+            _MUSIC_LOG.warning("gaming selector edit failed: %s", e)
+
+    async def handle_gaming_mix_toggle(
+        self,
+        guild_id: int,
+        interaction: nextcord.Interaction,
+        slug: str,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        guild = self.bot.get_guild(guild_id)
+        state = self.guild_states.get(guild_id)
+        vc = guild.voice_client if guild else None
+        if (
+            guild is None
+            or not isinstance(vc, wavelink.Player)
+            or state is None
+            or state.session != "local_folder"
+            or state.local_folder != "gaming"
+        ):
+            await interaction.followup.send("No active gaming mix session.", ephemeral=True)
+            return
+        gaming_root = LOCAL_MUSIC_ROOT / "gaming"
+        if slug in state.gaming_enabled_slugs:
+            state.gaming_enabled_slugs.discard(slug)
+            state.local_remaining = [
+                p
+                for p in state.local_remaining
+                if gaming_track_subslug(p, gaming_root) in state.gaming_enabled_slugs
+            ]
+            cur = state.local_history_paths[-1] if state.local_history_paths else None
+            if cur is not None and gaming_track_subslug(cur, gaming_root) not in state.gaming_enabled_slugs:
+                ok = await self._advance_local_manual(vc, state)
+                if not ok:
+                    await interaction.followup.send("Playback stopped (no eligible tracks left).", ephemeral=True)
+                    return
+        else:
+            state.gaming_enabled_slugs.add(slug)
+            to_add = [
+                p
+                for p in state.gaming_paths_master
+                if gaming_track_subslug(p, gaming_root) == slug and p not in state.local_remaining
+            ]
+            state.local_remaining.extend(to_add)
+            random.shuffle(state.local_remaining)
+        await self._refresh_gaming_selector(guild_id)
+        await self.refresh_controller_embed(guild_id)
+        await interaction.followup.send("Mix updated.", ephemeral=True)
 
     @nextcord.slash_command(
         name="gaming",
-        description="Shuffle tracks from local_audio/music/gaming (tracks start from the beginning)",
+        description="Shuffle tracks from local_audio/music/gaming subfolders (see mix toggles message)",
         guild_ids=[GUILD_ID],
     )
     async def gaming_slash(self, interaction: nextcord.Interaction) -> None:
@@ -1713,7 +2072,7 @@ class MusicCog(commands.Cog):
         if interaction.guild is None:
             await self._slash_reply(interaction, "This command can only be used in a server.")
             return
-        await self._start_local_folder_session(interaction, LOCAL_FOLDER_DEFS["gaming"])
+        await self._start_gaming_mix_session(interaction)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: nextcord.Member, before: nextcord.VoiceState, after: nextcord.VoiceState) -> None:
@@ -1784,17 +2143,60 @@ class MusicCog(commands.Cog):
         self._schedule_disconnect_if_empty(guild.id, bot_vc.id)
 
 
+def _register_dynamic_music_folder_slash_commands() -> None:
+    """Attach one guild slash command per ``MUSIC_CONFIGURED_FOLDER_SLOTS`` entry (import-time)."""
+
+    def _make_folder_slash_handler(definition: LocalFolderDefinition):
+        async def _dynamic_folder_slash(self: MusicCog, interaction: nextcord.Interaction) -> None:
+            await interaction.response.defer()
+            if interaction.guild is None:
+                await self._slash_reply(interaction, "This command can only be used in a server.")
+                return
+            await self._start_local_folder_session(interaction, definition)
+
+        return _dynamic_folder_slash
+
+    for spec in MUSIC_CONFIGURED_FOLDER_SLOTS:
+        defn = FOLDER_PLAYBACK_SETTINGS[spec.folder]
+        _dynamic_folder_slash = _make_folder_slash_handler(defn)
+        attr_safe = f"music_dyn_{''.join(c if c.isalnum() else '_' for c in spec.folder)}"
+        _dynamic_folder_slash.__name__ = f"{attr_safe}_cb"
+        cmd = nextcord.slash_command(
+            name=spec.folder,
+            description=f"Shuffle and play tracks from local_audio/music/{spec.folder}",
+            guild_ids=[GUILD_ID],
+        )(_dynamic_folder_slash)
+        setattr(MusicCog, attr_safe, cmd)
+
+
+_register_dynamic_music_folder_slash_commands()
+
+
 def build_music_control_view(cog: MusicCog, guild_id: int) -> MusicControlView:
     state = cog.guild_states.get(guild_id)
     hl = state.shuffle_highlight if state else False
     return MusicControlView(cog, guild_id, shuffle_highlight=hl)
 
 
-async def setup(bot: commands.Bot) -> None:
+def _music_background_startup_done(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        cog_console_line("MusicCog", f"[music] Local music HTTP / Lavalink warm task crashed: {exc!r}")
+
+
+def setup(bot: commands.Bot) -> None:
+    """Sync entry point: cog must register before ``load_extension`` returns (async ``setup`` is only task-scheduled).
+
+    Nextcord's ``Bot.load_extension`` does not ``await`` coroutine setups; delaying ``add_cog`` can omit music
+    commands from the first guild sync and leave ``brainrot`` without ``MusicCog``.
+    """
+
     cog = MusicCog(bot)
     bot.add_cog(cog)
-    await cog._start_music_background_services()
-    print("MusicCog has been added to the bot.")
+    asyncio.create_task(cog._start_music_background_services()).add_done_callback(_music_background_startup_done)
 
 
 def teardown(bot: commands.Bot) -> None:
