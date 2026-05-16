@@ -76,6 +76,18 @@ This is a maintainer-run side project — no review SLA or roadmap promises. Con
 
 - Breaking changes to **public behaviour** or **data** (especially DB) should be called out in the issue/PR and routed through **[semantic versioning](https://semver.org/)** discussions when we cut releases.
 
+### Cutting a release (`scripts/tag_release.sh`)
+
+Maintainers cut versions from a clone with **`./scripts/tag_release.sh`** (run from the repository root; the script is executable).
+
+1. It detects the latest plain **`vX.Y.Z`** tag (no `-beta`-style suffix), or assumes **`0.0.0`** if none exist.
+2. You choose **patch**, **minor**, **major**, or **custom** `X.Y.Z` interactively.
+3. Optionally sync **`pyproject.toml`** `version`, commit **`chore: bump version to …`**, create an **annotated** git tag **`vX.Y.Z`**, and **`git push`** the tag (and branch, if you committed the bump).
+
+Pushing **`v*.*.*`** triggers **[`.github/workflows/release.yml`](.github/workflows/release.yml)** (Docker image to GHCR + GitHub Release). **[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)** and the standalone bundle workflow are wired from that pipeline as documented in those files.
+
+Prefer a **clean working tree** before running it; if Git reports dirty files, resolve or stash unless you deliberately continue—tagging with unrelated local changes is easy to regret.
+
 ---
 
 ## License & conduct

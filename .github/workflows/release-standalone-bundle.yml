@@ -1,6 +1,7 @@
 name: Release standalone bundle
 
-# Attach discord-bot-standalone.zip to a GitHub Release.
+# Attach discord-bot-standalone.zip to a GitHub Release and append a copy-paste curl
+# one-liner to the release notes (append_body). Re-running for the same tag may duplicate that blurb.
 #
 # - Tag releases from CI: `release` events from GITHUB_TOKEN do not start workflows,
 #   so this workflow runs when `.github/workflows/release.yml` completes (`workflow_run`).
@@ -82,5 +83,12 @@ jobs:
           tag_name: ${{ steps.pick.outputs.tag }}
           files: dist/discord-bot-standalone.zip
           fail_on_unmatched_files: true
+          append_body: true
+          body: |
+            ### Standalone bundle (VPS)
+
+            ```bash
+            curl -fLO "https://github.com/${{ github.repository }}/releases/download/${{ steps.pick.outputs.tag }}/discord-bot-standalone.zip"
+            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
