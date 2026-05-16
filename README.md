@@ -2,7 +2,7 @@
 
 HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a reference of slash commands loaded from **`cogs/production`** in `main_bot.main` (plus optional top-level commands registered from **`MUSIC_FOLDER_*`** env vars).
 
-This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see `.env.example`). To contribute, read **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see `.env.example`). To contribute, read **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** (optional commit-style reference: **[docs/CONVENTIONAL_COMMITS.md](docs/CONVENTIONAL_COMMITS.md)**).
 
 ---
 
@@ -89,7 +89,6 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 ├── pyproject.toml              # Dependencies (uv); lockfile: uv.lock
 ├── docker-compose.yml          # Bot + Lavalink; secrets via .env or doppler run
 ├── Dockerfile                  # Bot image (optional remote image in compose)
-├── CONTRIBUTING.md             # How to contribute, env/cog expectations, PR flow
 ├── .env.example                # Env template → copy to repo-root .env (gitignored)
 ├── main.py                     # Thin entrypoint → main_bot.main.run()
 ├── opgg_mcp_test.py            # Local MCP / tooling experiment
@@ -104,16 +103,19 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │   ├── file_renamer.py
 │   └── verify_databases.py
 ├── databases/                  # *local* SQLite databases (*.db gitignored)
-├── docs/                       # Guides, env key notes, example snippets
+├── docs/
+│   ├── CONTRIBUTING.md         # PR flow, releases, env/cog expectations
+│   ├── CONVENTIONAL_COMMITS.md # Optional commit-message style + examples
+│   ├── DOPPLER_ENV_KEYS.md     # Env reference for Doppler / Compose
+│   ├── DEPLOY_DROPLET.md       # VPS / SSH deploy walkthrough
+│   └── coghelp/                # Admin command toggle docs + example snippet
 ├── scripts/
 │   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
 │   ├── deploy_bundle/          # Sources for standalone ZIP (startup/rollout/README + compose header frag)
 │   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
 │   ├── docker_compose_local_image_test.sh  # staging dir + build bot image + compose (see Setup & secrets)
-│   ├── run_bot_doppler.sh      # doppler run + uv (local clone)
-│   ├── run_bot_env.sh           # uv only (load env yourself)
 │   ├── deploy.sh                # clone layout: compose down + compose up with pull
-│   └── run_bot.sh               # Maintainer VPS paths only; see CONTRIBUTING.md
+│   └── run_bot.sh               # uv run python -m main_bot (--doppler | --env), optional --dir
 ├── src/
 │   └── main_bot/               # Installable package (uv run python -m main_bot)
 │       ├── cogs/

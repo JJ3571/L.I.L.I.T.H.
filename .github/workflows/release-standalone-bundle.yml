@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag for the existing GitHub Release (e.g. v0.4.1).
+        description: Git tag for the existing GitHub Release (e.g. v0.2.1).
         required: true
         type: string
   release:

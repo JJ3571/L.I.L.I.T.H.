@@ -137,7 +137,7 @@ The bot reads env from Doppler (or your chosen method). On the server:
 
 3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f`** the combined runtime log (set **`BOT_LOG_FILE`** in Doppler/unit env — e.g. **`/home/discord_bot/logs/discord_bot.log`** if you adopted the same layout as Docker, or **`/home/discord_bot/Discord-Bot-Sandbox/logs/discord_bot.log`** for a repo clone default). If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
 
-**Example unit** (matches [`scripts/run_bot.sh`](../scripts/run_bot.sh); aligns with [`.github/workflows/main.yml`](../.github/workflows/main.yml) `systemctl restart discord_bot`):
+**Example unit** (runs [`scripts/run_bot.sh --doppler`](../scripts/run_bot.sh) from the repo root; aligns with [`.github/workflows/main.yml`](../.github/workflows/main.yml) `systemctl restart discord_bot`):
 
 ```ini
 [Unit]
@@ -155,7 +155,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=DOPPLER_TOKEN=dp.st.prd.REPLACE_ME
 # Include .local/bin so uv and project tools resolve.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/discord_bot/.local/bin
-ExecStart=/bin/bash /home/discord_bot/scripts/run_bot.sh
+ExecStart=/bin/bash /home/discord_bot/scripts/run_bot.sh --doppler
 Restart=always
 RestartSec=10
 
@@ -170,7 +170,7 @@ WantedBy=multi-user.target
 - **Secrets in the unit file** — Default permissions can leave tokens readable; use **`chmod 600`** on the unit if you keep the token inline, or prefer **`EnvironmentFile=/etc/discord_bot/doppler.env`** with `DOPPLER_TOKEN=…` inside (mode `600`, root-owned) and remove the inline `DOPPLER_TOKEN` line.
 - **Quoting** — `Environment=KEY=value` is enough for tokens without spaces; quoted `Environment="KEY=val"` is also fine.
 
-If you still use an older unit name (e.g. **`discord_bot_v2.service`**), either rename the unit to **`discord_bot`** or change the `systemctl restart …` line in `.github/workflows/main.yml` to match. Update **`BOT_LOG_JOURNAL_UNIT`** in Doppler if you use the **`.logging`** admin command (see `docs/DOPPLER_ENV_KEYS.md`).
+If you still use an older unit name (e.g. **`discord_bot_v2.service`**), either rename the unit to **`discord_bot`** or change the `systemctl restart …` line in `.github/workflows/main.yml` to match. Update **`BOT_LOG_JOURNAL_UNIT`** in Doppler if you use the **`.logging`** admin command (see [`DOPPLER_ENV_KEYS.md`](DOPPLER_ENV_KEYS.md)).
 
 ---
 
@@ -367,4 +367,4 @@ Use this when you rebuild the VPS or switch cloud:
 ## Related files
 
 - [`.github/workflows/main.yml`](../.github/workflows/main.yml) — CI + deploy commands  
-- [`scripts/run_bot.sh`](../scripts/run_bot.sh) — local/VPS wrapper with `doppler run`
+- [`scripts/run_bot.sh`](../scripts/run_bot.sh) — `uv run python -m main_bot` with **`--doppler`** or **`--env`**, optional **`--dir`**
