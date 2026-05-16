@@ -5,7 +5,7 @@ name: Release standalone bundle
 # - Tag releases from CI: `release` events from GITHUB_TOKEN do not start workflows,
 #   so we run after the `Release` workflow completes (`workflow_run`).
 # - Releases published outside that path (e.g. GitHub UI): `release` still triggers this.
-# - Manual: Actions → this workflow → Run workflow (optional tag; blank = latest release).
+# - Manual: Actions → this workflow → Run workflow (required tag, e.g. v0.4.1).
 on:
   workflow_run:
     workflows: [Release]
@@ -13,8 +13,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag (e.g. v0.4.1). Leave empty to use the latest GitHub Release tag.
-        required: false
+        description: Git tag for the existing GitHub Release (e.g. v0.4.1).
+        required: true
         type: string
   release:
     types: [published]
@@ -54,25 +54,11 @@ jobs:
           ref: refs/tags/${{ github.event.release.tag_name }}
           fetch-depth: 0
 
-      - name: Resolve tag (workflow_dispatch)
-        id: tag_dispatch
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            TAG=$(gh release view --json tagName -q .tagName)
-            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ steps.tag_dispatch.outputs.tag }}
+          ref: refs/tags/${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Export release tag for upload
@@ -84,7 +70,7 @@ jobs:
           elif [ "${{ github.event_name }}" = release ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${{ steps.tag_dispatch.outputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build discord-bot-standalone.zip
