@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   bundle:
+    name: Build standalone bundle
     runs-on: ubuntu-latest
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:

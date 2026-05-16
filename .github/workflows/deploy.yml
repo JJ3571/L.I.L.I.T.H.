@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   deploy:
+    name: Deploy to VPS
     # Only run if the Release workflow succeeded (when triggered via workflow_run).
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest

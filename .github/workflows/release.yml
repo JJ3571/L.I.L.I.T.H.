@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   build-push:
+    name: Build and push Docker image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

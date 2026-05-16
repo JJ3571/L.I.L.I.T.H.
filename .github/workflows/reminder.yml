@@ -10,6 +10,7 @@ on:
 
 jobs:
   notify:
+    name: Noti to check deploy status
     runs-on: ubuntu-latest
     steps:
       - name: Reminder to check deploy status
