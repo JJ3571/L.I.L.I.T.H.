@@ -3,7 +3,7 @@
 # Admin command toggle state (created on first load; lives beside server_configs package)
 src/main_bot/server_configs/admin_commands.json
 
-# Combined runtime log (Docker: bind-mounted `./logs` → `/app/logs`)
+# Combined runtime logs (`discord_bot.log`, Lavalink `lavalink.log` when using Docker; Docker: bind-mounted `./logs` → `/app/logs` & Lavalink)
 logs/
 
 cogs_config.py

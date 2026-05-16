@@ -44,7 +44,7 @@ services:
       APP_LOG_STDOUT_MIRROR: ${APP_LOG_STDOUT_MIRROR:-true}
       BACKUP_CHANNEL_ID: ${BACKUP_CHANNEL_ID}
       BOT_LOG_BACKUP_COUNT: ${BOT_LOG_BACKUP_COUNT:-5}
-      BOT_LOG_FILE: ${BOT_LOG_FILE:-/app/logs/bot-runtime.log}
+      BOT_LOG_FILE: ${BOT_LOG_FILE:-/app/logs/discord_bot.log}
       BOT_LOG_MAX_BYTES: ${BOT_LOG_MAX_BYTES:-10485760}
       BOT_LOG_JOURNAL_EXTRA_UNITS: ${BOT_LOG_JOURNAL_EXTRA_UNITS}
       BOT_LOG_JOURNAL_UNIT: ${BOT_LOG_JOURNAL_UNIT}
@@ -129,10 +129,19 @@ services:
     image: ghcr.io/lavalink-devs/lavalink:latest
     networks:
       - discord_bot_net
+    environment:
+      - LAVALINK_PASSWORD=${LAVALINK_PASSWORD}
+      # youtube-source OAuth (see lavalink/application.yml placeholders; Lavalink docs env override: PLUGINS_YOUTUBE_OAUTH_*).
+      - YOUTUBE_OAUTH_ENABLED=${YOUTUBE_OAUTH_ENABLED:-false}
+      - YOUTUBE_OAUTH_REFRESH_TOKEN=${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
     volumes:
-      # Your tuned config. Create by copying lavalink/application.yml.example and
-      # editing server.password to match LAVALINK_PASSWORD in Doppler.
-      - ./lavalink/application.yml:/lavalink/application.yml:ro
+      # Official image reads config here — https://lavalink.dev/getting-started/docker
+      # (mounting elsewhere ignores your YAML; bot then probes wrong port → lavalink_http_probe_failed).
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      # application.yml sets ``logging.file.name`` to ``./logs/lavalink.log`` → under ``/opt/Lavalink/logs`` in the image.
+      # Same host ``./logs`` as the bot so ``discord_bot.log`` and ``lavalink.log`` sit together (gitignored). Without this
+      # mount, use ``docker compose logs lavalink``.
+      - ./logs:/opt/Lavalink/logs
     ports:
       - "127.0.0.1:2333:2333"
     restart: unless-stopped

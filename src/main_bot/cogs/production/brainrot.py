@@ -17,7 +17,7 @@ from nextcord import SlashOption
 from nextcord.ext import commands
 from wavelink.exceptions import InvalidNodeException, LavalinkLoadException
 
-from main_bot.cogs.production.music import MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC, MusicCog
+from main_bot.cogs.production.music import MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC
 
 from main_bot.paths import LOCAL_AUDIO_ROOT, PROJECT_ROOT
 from main_bot.server_configs.config import (
@@ -218,6 +218,23 @@ class BrainrotCog(commands.Cog):
         self._sessions: dict[int, BrainrotSession] = {}
         self._empty_disconnect_tasks: dict[int, asyncio.Task[None]] = {}
         self._alone_sweep_task: Optional[asyncio.Task[None]] = None
+
+    def _music_cog_for_brainrot(self) -> Optional[commands.Cog]:
+        """Return the bot's Music cog if it exposes brainrot hooks.
+
+        Do not use ``isinstance(..., MusicCog)``: some runtimes (duplicate package roots, mixed
+        ``src`` vs site-packages imports) register a working cog whose class object is not
+        identical to the one this module imported, so ``isinstance`` lies.
+        """
+
+        cog = self.bot.get_cog("MusicCog")
+        if cog is None:
+            return None
+        if not callable(getattr(cog, "brainrot_connect_voice", None)):
+            return None
+        if not callable(getattr(cog, "brainrot_sfx_http_url", None)):
+            return None
+        return cog
 
     def is_session_active(self, guild_id: int) -> bool:
         return guild_id in self._sessions
@@ -432,8 +449,8 @@ class BrainrotCog(commands.Cog):
         await interaction.followup.send("Brainrot stopped.", ephemeral=True)
 
     async def _lavalink_play_sfx(self, player: wavelink.Player, path: Path) -> None:
-        music_cog = self.bot.get_cog("MusicCog")
-        if not isinstance(music_cog, MusicCog):
+        music_cog = self._music_cog_for_brainrot()
+        if music_cog is None:
             raise RuntimeError("MusicCog is required for brainrot playback.")
         gid = player.guild.id if player.guild else 0
         _LOG.info("brainrot sfx begin guild=%s file=%s pool=%s", gid, path.name, _brainrot_wavelink_pool_ids())
@@ -715,8 +732,8 @@ class BrainrotCog(commands.Cog):
 
         rng = random.Random(seed) if seed is not None else random.Random()
 
-        music_cog = self.bot.get_cog("MusicCog")
-        if not isinstance(music_cog, MusicCog):
+        music_cog = self._music_cog_for_brainrot()
+        if music_cog is None:
             await self._slash_reply(interaction, "Music cog is not loaded — brainrot needs Lavalink + loopback HTTP from music.")
             return
 

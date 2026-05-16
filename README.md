@@ -14,15 +14,15 @@ These paths matter if you run **Docker Compose** or Lavalink-backed music:
 
 | Path | Purpose |
 |------|---------|
-| **`lavalink/application.yml`** | Runtime Lavalink config (gitignored). Copy [`lavalink/application.yml.example`](lavalink/application.yml.example) → `lavalink/application.yml` and set `lavalink.server.password` to match **`LAVALINK_PASSWORD`** in your secrets (same value as in `.env.example` / Doppler). |
+| **`lavalink/application.yml`** | Runtime Lavalink config (gitignored). Copy [`lavalink/application.yml.example`](lavalink/application.yml.example) → `lavalink/application.yml`. **`LAVALINK_PASSWORD`** must match your secrets and interpolates into `lavalink.server.password`; for Docker, **`YOUTUBE_OAUTH_ENABLED`** / **`YOUTUBE_OAUTH_REFRESH_TOKEN`** (optional) are passed on the **`lavalink`** service and map to YouTube OAuth in the example YAML. See [`docs/DOPPLER_ENV_KEYS.md`](docs/DOPPLER_ENV_KEYS.md) and [`lavalink/README.txt`](lavalink/README.txt). |
 | **`local_audio/`** | Repo-root folder mounted read-only into the bot container for music/SFX assets (see `docker-compose.yml`). Create it before `docker compose up` if it does not exist; subfolders depend on what your cogs expect (for example under `local_audio/music/`). The local-image helper (below) uses **`.docker-local-compose-test/local_audio/`** in its staging tree—do not confuse with a differently spelled path. |
-| **`logs/`** | Host directory bind-mounted into the bot container (**`./logs:/app/logs`**) so the combined runtime log (Nextcord library + **`main_bot.*`**) survives restarts (`BOT_LOG_FILE` defaults to **`/app/logs/bot-runtime.log`**). Create **`logs/`** before **`docker compose up`** if Compose does not create it automatically. |
+| **`logs/`** | Bind-mounted **`./logs`** on the host: the bot writes **`discord_bot.log`** under **`/app/logs`**; the same folder is mounted for Lavalink (**`./logs:/opt/Lavalink/logs`**) so **`lavalink.log`** (see **`logging.file.name`** in `lavalink/application.yml`) appears beside the bot log (single directory, gitignored). Create **`logs/`** before **`docker compose up`** if Compose does not create it automatically. |
 
 **Local music layout:** Optional env **`MUSIC_FOLDER_1`** … **`MUSIC_FOLDER_25`** register flat folders `local_audio/music/<name>` as slash commands `/<name>` (see `.env.example`). Use **`MUSIC_n_SHUFFLE_START=true`** for random seek-in-track; omit or `false` to play each file from the start (queue order is still shuffled on start). **`/gaming`** always uses `local_audio/music/gaming/<game>/` (audio files per game folder). Up to **25** game folders with audio; cover art: optional `cover.png` / `cover.jpg` next to tracks (or one shared `cover.*` under `gaming/`). Names **`gaming`** and **`brainrot`** cannot be used as `MUSIC_FOLDER_*` values.
 
 Named Docker volumes (`tierlist_data`, `db_data`) need no manual directories.
 
-Docker **`stdout`** (when **`APP_LOG_STDOUT_MIRROR`** is on) plus **`logs/bot-runtime.log`** record startup lines **`[BOT_STARTING] …`** — look for **`Loaded extension:`** vs **`FAILED to load extension`**, **`Music cog registered`** vs missing, and **`[music]`** HTTP bind messages. Tune **`NEXTCORD_FILE_LOG_LEVEL`** so **`/logging`** file tails stay readable (**`INFO`** default; **`DEBUG`** embeds Discord gateway noise). Set **`APP_LOG_STDOUT_MIRROR=false`** to keep **`docker compose logs`** quiet while still tailing the file on disk.
+Docker **`stdout`** (when **`APP_LOG_STDOUT_MIRROR`** is on) plus **`logs/discord_bot.log`** record startup lines **`[BOT_STARTING] …`** — look for **`Loaded extension:`** vs **`FAILED to load extension`**, **`Music cog registered`** vs missing, and **`[music]`** HTTP bind messages. Tune **`NEXTCORD_FILE_LOG_LEVEL`** so **`/logging`** file tails stay readable (**`INFO`** default; **`DEBUG`** embeds Discord gateway noise). Set **`APP_LOG_STDOUT_MIRROR=false`** to keep **`docker compose logs`** quiet while still tailing the file on disk.
 
 ### Secrets: Doppler **or** repo-root `.env`
 
@@ -95,7 +95,7 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 ├── opgg_mcp_test.py            # Local MCP / tooling experiment
 ├── README.md
 ├── lavalink/
-│   └── application.yml.example # Copy to application.yml locally (password ↔ LAVALINK_PASSWORD)
+│   └── application.yml.example # Copy to application.yml locally (LAVALINK_PASSWORD, YOUTUBE_OAUTH_* via Spring placeholders)
 ├── admin_tools/                # One-off maintenance & verification scripts
 │   ├── README.md
 │   ├── birthday_cleanup.py
@@ -422,7 +422,7 @@ Art commission requests (enabled only for configured maintainer(s) in code).
 Requires Lavalink (see [Setup & secrets](#setup--secrets)).
 
 ### `/music play <query> [search_kind] [songs]`
-Stream or search via Lavalink (YouTube Music source); join a voice channel first. If Lavalink rejects the query, check **`lavalink-1`** logs (YouTube OAuth / plugin issues show there).
+Stream or search via Lavalink (YouTube Music source); join a voice channel first. If Lavalink rejects the query, check **`lavalink-1`** logs (YouTube OAuth / plugin issues show there). For OAuth, enable **`YOUTUBE_OAUTH_ENABLED`** for the Lavalink container and complete the device flow once, then stash **`YOUTUBE_OAUTH_REFRESH_TOKEN`** in secrets (see `.env.example` / [`docs/DOPPLER_ENV_KEYS.md`](docs/DOPPLER_ENV_KEYS.md)).
 
 ### `/music stop`
 Disconnect the bot from voice and clear the session.

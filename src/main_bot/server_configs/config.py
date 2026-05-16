@@ -322,7 +322,7 @@ ZERONI_REACTION_EMOJI = _get_str("ZERONI_REACTION_EMOJI", "")
 COMMUNITY_NOTES_REACTION_EMOJI = _get_str("COMMUNITY_NOTES_REACTION_EMOJI", "")
 
 # Bot log viewer (.logging): optional systemd unit on Linux (e.g. discord_bot); else tails ``BOT_LOG_FILE``.
-# When ``BOT_LOG_FILE`` is unset, logs go to ``<project>/logs/bot-runtime.log`` (see ``main_bot.paths.runtime_bot_log_path``).
+# When ``BOT_LOG_FILE`` is unset, logs go to ``<project>/logs/discord_bot.log`` (see ``main_bot.paths.runtime_bot_log_path``).
 # BOT_LOG_JOURNAL_EXTRA_UNITS: comma-separated units for additional panes (e.g. lavalink.service).
 BOT_LOG_JOURNAL_UNIT = _get_str("BOT_LOG_JOURNAL_UNIT", "")
 BOT_LOG_JOURNAL_EXTRA_UNITS = _get_str("BOT_LOG_JOURNAL_EXTRA_UNITS", "")

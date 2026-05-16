@@ -135,7 +135,7 @@ The bot reads env from Doppler (or your chosen method). On the server:
    sudo systemctl enable --now discord_bot
    ```
 
-3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f`** the combined runtime log (set **`BOT_LOG_FILE`** in Doppler/unit env — e.g. **`/home/discord_bot/logs/bot-runtime.log`** if you adopted the same layout as Docker, or **`/home/discord_bot/Discord-Bot-Sandbox/logs/bot-runtime.log`** for a repo clone default). If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
+3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f`** the combined runtime log (set **`BOT_LOG_FILE`** in Doppler/unit env — e.g. **`/home/discord_bot/logs/discord_bot.log`** if you adopted the same layout as Docker, or **`/home/discord_bot/Discord-Bot-Sandbox/logs/discord_bot.log`** for a repo clone default). If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
 
 **Example unit** (matches [`scripts/run_bot.sh`](../scripts/run_bot.sh); aligns with [`.github/workflows/main.yml`](../.github/workflows/main.yml) `systemctl restart discord_bot`):
 

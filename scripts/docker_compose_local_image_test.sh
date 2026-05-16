@@ -8,7 +8,7 @@
 #   • docker-compose.local-build.yml (bot build.context → repo root, local image tag)
 #   • lavalink/application.yml (repo lavalink/application.yml if present else application.yml.example;
 #       staging copy normalizes server bind 127.0.0.1 → 0.0.0.0 and repairs one-line ``address``/``http2`` YAML damage
-#   • local_audio/, logs/ (empty stubs; bind-mounted like production Compose)
+#   • local_audio/, logs/ (empty stubs; bind-mounted like production Compose; Lavalink log files share ./logs)
 #   • .env — first-run only: copied from repo .env if present, else .env.example with Compose-friendly
 #       LAVALINK_URI / LAVALINK_DOCKER_URI staging tweaks (see _env_lavalink_uri_for_compose_network).
 #
@@ -141,7 +141,7 @@ EOF
 
 prepare() {
 	_rebuild_compose_argv
-	mkdir -p "$WORKDIR/local_audio" "$WORKDIR/lavalink" "$WORKDIR/logs"
+	mkdir -p "$WORKDIR/local_audio" "$WORKDIR/logs"
 	cp "$REPO/docker-compose.yml" "$WORKDIR/docker-compose.yml"
 
 	cat >"$WORKDIR/docker-compose.local-build.yml" <<EOF

@@ -7,20 +7,24 @@
 # You also need the **top-level** ``plugins:`` block (sibling of ``lavalink:``) — see below. Without it,
 # Lavalink uses plugin defaults and many videos fail with ``This video requires login`` / ``All clients failed``.
 #
-# Fix for login / sign-in errors: set ``plugins.youtube.oauth.enabled: true`` and complete the device flow once
-# (watch Lavalink logs for a URL + code), or paste a ``refreshToken`` from the logs. Use a **burner** Google account
-# (see https://github.com/lavalink-devs/youtube-source#using-oauth-tokens ). Optional: set
+# Docker Compose passes ``YOUTUBE_OAUTH_ENABLED`` / ``YOUTUBE_OAUTH_REFRESH_TOKEN`` into the Lavalink container; this file
+# resolves them via Spring placeholders (defaults: OAuth off, empty refresh). You can instead set Lavalink env
+# ``PLUGINS_YOUTUBE_OAUTH_ENABLED`` / ``PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN`` (env overrides YAML). For login fixes: set
+# OAuth enabled and complete the device flow once (watch Lavalink logs for a URL + code), or paste a ``refreshToken``
+# from the logs. Use a **burner** Google account (see
+# https://github.com/lavalink-devs/youtube-source#using-oauth-tokens ). Optional: set
 # ``logging.level.dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO`` for clearer OAuth messages.
 #
 # Jazz folder playback uses loopback HTTP from the bot; keep ``sources.http: true``. Optional ``sources.local`` for manual ``file://`` loads.
 
 # Stuttering does not seem like a big issue. May need to edit bufferDurationMs and frameBufferDurationMs below if it's too much.
-# That would increase bot latency. 
+# That would increase bot latency though. 
 
 server:
   port: 2333
-  # Bind localhost only for development machines (use 0.0.0.0 behind firewall/Docker on VPS).
-  address: 127.0.0.1
+  # Docker/other containers must reach this listener — use 0.0.0.0 (see docker-compose Lavalink mount).
+  # For Lavalink.jar on the same host as the bot only (no Compose), 127.0.0.1 is OK.
+  address: 0.0.0.0
   http2:
     enabled: false
 
@@ -30,7 +34,7 @@ lavalink:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
       snapshot: false
   server:
-    password: "youshallnotpass"
+    password: "${LAVALINK_PASSWORD}"
     sources:
       youtube: false
       bandcamp: true
@@ -81,8 +85,9 @@ sentry:
   environment: ""
 
 logging:
+  # ``name`` sets the log file (default Spring Boot would use ``spring.log`` under ``path``).
   file:
-    path: ./logs/
+    name: ./logs/lavalink.log
   level:
     root: INFO
     lavalink: INFO
@@ -105,7 +110,6 @@ plugins:
       - WEB
       - WEBEMBEDDED
     oauth:
-      enabled: true
-      # After first successful device login, Lavalink logs your token — uncomment to skip the flow on restart:
-      # refreshToken: "paste-from-lavalink-logs"
-      # skipInitialization: true
+      enabled: "${YOUTUBE_OAUTH_ENABLED:false}"
+      # After first successful device login, Lavalink logs your token — set env or paste here to skip the flow on restart.
+      refreshToken: "${YOUTUBE_OAUTH_REFRESH_TOKEN:}"

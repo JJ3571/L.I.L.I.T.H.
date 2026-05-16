@@ -108,6 +108,27 @@ def _music_connected_node_label() -> str:
         return f"(get_node_err: {e})"
 
 
+async def _lavalink_http_probe(base_uri: str, *, timeout_sec: float = 4.0) -> tuple[bool, str]:
+    """GET Lavalink root URL from this Python process (same DNS/network stack as Wavelink).
+
+    Any HTTP status proves TCP + HTTP listener responded — narrows failures vs websocket/auth-only issues.
+    """
+    import aiohttp
+
+    url = base_uri.rstrip("/") + "/"
+    try:
+        timeout = aiohttp.ClientTimeout(total=timeout_sec)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                status = resp.status
+                await resp.read()
+        return True, f"HTTP {status}"
+    except asyncio.TimeoutError:
+        return False, f"timeout after {timeout_sec}s"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 @dataclass(frozen=True)
 class LocalFolderDefinition:
     """Defines ``local_audio/music/{folder}`` playback for slash-invoked folder sessions.
@@ -910,6 +931,21 @@ class MusicCog(commands.Cog, CogLogMixin):
             LAVALINK_URI,
             _music_pool_registered_node_ids(),
         )
+        probe_ok, probe_detail = await _lavalink_http_probe(LAVALINK_URI)
+        if probe_ok:
+            _MUSIC_LOG.info(
+                "lavalink_http_probe_ok uri=%s detail=%s",
+                LAVALINK_URI,
+                probe_detail,
+            )
+        else:
+            _MUSIC_LOG.warning(
+                "lavalink_http_probe_failed uri=%s detail=%s — bot cannot reach Lavalink HTTP "
+                "(wrong LAVALINK_URI/Docker DNS, missing compose network, or Lavalink bound only to localhost)",
+                LAVALINK_URI,
+                probe_detail,
+            )
+
         try:
             await wavelink.Pool.reconnect()
         except Exception as e:
@@ -963,10 +999,15 @@ class MusicCog(commands.Cog, CogLogMixin):
                 return True
             _MUSIC_LOG.warning(
                 "ensure_lavalink Pool.connect returned but WS not CONNECTED uri=%s node_identifier=%s "
-                "pool_registered=%s (auth mismatch or wrong LAVALINK_URI from this container?) ",
+                "pool_registered=%s.%s",
                 LAVALINK_URI,
                 getattr(node, "identifier", "?"),
                 _music_pool_registered_node_ids(),
+                (
+                    " Lavalink HTTP probe succeeded — inspect Lavalink logs for websocket/auth vs lavalink.server.password."
+                    if probe_ok
+                    else " Lavalink HTTP probe failed — fix container networking/DNS/bind before blaming websocket/auth."
+                ),
             )
         finally:
             # :meth:`wavelink.Pool.connect` catches ``AuthorizationFailedException`` and only logs;
@@ -985,7 +1026,9 @@ class MusicCog(commands.Cog, CogLogMixin):
 
         self.cog_print(
             f"Lavalink has no CONNECTED node at {LAVALINK_URI} (timed out waiting for WS ready). "
-            "Start Lavalink before music commands; confirm LAVALINK_PASSWORD matches application.yml.",
+            "Start Lavalink before music commands; confirm LAVALINK_PASSWORD matches application.yml "
+            f"(HTTP probe from bot: {'ok ' + probe_detail if probe_ok else 'failed — ' + probe_detail}). "
+            "See nextcord.music logs for lavalink_http_probe_* lines.",
         )
         _MUSIC_LOG.warning(
             "ensure_lavalink FAILED uri=%s pool_registered=%s",

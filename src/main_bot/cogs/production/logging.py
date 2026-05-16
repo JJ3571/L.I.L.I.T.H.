@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
+import textwrap
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -23,9 +25,52 @@ BUFFER_LINE_COUNT = LINES_PER_PAGE * PAGE_COUNT
 MAX_EMBED_BODY = 3800
 MAX_BUTTON_LABEL = 80
 
+# Display: strip ANSI (terminal colors) and wrap long lines so mobile/narrow clients stay readable.
+_DISPLAY_LINE_WIDTH = 88
+_MAX_WRAP_ROWS_PER_LOG_LINE = 8
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[\d;:]*[A-Za-z]")
+_CTRL_EXCEPT_TAB_CR_LF_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
 
 def _default_log_path() -> Path:
     return runtime_bot_log_path()
+
+
+def _sanitize_log_line(line: str) -> str:
+    s = _ANSI_ESCAPE_RE.sub("", line)
+    s = _CTRL_EXCEPT_TAB_CR_LF_RE.sub("", s)
+    return s.replace("\r\n", "\n").replace("\r", "").rstrip()
+
+
+def _wrap_for_display(line: str, width: int = _DISPLAY_LINE_WIDTH) -> List[str]:
+    """Split one log line to readable width; cap rows so one huge line cannot blow the embed."""
+    if not line:
+        return [" "]
+    wrapped = textwrap.wrap(
+        line,
+        width=width,
+        expand_tabs=True,
+        break_long_words=True,
+        break_on_hyphens=False,
+        replace_whitespace=False,
+        drop_whitespace=False,
+    )
+    if not wrapped:
+        return [line[: width - 1] + "…"] if len(line) > width else [line or " "]
+    if len(wrapped) > _MAX_WRAP_ROWS_PER_LOG_LINE:
+        merged_tail = " ".join(wrapped[_MAX_WRAP_ROWS_PER_LOG_LINE - 1 :])
+        if len(merged_tail) > width:
+            merged_tail = merged_tail[: width - 1] + "…"
+        wrapped = wrapped[: _MAX_WRAP_ROWS_PER_LOG_LINE - 1] + [merged_tail]
+    return wrapped
+
+
+def _format_lines_for_embed(raw_lines: List[str]) -> List[str]:
+    formatted: List[str] = []
+    for line in raw_lines:
+        cleaned = _sanitize_log_line(line)
+        formatted.extend(_wrap_for_display(cleaned))
+    return formatted
 
 
 def _tail_file_lines(path: Path, max_lines: int) -> Tuple[List[str], str]:
@@ -194,14 +239,17 @@ def _build_embed(
     max_pi = _max_page_index(lines)
     page = max(0, min(page, max_pi))
     chunk = _slice_page(lines, page)
-    body = _truncate_block("\n".join(chunk) if chunk else "(empty)")
+    display_lines = _format_lines_for_embed(chunk) if chunk else ["(empty)"]
+    body = _truncate_block("\n".join(display_lines))
     page_human = page + 1
     pages_total = max_pi + 1
     title = _display_title_for_source(source_id)
-    desc = (
-        f"Page **{page_human}** / **{pages_total}** · **{LINES_PER_PAGE}** lines per page "
-        f"· buffer **{BUFFER_LINE_COUNT}** newest lines\n```\n{body}\n```"
+    meta = (
+        f"Page **{page_human}** / **{pages_total}** · **{LINES_PER_PAGE}** raw lines/page "
+        f"· buffer **{BUFFER_LINE_COUNT}** lines · newest at **bottom** of block\n"
+        f"_Display: ANSI stripped · wrapped to {_DISPLAY_LINE_WIDTH} cols (long lines split)_"
     )
+    desc = f"{meta}\n```log\n{body}\n```"
     embed = nextcord.Embed(title=title, description=desc, color=nextcord.Color.dark_teal())
     embed.set_footer(text=f"Source: {footer_source} · requested by {requester}")
     return embed
