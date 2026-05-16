@@ -1,5 +1,8 @@
 name: Release standalone bundle
 
+# Runs when a release is published outside tag CI (e.g. GitHub UI). Releases
+# created by `.github/workflows/release.yml` use GITHUB_TOKEN — those do NOT
+# fire `release` workflow triggers; that workflow attaches the ZIP itself.
 on:
   release:
     types: [published]
