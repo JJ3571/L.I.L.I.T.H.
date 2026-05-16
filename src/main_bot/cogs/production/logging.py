@@ -10,9 +10,8 @@ from typing import Dict, List, Optional, Set, Tuple
 import nextcord
 from nextcord.ext import commands
 
-from main_bot.paths import PROJECT_ROOT
+from main_bot.paths import runtime_bot_log_path
 from main_bot.server_configs.config import (
-    BOT_LOG_FILE,
     BOT_LOG_JOURNAL_EXTRA_UNITS,
     BOT_LOG_JOURNAL_UNIT,
     admin_user_ids,
@@ -26,9 +25,7 @@ MAX_BUTTON_LABEL = 80
 
 
 def _default_log_path() -> Path:
-    if BOT_LOG_FILE.strip():
-        return Path(BOT_LOG_FILE).expanduser()
-    return PROJECT_ROOT / "nextcord.log"
+    return runtime_bot_log_path()
 
 
 def _tail_file_lines(path: Path, max_lines: int) -> Tuple[List[str], str]:

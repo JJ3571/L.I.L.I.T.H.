@@ -3,6 +3,9 @@
 # Admin command toggle state (created on first load; lives beside server_configs package)
 src/main_bot/server_configs/admin_commands.json
 
+# Combined runtime log (Docker: bind-mounted `./logs` → `/app/logs`)
+logs/
+
 cogs_config.py
 economy.db
 waterboard.db
@@ -19,6 +22,9 @@ data/tierlist/
 .vscode/*
 .vscode/tasks.json
 .DS_Store
+
+# Staging dir for scripts/docker_compose_local_image_test.sh (local bot image + compose smoke test)
+.docker-local-compose-test/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

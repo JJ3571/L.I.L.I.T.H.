@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
@@ -27,6 +28,17 @@ from main_bot.server_configs.config import (
 from main_bot.utils.discord_voice import human_members_in_voice_channel
 
 _LOG = logging.getLogger("nextcord.brainrot")
+
+
+def _brainrot_wavelink_pool_ids() -> str:
+    try:
+        nodes = getattr(wavelink.Pool, "nodes", None)
+        if not nodes:
+            return "(empty)"
+        return ",".join(str(k) for k in nodes.keys())
+    except Exception as e:
+        return f"(nodes err: {e})"
+
 
 BRAINROT_FOLDER = "brainrot"
 # Random hard cap for “must fire by” deadline each gap (hidden from UI).
@@ -423,13 +435,28 @@ class BrainrotCog(commands.Cog):
         music_cog = self.bot.get_cog("MusicCog")
         if not isinstance(music_cog, MusicCog):
             raise RuntimeError("MusicCog is required for brainrot playback.")
+        gid = player.guild.id if player.guild else 0
+        _LOG.info("brainrot sfx begin guild=%s file=%s pool=%s", gid, path.name, _brainrot_wavelink_pool_ids())
         url = await music_cog.brainrot_sfx_http_url(path)
         try:
             tracks = await wavelink.Pool.fetch_tracks(url)
         except LavalinkLoadException as e:
-            _LOG.warning("brainrot Lavalink load failed path=%s err=%s", path, e)
+            _LOG.warning(
+                "brainrot Lavalink load failed guild=%s file=%s url_host=%s err=%s",
+                gid,
+                path.name,
+                urlsplit(url).netloc or "?",
+                e,
+                exc_info=True,
+            )
             raise
         if not tracks:
+            _LOG.warning(
+                "brainrot Lavalink empty track response guild=%s file=%s url_host=%s",
+                gid,
+                path.name,
+                urlsplit(url).netloc or "?",
+            )
             raise RuntimeError(f"Lavalink returned no track for {path.name}")
         await player.play(tracks[0], replace=True)
         deadline = time.monotonic() + 120.0
@@ -664,6 +691,15 @@ class BrainrotCog(commands.Cog):
             await self._slash_reply(interaction, "This voice channel is blocked for voice bots.")
             return
 
+        _LOG.info(
+            "brainrot slash start guild=%s user=%s voice_ch=%s seed_fixed=%s wavelink_registered=%s",
+            guild.id,
+            interaction.user.id,
+            voice_channel.id,
+            seed is not None,
+            _brainrot_wavelink_pool_ids(),
+        )
+
         asset_root = brainrot_asset_dir()
         dodge_path = asset_root / DODGEBALL_FILE
         plank_path = asset_root / PLANKTON_FILE
@@ -686,11 +722,25 @@ class BrainrotCog(commands.Cog):
 
         player = await music_cog.brainrot_connect_voice(guild, voice_channel)
         if player is None:
+            snap = music_cog._music_voice_snapshot(guild)
+            _LOG.warning(
+                "brainrot_start voice/Lavalink connect failed guild=%s wavelink_registered=%s %s",
+                guild.id,
+                _brainrot_wavelink_pool_ids(),
+                snap,
+            )
             await self._slash_reply(
                 interaction,
                 "Could not reach Lavalink or join voice. Start Lavalink (matching LAVALINK_URI / LAVALINK_PASSWORD) and try again.",
             )
             return
+
+        _LOG.info(
+            "brainrot_start connected guild=%s voice_ch=%s player_connected=%s",
+            guild.id,
+            voice_channel.id,
+            getattr(player, "connected", None),
+        )
 
         mono = time.monotonic()
         cap = roll_brainrot_silence_cap_sec(rng)
@@ -729,6 +779,12 @@ class BrainrotCog(commands.Cog):
         if gid not in self._sessions:
             await self._slash_reply(interaction, "Brainrot is not active.")
             return
+        _LOG.info(
+            "brainrot slash stop guild=%s user=%s wavelink_registered=%s",
+            gid,
+            getattr(interaction.user, "id", 0),
+            _brainrot_wavelink_pool_ids(),
+        )
         await self._full_stop(gid, disconnect_voice=True)
         await self._slash_reply(interaction, "Brainrot stopped.")
 

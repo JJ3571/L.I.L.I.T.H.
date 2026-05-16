@@ -12,11 +12,19 @@
 # Use `doppler run` or write `.env` first — see:
 # https://docs.doppler.com/docs/docker-compose#option-2-container-env-vars
 #
+# Optional music folder slash commands (`MUSIC_FOLDER_1` … `25`, `music.py`): Compose only forwards env keys
+# listed under services.bot.environment. This file wires the first three slots; duplicate the pattern for 4–25.
+#
 services:
   bot:
     image: ghcr.io/jj3571/discord-bot:latest
-    # No depends_on on Lavalink: music features need it, but Postgres/DISCORD_LOGIN
-    # should not wait on Lavalink health (slow JVM / curl probe). Restart policy covers retries.
+    # Lavalink starts first; bot does not wait for Lavalink.health (curl/JVM quirks can strand the bot as "waiting").
+    # Use MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC in music cog for websocket readiness instead.
+    depends_on:
+      lavalink:
+        condition: service_started
+    networks:
+      - discord_bot_net
     volumes:
       # Local audio assets (music, brainrot sfx) — bind mount so changes
       # are reflected without rebuilding.
@@ -25,13 +33,19 @@ services:
       - tierlist_data:/app/data
       # Legacy SQLite dbs (economy.db, waterboard.db, etc.) if using local DB.
       - db_data:/app/databases
+      # Combined runtime log (``main_bot`` + Nextcord); inspect on host under ``./logs``.
+      - ./logs:/app/logs
     restart: unless-stopped
     environment:
       ADMIN_USER_IDS: ${ADMIN_USER_IDS}
       AFK_CHANNEL_ID: ${AFK_CHANNEL_ID}
       APPLICATION_ID: ${APPLICATION_ID}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      APP_LOG_STDOUT_MIRROR: ${APP_LOG_STDOUT_MIRROR:-true}
       BACKUP_CHANNEL_ID: ${BACKUP_CHANNEL_ID}
-      BOT_LOG_FILE: ${BOT_LOG_FILE}
+      BOT_LOG_BACKUP_COUNT: ${BOT_LOG_BACKUP_COUNT:-5}
+      BOT_LOG_FILE: ${BOT_LOG_FILE:-/app/logs/bot-runtime.log}
+      BOT_LOG_MAX_BYTES: ${BOT_LOG_MAX_BYTES:-10485760}
       BOT_LOG_JOURNAL_EXTRA_UNITS: ${BOT_LOG_JOURNAL_EXTRA_UNITS}
       BOT_LOG_JOURNAL_UNIT: ${BOT_LOG_JOURNAL_UNIT}
       BOT_SPAM_ID: ${BOT_SPAM_ID}
@@ -61,19 +75,37 @@ services:
       HEADS_EMOJI_ID: ${HEADS_EMOJI_ID}
       HIDDEN_CATEGORY_ID: ${HIDDEN_CATEGORY_ID}
       LAVALINK_PASSWORD: ${LAVALINK_PASSWORD}
-      LAVALINK_URI: ${LAVALINK_URI:-http://lavalink:2333}
+      # Lavalink WS/HTTP as seen FROM THE BOT CONTAINER. Do NOT use localhost/127.0.0.1 here:
+      # that points at the bot container itself when running in Docker, so Wavelink never connects.
+      # Default is Compose DNS hostname `lavalink` on the shared Docker network below.
+      # Host/Doppler LAVALINK_URI (often localhost for laptop dev) is intentionally NOT plumbed here
+      # unless you pass LAVALINK_DOCKER_URI to override — e.g. external Lavalink: http://other:2333
+      LAVALINK_URI: ${LAVALINK_DOCKER_URI:-http://lavalink:2333}
       LEAGUE_CHANNEL_ID: ${LEAGUE_CHANNEL_ID}
       LOAD_DEVELOPMENT_COGS: ${LOAD_DEVELOPMENT_COGS}
       FULL_DEBUG_IN_TERMINAL: ${FULL_DEBUG_IN_TERMINAL}
+      NEXTCORD_FILE_LOG_LEVEL: ${NEXTCORD_FILE_LOG_LEVEL:-INFO}
       MANA_SYMBOLS: ${MANA_SYMBOLS}
       MTG_AUTOLINK_BLOCKED_NAMES: ${MTG_AUTOLINK_BLOCKED_NAMES}
       MTG_AUTOLINK_CHANNEL_IDS: ${MTG_AUTOLINK_CHANNEL_IDS}
       MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS: ${MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS}
       MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE: ${MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE}
       MTG_AUTOLINK_MAX_WORD_SPAN: ${MTG_AUTOLINK_MAX_WORD_SPAN}
-      MUSIC_LOCAL_HTTP_HOST: ${MUSIC_LOCAL_HTTP_HOST}
-      MUSIC_LOCAL_HTTP_PORT: ${MUSIC_LOCAL_HTTP_PORT}
+      MUSIC_LOCAL_HTTP_HOST: ${MUSIC_LOCAL_HTTP_HOST:-bot}
+      MUSIC_LOCAL_HTTP_BIND_HOST: ${MUSIC_LOCAL_HTTP_BIND_HOST:-0.0.0.0}
+      MUSIC_LOCAL_HTTP_PORT: ${MUSIC_LOCAL_HTTP_PORT:-8765}
       MUSIC_VOICE_CHANNEL_DENYLIST: ${MUSIC_VOICE_CHANNEL_DENYLIST}
+      # ------------------------ Music slash commands /<folder> → local_audio/music/<folder>/ 
+      # (slots 4–25: copy these two lines for each additional folder, bump n):
+      #   MUSIC_FOLDER_4: ${MUSIC_FOLDER_4:-}
+      #   MUSIC_4_SHUFFLE_START: ${MUSIC_4_SHUFFLE_START:-}
+      MUSIC_FOLDER_1: ${MUSIC_FOLDER_1:-}
+      MUSIC_FOLDER_2: ${MUSIC_FOLDER_2:-}
+      MUSIC_FOLDER_3: ${MUSIC_FOLDER_3:-}
+      MUSIC_1_SHUFFLE_START: ${MUSIC_1_SHUFFLE_START:-}
+      MUSIC_2_SHUFFLE_START: ${MUSIC_2_SHUFFLE_START:-}
+      MUSIC_3_SHUFFLE_START: ${MUSIC_3_SHUFFLE_START:-}
+      # ------------------------
       OMDB_API_KEY: ${OMDB_API_KEY}
       OMDB_API_URL: ${OMDB_API_URL}
       SEEN_CATEGORY_ID: ${SEEN_CATEGORY_ID}
@@ -95,6 +127,8 @@ services:
     # Pre-built official image. Mount your application.yml to override defaults
     # (password, plugins, YouTube OAuth, etc.).
     image: ghcr.io/lavalink-devs/lavalink:latest
+    networks:
+      - discord_bot_net
     volumes:
       # Your tuned config. Create by copying lavalink/application.yml.example and
       # editing server.password to match LAVALINK_PASSWORD in Doppler.
@@ -113,3 +147,8 @@ volumes:
   # Named volumes survive container rebuilds — only image changes, data persists.
   tierlist_data:
   db_data:
+
+networks:
+  # Explicit bridge so bot resolves `lavalink` via Compose DNS over the internal net (see LAVALINK_URI above).
+  discord_bot_net:
+    driver: bridge

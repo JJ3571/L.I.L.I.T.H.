@@ -50,7 +50,7 @@ class Birthday(commands.Cog, CogLogMixin):
 
                 channel = self.bot.get_channel(birthday_announcement_channel_id)
                 if channel is None:
-                    print("[ERROR] Birthday channel not found.")
+                    self.cog_print("[ERROR] Birthday channel not found.")
                     return
 
                 for row in users:
@@ -79,7 +79,7 @@ class Birthday(commands.Cog, CogLogMixin):
                             if role:
                                 await member.add_roles(role)
                             else:
-                                print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
+                                self.cog_print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
                             
                             # Grant 20-hour executive pardon for birthday
                             await self.grant_birthday_executive_pardon(member.id)
@@ -88,7 +88,7 @@ class Birthday(commands.Cog, CogLogMixin):
                             await self.store_birthday_message(message.id, user_id, pacific_date_to_check_str)
                             _dbg_print(self, f"[DEBUG] Birthday message sent for user {user_id} for date {pacific_date_to_check_str}")
                         else:
-                            print(f"[ERROR] Member not found for user ID {user_id}")
+                            self.cog_print(f"[ERROR] Member not found for user ID {user_id}")
         else:
             _dbg_print(self, f"[DEBUG] Hour ({now_pacific.hour} US/Pacific) is before 8 AM, skipping birthday check.")
         _dbg_print(self, "--------------------------------")
@@ -103,7 +103,7 @@ class Birthday(commands.Cog, CogLogMixin):
         async with self.bot.pg_pool.acquire() as db:
             guild = self.bot.get_guild(GUILD_ID)
             if guild is None:
-                print("[ERROR] Guild not found for cleanup.")
+                self.cog_print("[ERROR] Guild not found for cleanup.")
                 return
 
             channel = guild.get_channel(birthday_announcement_channel_id)
@@ -128,7 +128,7 @@ class Birthday(commands.Cog, CogLogMixin):
                     try:
                         birthday_date_obj = datetime.strptime(birthday_str, "%Y-%m-%d").date()
                     except ValueError as e:
-                        print(f"[ERROR] Invalid date format for user {user_id_str}: '{birthday_str}' - {e}")
+                        self.cog_print(f"[ERROR] Invalid date format for user {user_id_str}: '{birthday_str}' - {e}")
                         continue
 
                     if today_pacific_date > birthday_date_obj:
@@ -139,9 +139,9 @@ class Birthday(commands.Cog, CogLogMixin):
                         except nextcord.NotFound:
                             _dbg_print(self, f"[DEBUG] Message ID {message_id} not found in channel for deletion (already deleted or error).")
                         except nextcord.Forbidden:
-                            print(f"[ERROR] Bot lacks permissions to delete message ID {message_id}.")
+                            self.cog_print(f"[ERROR] Bot lacks permissions to delete message ID {message_id}.")
                         except Exception as e:
-                            print(f"[ERROR] Unexpected error deleting message ID {message_id}: {e}")
+                            self.cog_print(f"[ERROR] Unexpected error deleting message ID {message_id}: {e}")
                         finally:
                             # Always try to remove role and DB entry if message was due for cleanup
                             if birthday_role:
@@ -152,16 +152,16 @@ class Birthday(commands.Cog, CogLogMixin):
                                             await member.remove_roles(birthday_role)
                                             _dbg_print(self, f"[DEBUG] Removed birthday role from user ID {user_id_str} (associated with old message {message_id})")
                                         except nextcord.Forbidden:
-                                            print(f"[ERROR] Bot lacks permissions to remove role from user ID {user_id_str}.")
+                                            self.cog_print(f"[ERROR] Bot lacks permissions to remove role from user ID {user_id_str}.")
                                         except Exception as e:
-                                            print(f"[ERROR] Error removing role from user ID {user_id_str}: {e}")
+                                            self.cog_print(f"[ERROR] Error removing role from user ID {user_id_str}: {e}")
                             
                             await db.execute(
                                 f'DELETE FROM "{_BD}".birthday_messages WHERE message_id = $1',
                                 str(message_id),
                             )
             elif not channel:
-                print("[ERROR] Birthday channel not found for message cleanup part.")
+                self.cog_print("[ERROR] Birthday channel not found for message cleanup part.")
 
             # Part 2: General Role Audit
             if birthday_role:
@@ -184,13 +184,21 @@ class Birthday(commands.Cog, CogLogMixin):
                     if not should_have_role:
                         try:
                             await member.remove_roles(birthday_role)
-                            print(f"[AUDIT] Removed birthday role from {member.display_name} (ID: {member.id}). Reason: Not their birthday ({current_pacific_mm_dd}) or no DB record.")
+                            self.cog_print(
+                                f"[AUDIT] Removed birthday role from {member.display_name} (ID: {member.id}). "
+                                f"Reason: Not their birthday ({current_pacific_mm_dd}) or no DB record.",
+                            )
                         except nextcord.Forbidden:
-                            print(f"[ERROR][AUDIT] Bot lacks permissions to remove role from {member.display_name} (ID: {member.id}).")
+                            self.cog_print(
+                                f"[ERROR][AUDIT] Bot lacks permissions to remove role from {member.display_name} "
+                                f"(ID: {member.id}).",
+                            )
                         except Exception as e:
-                            print(f"[ERROR][AUDIT] Error removing role from {member.display_name} (ID: {member.id}): {e}")
+                            self.cog_print(
+                                f"[ERROR][AUDIT] Error removing role from {member.display_name} (ID: {member.id}): {e}",
+                            )
             elif not birthday_role:
-                print("[ERROR] Birthday role not found, skipping general role audit.")
+                self.cog_print("[ERROR] Birthday role not found, skipping general role audit.")
 
     async def store_birthday_message(self, message_id, user_id, pacific_date_str):
         async with self.bot.pg_pool.acquire() as db:
@@ -223,9 +231,12 @@ class Birthday(commands.Cog, CogLogMixin):
                 await waterboard_cog.executive_pardon(user_id, 20)  # 20 hours
                 _dbg_print(self, f"[DEBUG] Successfully granted 20-hour executive pardon to user {user_id} via WaterboardCog3")
             else:
-                print(f"[ERROR] WaterboardCog3 or executive_pardon method not found - cannot grant birthday pardon to user {user_id}")
+                self.cog_print(
+                    f"[ERROR] WaterboardCog3 or executive_pardon method not found - "
+                    f"cannot grant birthday pardon to user {user_id}",
+                )
         except Exception as e:
-            print(f"[ERROR] Failed to grant birthday executive pardon to user {user_id}: {e}")
+            self.cog_print(f"[ERROR] Failed to grant birthday executive pardon to user {user_id}: {e}")
 
     @nextcord.slash_command(name="bday", description="Shows upcoming birthdays, or can be used with an @ to see specific birthdays.", guild_ids=[GUILD_ID])
     async def bday(self, interaction: nextcord.Interaction, username: nextcord.Member = nextcord.SlashOption(required=False, description='@Username.')):

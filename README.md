@@ -1,6 +1,6 @@
 # discord_bot - Command Reference
 
-HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a complete reference of all available slash commands.
+HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a reference of slash commands loaded from **`cogs/production`** in `main_bot.main` (plus optional top-level commands registered from **`MUSIC_FOLDER_*`** env vars).
 
 This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see `.env.example`). To contribute, read **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
@@ -15,9 +15,14 @@ These paths matter if you run **Docker Compose** or Lavalink-backed music:
 | Path | Purpose |
 |------|---------|
 | **`lavalink/application.yml`** | Runtime Lavalink config (gitignored). Copy [`lavalink/application.yml.example`](lavalink/application.yml.example) → `lavalink/application.yml` and set `lavalink.server.password` to match **`LAVALINK_PASSWORD`** in your secrets (same value as in `.env.example` / Doppler). |
-| **`local_audio/`** | Repo-root folder mounted read-only into the bot container for music/SFX assets (see `docker-compose.yml`). Create it before `docker compose up` if it does not exist; subfolders depend on what your cogs expect (for example under `local_audio/music/`). |
+| **`local_audio/`** | Repo-root folder mounted read-only into the bot container for music/SFX assets (see `docker-compose.yml`). Create it before `docker compose up` if it does not exist; subfolders depend on what your cogs expect (for example under `local_audio/music/`). The local-image helper (below) uses **`.docker-local-compose-test/local_audio/`** in its staging tree—do not confuse with a differently spelled path. |
+| **`logs/`** | Host directory bind-mounted into the bot container (**`./logs:/app/logs`**) so the combined runtime log (Nextcord library + **`main_bot.*`**) survives restarts (`BOT_LOG_FILE` defaults to **`/app/logs/bot-runtime.log`**). Create **`logs/`** before **`docker compose up`** if Compose does not create it automatically. |
+
+**Local music layout:** Optional env **`MUSIC_FOLDER_1`** … **`MUSIC_FOLDER_25`** register flat folders `local_audio/music/<name>` as slash commands `/<name>` (see `.env.example`). Use **`MUSIC_n_SHUFFLE_START=true`** for random seek-in-track; omit or `false` to play each file from the start (queue order is still shuffled on start). **`/gaming`** always uses `local_audio/music/gaming/<game>/` (audio files per game folder). Up to **25** game folders with audio; cover art: optional `cover.png` / `cover.jpg` next to tracks (or one shared `cover.*` under `gaming/`). Names **`gaming`** and **`brainrot`** cannot be used as `MUSIC_FOLDER_*` values.
 
 Named Docker volumes (`tierlist_data`, `db_data`) need no manual directories.
+
+Docker **`stdout`** (when **`APP_LOG_STDOUT_MIRROR`** is on) plus **`logs/bot-runtime.log`** record startup lines **`[BOT_STARTING] …`** — look for **`Loaded extension:`** vs **`FAILED to load extension`**, **`Music cog registered`** vs missing, and **`[music]`** HTTP bind messages. Tune **`NEXTCORD_FILE_LOG_LEVEL`** so **`/logging`** file tails stay readable (**`INFO`** default; **`DEBUG`** embeds Discord gateway noise). Set **`APP_LOG_STDOUT_MIRROR=false`** to keep **`docker compose logs`** quiet while still tailing the file on disk.
 
 ### Secrets: Doppler **or** repo-root `.env`
 
@@ -29,6 +34,7 @@ Use either workflow (or mix: Doppler locally and `.env` only on a CI host—what
 2. **Docker Compose:** either  
    - `./scripts/docker_compose_up.sh` (or a copy at repo root: `./docker_compose_up.sh`) — same as `doppler run -- docker compose up --pull always` (secrets in the Compose process; no need for a plaintext `.env` from `doppler secrets download`), or  
    - `doppler run -- docker compose up --pull always` — same injection, run manually.
+   - **Local image smoke test (build Dockerfile + Compose):** `./scripts/docker_compose_local_image_test.sh` (default `up --build`) materializes **`.docker-local-compose-test/`** with compose files, Lavalink config, and `local_audio/`, then builds the bot from this repo. Run with secrets the same way as normal Compose, e.g. **`doppler run -- ./scripts/docker_compose_local_image_test.sh`** or a filled staging **`.docker-local-compose-test/.env`**. The script refuses to call Docker if the daemon is not running (avoids long compose noise). `prepare` subcommand only syncs files and does not need Docker.
 3. **Local Python:** use Python **3.12–3.13** (Nextcord on PyPI does not support 3.14 yet). From repo root: `uv sync`, then `doppler run -- uv run python -m main_bot` or `doppler run -- uv run bot`.
 
 **Option B — Local `.env` file**
@@ -64,7 +70,13 @@ Developers regenerate the artifact locally anytime with **`./scripts/build_deplo
 - [🔧 Utilities](#-utilities)
 - [📊 Information](#-information)
 - [⚙️ Administration](#️-administration)
-- [🧪 Testing Commands](#-testing-commands)
+- [🛠️ Request System](#️-request-system)
+- [💪 Powerups System](#-powerups-system)
+- [🎵 Music & local audio](#-music--local-audio)
+- [🧩 More production commands](#-more-production-commands)
+- [🎮 How Coins Work](#-how-coins-work)
+- [🔒 Permission Levels](#-permission-levels)
+- [🆘 Support](#-support)
 
 ---
 
@@ -97,6 +109,7 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
 │   ├── deploy_bundle/          # Sources for standalone ZIP (startup/rollout/README + compose header frag)
 │   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
+│   ├── docker_compose_local_image_test.sh  # staging dir + build bot image + compose (see Setup & secrets)
 │   ├── run_bot_doppler.sh      # doppler run + uv (local clone)
 │   ├── run_bot_env.sh           # uv only (load env yourself)
 │   ├── deploy.sh                # clone layout: compose down + compose up with pull
@@ -110,10 +123,10 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │       │   └── testing/
 │       ├── server_configs/
 │       └── utils/
-└── local_audio/                # *optional* local audio (gitignored): music/jazz|lofi|gaming, brainrot/*.mp3, …
+└── local_audio/                # *optional* local audio (gitignored): music/ + env-driven folder names, music/gaming/<game>/, brainrot/*.mp3, …
 ```
 
-**Not shown (typical machine-local):** `.venv/` or other virtualenvs, repo-root `.env`, `lavalink/application.yml` (generated from the example), `nextcord.log`, and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and tracks under `local_audio/music/` (and other `local_audio/` subfolders) as needed when running the bot.
+**Not shown (typical machine-local):** `.venv/` or other virtualenvs, repo-root `.env`, `lavalink/application.yml` (generated from the example), contents of **`logs/`** (runtime log files; directory may be created by you or Compose), and IDE folders such as `.vscode/` or `.cursor/` when ignored. Add `databases/*.db` and tracks under `local_audio/music/` (and other `local_audio/` subfolders) as needed when running the bot.
 
 ---
 
@@ -134,8 +147,17 @@ Look up Magic: The Gathering card information.
 ### `/roulette`
 Play an interactive game of European roulette with betting options.
 
-### `/greek-god`
+### `/divine_personality`
 Discover which Greek god matches your personality through an interactive quiz.
+
+### `/trivia play` / `/trivia stats` / `/trivia leaderboard`
+Play trivia, view your stats, or open the trivia leaderboard.
+
+### `/wheel`
+Create a spinning wheel with 2–20 custom values (interactive setup).
+
+### `/wheelvc [channel]`
+Same as `/wheel`, but options are members of a voice channel (defaults to your current VC).
 
 ---
 
@@ -163,7 +185,7 @@ Request coins from another user (creates a transaction request).
 Display the server's coin leaderboard showing top earners.
 
 ### `/econ tax <member> <amount> [reason]` 🔒
-**[Admin Only]** Remove coins from a user's balance.
+**[Bot admins — `admin_user_ids`]** Remove coins from a user's balance.
 - **Parameters:**
   - `member` (required) - User to tax
   - `amount` (required) - Number of coins to remove
@@ -198,10 +220,10 @@ View your personal betting history (active and past bets).
 View recently finalized wagers and their outcomes.
 
 ### `/wager finalize` 🔒
-**[Admin Only]** List wagers that need finalization.
+**[Bot admins — `admin_user_ids`]** List wagers that need finalization.
 
 ### `/wager delete <wager_id>` 🔒
-**[Admin Only]** Delete a wager entirely.
+**[Bot admins — `admin_user_ids`]** Delete a wager entirely.
 
 ---
 
@@ -219,6 +241,12 @@ Send a message as a character using AI. Costs 200 coins.
 
 ### `/buzzer`
 Start a new buzzer session with interactive buttons for quick responses.
+
+### `/vote`
+Start a vote for multiple options (interactive setup).
+
+### `/bday-all`
+List every registered birthday grouped by calendar month (server-wide).
 
 ---
 
@@ -254,9 +282,30 @@ Move all users from one voice channel to another with intelligent rate limiting.
   - `to` (required) - Destination voice channel to move users to
 - **Features:** Rate limiting, progress tracking, error handling, retry logic
 
-### `/vacate-config <delay>` 🔒
-**[Admin Only]** Configure the rate limiting delay for vacate operations.
-- **Parameters:** `delay` (required) - Delay in seconds between moves (0.1-5.0)
+### `/brainrot`
+Play random short SFX in voice (silence-breaker; uses `local_audio` brainrot assets).
+
+### Waterboarding (voice, costs coins)
+
+### `/waterboard <user>`
+Move a user through water-themed voice channels (costs coins).
+- **Parameters:** `user` (required) - User to waterboard
+
+### `/enhanced-waterboard <user>`
+Enhanced waterboard that temporarily hides the user's original channel.
+- **Parameters:** `user` (required) - User to enhanced waterboard
+
+### `/waterboard-party`
+Waterboard everyone in your current voice channel (except yourself).
+
+### `/waterboard-ranks`
+View all-time waterboarding statistics and leaderboard.
+
+### `/executivepardon <user> <hours>` 🔒
+**[Bot admins — `admin_user_ids`]** Grant exemption from waterboarding for a set time.
+- **Parameters:**
+  - `user` (required) - User to grant pardon to
+  - `hours` (required) - Duration of pardon in hours
 
 ---
 
@@ -275,40 +324,45 @@ Display a user's Pokemon GO IGN and friend code.
 ### `/pkgo clan-friendcodes`
 Get a list of all Pokemon GO friend codes for the clan.
 
-### `/counter list`
-View various server counters and statistics.
+### `/counter [category]`
+Personal counter with category label; use the message buttons to increment, decrement, or reset.
 
-### `/counter increment <counter_name>`
-Increment a specific counter by 1.
-- **Parameters:** `counter_name` (required) - Name of counter to increment
+### `/multicounter <name> <option1> <option2> [option3] [option4] [option5]`
+Multi-option counter (2–5 labels); track several tallies at once with buttons.
+
+### `/coc [username]`
+Clash of Clans roster: look up one member’s linked accounts, or list the whole clan when `username` is omitted. Adding/editing uses interactive flows (admins or self).
+
+### `/pokemon` (team building)
+Parent command for Pokémon team and dex helpers, including `team-create`, `team-list`, `team-view`, `team-add`, `team-remove`, `team-delete`, `team-add-menu`, `search`, and `info`.
 
 ---
 
 ## ⚙️ Administration
 
-### `/status set <activity>`🔒
-**[Admin Only]** Set the bot's custom status.
+### `/status set <activity>`
+Set the bot's custom status (stops automatic status rotation).
 - **Parameters:** `activity` (required) - Status message to display
 
-### `/status start` 🔒
-**[Admin Only]** Start cycling through predefined status messages.
+### `/status start`
+Start cycling through predefined status messages.
 
-### `/status stop` 🔒
-**[Admin Only]** Stop cycling through status messages.
+### `/status stop`
+Stop cycling through predefined status messages.
 
-### `/event create <title> <date> <time> [description]` 🔒
-**[Admin Only]** Create a new server event.
-- **Parameters:**
-  - `title` (required) - Event title
-  - `date` (required) - Event date
-  - `time` (required) - Event time
-  - `description` (optional) - Event description
+*(No permission checks in code—narrow who can invoke these via Discord integrations / overrides if needed.)*
 
-### `/event delete <event_id>` 🔒
-**[Admin Only]** Delete an event.
+### `/event create`
+Create a new server event (opens as a Discord modal).
 
-### `/event edit <event_id>` 🔒
-**[Admin Only]** Edit an existing event.
+### `/reminder`
+Create a reminder for yourself and others (opens as a Discord modal).
+
+### `/event delete <event_id>`
+Delete an event.
+
+### `/event edit <event_id>`
+Edit an existing event.
 
 ### `/event list`
 List all upcoming events.
@@ -327,7 +381,7 @@ Submit a new feature request for the bot.
 List all active feature requests.
 
 ### `/feature resolve <request_id>` 🔒
-**[Admin Only]** Mark a feature request as resolved.
+**[Bot admins — `admin_user_ids`]** Mark a feature request as resolved.
 
 ### `/bug report <title> <description>`
 Report a bug in the bot.
@@ -339,7 +393,10 @@ Report a bug in the bot.
 List all active bug reports.
 
 ### `/bug resolve <bug_id>` 🔒
-**[Admin Only]** Mark a bug report as resolved.
+**[Bot admins — `admin_user_ids`]** Mark a bug report as resolved.
+
+### `/admin_toggle` 🔒
+**[Discord Administrator]** Enable, disable, list, or reload visibility of selected admin-only commands (e.g. Crafty automation).
 
 ---
 
@@ -355,31 +412,44 @@ View and use your owned powerups.
 ### `/powerups active`
 View and manage your currently active powerups.
 
+### `/powerups art-requests` (restricted)
+Art commission requests (enabled only for configured maintainer(s) in code).
+
 ---
 
-## 🧪 Testing Commands
+## 🎵 Music & local audio
 
-*These commands are available in testing environments and may have experimental features.*
+Requires Lavalink (see [Setup & secrets](#setup--secrets)).
 
-### `/waterboard <user>`
-Move a user through water-themed voice channels (costs coins).
-- **Parameters:** `user` (required) - User to waterboard
+### `/music play <query> [search_kind] [songs]`
+Stream or search via Lavalink (YouTube Music source); join a voice channel first. If Lavalink rejects the query, check **`lavalink-1`** logs (YouTube OAuth / plugin issues show there).
 
-### `/enhanced-waterboard <user>`
-Enhanced waterboard that temporarily hides the user's original channel.
-- **Parameters:** `user` (required) - User to enhanced waterboard
+### `/music stop`
+Disconnect the bot from voice and clear the session.
 
-### `/waterboard-party`
-Waterboard everyone in your current voice channel (except yourself).
+### `/gaming`
+Play through game-specific folders under `local_audio/music/gaming/<game>/` (see env section above).
 
-### `/waterboard-ranks`
-View all-time waterboarding statistics and leaderboard.
+Env **`MUSIC_FOLDER_1`** … **`MUSIC_FOLDER_25`** register extra top-level slash commands named **`/<folder>`** (e.g. `/jazz`, `/lofi`) for **`local_audio/music/<folder>/`**. Folder names come **only from these env vars**—dropping MP3s into `local_audio/music/jazz/` does **not** create `/jazz` until **`MUSIC_FOLDER_n=jazz`** (and similar for `lofi`). Restart the bot after env changes.
 
-### `/executivepardon <user> <hours>` 🔒
-**[Admin Only]** Grant exemption from waterboarding for a set time.
-- **Parameters:**
-  - `user` (required) - User to grant pardon to
-  - `hours` (required) - Duration of pardon in hours
+**Docker Compose (two containers):** Lavalink fetches tracks over HTTP using **`MUSIC_LOCAL_HTTP_HOST`** in URLs; aiohttp listens on **`MUSIC_LOCAL_HTTP_BIND_HOST`** (same as host when unset). The **`docker_compose_local_image_test.sh`** override pins **`hostname: bot`** plus `MUSIC_LOCAL_HTTP_HOST=bot` and **`MUSIC_LOCAL_HTTP_BIND_HOST=0.0.0.0`** for you. Root **`docker-compose.yml`** interpolates sane defaults (`bot` / `0.0.0.0` / `8765`) for those three when unset — override in `.env`/Doppler if your deployment differs.
+
+**Doppler alone is not enough for folder slots:** each `MUSIC_FOLDER_n` / `MUSIC_n_SHUFFLE_START` pair must appear under **`bot.environment`** in **`docker-compose.yml`** (the checkout ships pairs for slots **1–3**; copy that pattern through **25** when you need more — Compose never injects arbitrary secrets). Recreate **`bot`** after changes.
+
+---
+
+## 🧩 More production commands
+
+### League of Legends (OP.GG)
+- `/opgg_summoner` — recent performance for a summoner  
+- `/opgg_matchup` — lane matchup guide  
+- `/opgg_esports_schedule` — upcoming esports matches  
+- `/opgg_standings` — team standings  
+
+### Minecraft (`/crafty`)
+Parent command for Crafty-controller integration: server list, start/stop/restart, status, backup, console command (admin), whitelist add/remove/list, whitelist apply workflow, automation settings (may be gated by `/admin_toggle`).
+
+Optional root commands **`/crafty_automation`** and **`/crafty_automation_status`** may also register when that integration is enabled (same gating behavior as subcommands wired through conditional registration).
 
 ---
 
@@ -402,10 +472,11 @@ Coins can be spent on:
 
 ## 🔒 Permission Levels
 
-- **🔒 Admin Commands**: Require administrator permissions
-- **💰 Economy Commands**: Require sufficient coin balance
-- **👥 Social Commands**: Available to all users
-- **🧪 Testing Commands**: May be restricted or experimental
+- **🔒** In this readme usually means **`admin_user_ids`** in server config (`main_bot.server_configs.config`), unless the command explicitly requires Discord’s **Administrator** permission (e.g. `/admin_toggle`).
+- **💰 Economy Commands**: Require sufficient coin balance (where applicable).
+- **`/event`**, **`/status`**, and **`/reminder`** are **not** extra-gated in code beyond who can invoke the slash in Discord—tighten exposure via integrations if you need that.
+
+Optional **`LOAD_DEVELOPMENT_COGS`** (see `main_bot.main`) loads extra extensions from `cogs/development/` (not listed here unless you enable it).
 
 ---
 
@@ -416,8 +487,9 @@ There are built in /bug and /feature commands that allow server/guild users to m
 2. Use `/feature request` for new feature ideas
 3. Contact server administrators for urgent matters
 
-* If you have bugs/suggestions for this main branch, please add them to the Github form!*
+If you have bugs/suggestions for this main branch, please add them to the Github form!
+
 ---
 
-*README last updated: April 2026*
+*README last updated: May 2026*
 *Project: discord_bot (package `main_bot`, UV-managed)*

@@ -135,7 +135,7 @@ The bot reads env from Doppler (or your chosen method). On the server:
    sudo systemctl enable --now discord_bot
    ```
 
-3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f /home/discord_bot/nextcord.log`**. If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
+3. Confirm: **`journalctl -u discord_bot -e`** and **`tail -f`** the combined runtime log (set **`BOT_LOG_FILE`** in Doppler/unit env — e.g. **`/home/discord_bot/logs/bot-runtime.log`** if you adopted the same layout as Docker, or **`/home/discord_bot/Discord-Bot-Sandbox/logs/bot-runtime.log`** for a repo clone default). If Doppler errors mention the wrong project, fix **`doppler.yaml`** / `doppler configure` under `/home/discord_bot` (see Doppler CLI docs for `configure set project`).
 
 **Example unit** (matches [`scripts/run_bot.sh`](../scripts/run_bot.sh); aligns with [`.github/workflows/main.yml`](../.github/workflows/main.yml) `systemctl restart discord_bot`):
 
@@ -165,7 +165,7 @@ WantedBy=multi-user.target
 
 **Notes:**
 
-- **`PYTHONUNBUFFERED=1`** — Makes `boot_print` / `print` lines show up in **`journalctl`** without long delays; Nextcord still logs heavily to **`nextcord.log`** (see `main_bot/main.py`).
+- **`PYTHONUNBUFFERED=1`** — Makes **`boot_print`** / **`print`** lines show up in **`journalctl`** without long delays when mirrored to stdout (**`APP_LOG_STDOUT_MIRROR`**); Nextcord writes to the same **combined rotating file** as **`main_bot`** (see **`BOT_LOG_FILE`** / `main_bot/main.py`).
 - **`PATH`** — Must end with **`…/discord_bot/.local/bin`** (your draft ended with **`/.local/`** — that is too broad and can miss `uv`; use **`bin`**). If commands still fail to resolve, add `Environment=HOME=/home/discord_bot`.
 - **Secrets in the unit file** — Default permissions can leave tokens readable; use **`chmod 600`** on the unit if you keep the token inline, or prefer **`EnvironmentFile=/etc/discord_bot/doppler.env`** with `DOPPLER_TOKEN=…` inside (mode `600`, root-owned) and remove the inline `DOPPLER_TOKEN` line.
 - **Quoting** — `Environment=KEY=value` is enough for tokens without spaces; quoted `Environment="KEY=val"` is also fine.

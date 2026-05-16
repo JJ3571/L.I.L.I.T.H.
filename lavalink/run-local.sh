@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Run Lavalink from this repo for local development (Java must be on PATH).
+# Run Lavalink from this repo for local development.
+#
+# Uses ``$JAVA_HOME/bin/java`` when JAVA_HOME is set; otherwise ``java`` from PATH.
+# macOS (Temurin/etc.): export JAVA_HOME="$(/usr/libexec/java_home -v 21)"
 #
 # 1. Drop ``Lavalink.jar`` (or exactly one other Lavalink ``*.jar``) here — tracked filenames vary by release.
 # 2. cp application.yml.example application.yml   (edit password/port if needed)
@@ -39,6 +42,11 @@ if [[ -z "${JAVA_OPTS-}" ]]; then
   JAVA_OPTS="-Xmx512M"
 fi
 
-echo "Starting Lavalink using ${JAR} (${JAVA_OPTS})"
+JAVA_BIN="java"
+if [[ -n "${JAVA_HOME-}" ]] && [[ -x "${JAVA_HOME}/bin/java" ]]; then
+  JAVA_BIN="${JAVA_HOME}/bin/java"
+fi
+
+echo "Starting Lavalink using ${JAR} (${JAVA_OPTS}), JVM: $("${JAVA_BIN}" -version 2>&1 | head -n 1)"
 # shellcheck disable=SC2086
-exec java ${JAVA_OPTS} -jar "$JAR"
+exec "${JAVA_BIN}" ${JAVA_OPTS} -jar "$JAR"

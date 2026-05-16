@@ -23,8 +23,11 @@ your-bot-dir/
 ├── lavalink/
 │   ├── application.yml           # REQUIRED (copy from application.yml.example)
 │   └── application.yml.example   # bundled starter from the repo
-└── local_audio/         # REQUIRED mount dir (may be empty)
+├── logs/               # OPTIONAL but recommended — Docker maps `./logs:/app/logs` for `BOT_LOG_FILE` (default `bot-runtime.log` inside)
+└── local_audio/        # REQUIRED mount dir (may be empty)
 ```
+
+The bot writes a **combined** rotating log (Nextcord + **`main_bot`**) under **`BOT_LOG_FILE`**. Compose defaults that to **`/app/logs/bot-runtime.log`**; create **`logs/`** next to **`docker-compose.yml`** on the host so the file survives container restarts.
 
 Set **`lavalink.server.password`** in **`application.yml`** to match **`LAVALINK_PASSWORD`** in `.env`/Doppler.
 

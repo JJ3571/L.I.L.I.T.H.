@@ -61,6 +61,8 @@ DISCORD_ACTIVITY_MAX_LEN = 128
 MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC = 300
 # Wavelink Node default resume_timeout=60 keeps Lavalink playing after the client websocket drops; 0 disables that.
 MUSIC_LAVALINK_RESUME_TIMEOUT_SEC = 0
+# Wavelink: seconds to wait for a CONNECTED Lavalink websocket after Pool.connect (JVM startup can be slow in Docker).
+MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC = 30.0
 # ``Player.disconnect()`` waits on Lavalink HTTP teardown; if that stalls, Discord never gets a voice leave unless we send it ourselves.
 MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC = 8.0
 # Periodic sweep: if the bot is alone in the music VC (no non-bot listeners), force teardown.
@@ -77,6 +79,33 @@ def _presence_stream_line(track: wavelink.Playable) -> str:
 def _presence_local_line(folder: str) -> str:
     label = folder.replace("_", " ").strip().capitalize()
     return f"Playing {label} music"[:DISCORD_ACTIVITY_MAX_LEN]
+
+
+def _slash_query_preview(query: str, max_len: int = 96) -> str:
+    q = query.replace("\n", " ").strip()
+    if len(q) <= max_len:
+        return q
+    return q[: max_len - 3] + "..."
+
+
+def _music_pool_registered_node_ids() -> str:
+    try:
+        nodes = getattr(wavelink.Pool, "nodes", None)
+        if not nodes:
+            return "(empty)"
+        return ",".join(str(k) for k in nodes.keys())
+    except Exception as e:
+        return f"(error reading Pool.nodes: {e})"
+
+
+def _music_connected_node_label() -> str:
+    try:
+        n = wavelink.Pool.get_node()
+        return str(getattr(n, "identifier", n))
+    except InvalidNodeException:
+        return "(none)"
+    except Exception as e:
+        return f"(get_node_err: {e})"
 
 
 @dataclass(frozen=True)
@@ -811,8 +840,26 @@ class MusicCog(commands.Cog, CogLogMixin):
         try:
             if await self._ensure_lavalink():
                 self.cog_print("[music] Lavalink node warmed up in the background.")
+                _MUSIC_LOG.info(
+                    "lavalink warm-up ok node=%s uri=%s",
+                    _music_connected_node_label(),
+                    LAVALINK_URI,
+                )
+            else:
+                _MUSIC_LOG.warning(
+                    "lavalink warm-up could not CONNECT uri=%s pool_registered=%s "
+                    "(next /music play will call ensure_lavalink again)",
+                    LAVALINK_URI,
+                    _music_pool_registered_node_ids(),
+                )
         except Exception as e:
             self.cog_print(f"[music] Lavalink warmup (non-fatal): {e}")
+            _MUSIC_LOG.warning(
+                "lavalink warm-up exception uri=%s err=%s",
+                LAVALINK_URI,
+                e,
+                exc_info=True,
+            )
 
     async def _slash_reply(
         self,
@@ -829,7 +876,7 @@ class MusicCog(commands.Cog, CogLogMixin):
             except Exception:
                 pass
 
-    async def _wait_for_pool_connected(self, timeout: float = 5.0) -> bool:
+    async def _wait_for_pool_connected(self, timeout: float = 5.0, *, phase: str = "") -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
@@ -837,21 +884,50 @@ class MusicCog(commands.Cog, CogLogMixin):
                 return True
             except InvalidNodeException:
                 await asyncio.sleep(0.05)
+        suffix = f" ({phase})" if phase else ""
+        _MUSIC_LOG.warning(
+            "lavalink_pool_wait_connected timeout=%ss%s registered_nodes=%s",
+            timeout,
+            suffix,
+            _music_pool_registered_node_ids(),
+        )
         return False
 
     async def _ensure_lavalink(self) -> bool:
         try:
             wavelink.Pool.get_node()
+            _MUSIC_LOG.debug(
+                "ensure_lavalink reuse node=%s registered=%s",
+                _music_connected_node_label(),
+                _music_pool_registered_node_ids(),
+            )
             return True
         except InvalidNodeException:
             pass
 
+        _MUSIC_LOG.info(
+            "ensure_lavalink no CONNECTED node yet; reconnect uri=%s registered=%s",
+            LAVALINK_URI,
+            _music_pool_registered_node_ids(),
+        )
         try:
             await wavelink.Pool.reconnect()
         except Exception as e:
             self.cog_print(f"Lavalink Pool.reconnect: {e}")
+            _MUSIC_LOG.warning(
+                "ensure_lavalink Pool.reconnect raised: %s registered_after=%s",
+                e,
+                _music_pool_registered_node_ids(),
+            )
 
-        if await self._wait_for_pool_connected():
+        if await self._wait_for_pool_connected(
+            timeout=MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC,
+            phase="after Pool.reconnect",
+        ):
+            _MUSIC_LOG.info(
+                "ensure_lavalink ok after reconnect node=%s",
+                _music_connected_node_label(),
+            )
             return True
 
         node = wavelink.Node(
@@ -861,10 +937,37 @@ class MusicCog(commands.Cog, CogLogMixin):
             inactive_player_timeout=MUSIC_INACTIVE_PLAYER_TIMEOUT_SEC,
             resume_timeout=MUSIC_LAVALINK_RESUME_TIMEOUT_SEC,
         )
+        _MUSIC_LOG.info(
+            "ensure_lavalink Pool.connect uri=%s new_node_identifier=%s pool_registered_before=%s",
+            LAVALINK_URI,
+            getattr(node, "identifier", node),
+            _music_pool_registered_node_ids(),
+        )
         try:
             await wavelink.Pool.connect(nodes=[node], client=self.bot)
-            if await self._wait_for_pool_connected():
+            if await self._wait_for_pool_connected(
+                timeout=MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC,
+                phase="after Pool.connect",
+            ):
+                reg_id = getattr(node, "identifier", "?")
+                try:
+                    pn = getattr(wavelink.Pool, "nodes", None)
+                    in_pool = reg_id in pn if isinstance(pn, dict) else f"(nodes_type={type(pn).__name__})"
+                except Exception as ie:
+                    in_pool = f"(check_err: {ie})"
+                _MUSIC_LOG.info(
+                    "ensure_lavalink CONNECTED node_identifier=%s in_pool.nodes=%s",
+                    reg_id,
+                    in_pool,
+                )
                 return True
+            _MUSIC_LOG.warning(
+                "ensure_lavalink Pool.connect returned but WS not CONNECTED uri=%s node_identifier=%s "
+                "pool_registered=%s (auth mismatch or wrong LAVALINK_URI from this container?) ",
+                LAVALINK_URI,
+                getattr(node, "identifier", "?"),
+                _music_pool_registered_node_ids(),
+            )
         finally:
             # :meth:`wavelink.Pool.connect` catches ``AuthorizationFailedException`` and only logs;
             # the Node is never registered but still holds an aiohttp session (unclosed-client warnings).
@@ -883,6 +986,11 @@ class MusicCog(commands.Cog, CogLogMixin):
         self.cog_print(
             f"Lavalink has no CONNECTED node at {LAVALINK_URI} (timed out waiting for WS ready). "
             "Start Lavalink before music commands; confirm LAVALINK_PASSWORD matches application.yml.",
+        )
+        _MUSIC_LOG.warning(
+            "ensure_lavalink FAILED uri=%s pool_registered=%s",
+            LAVALINK_URI,
+            _music_pool_registered_node_ids(),
         )
         return False
 
@@ -1533,25 +1641,55 @@ class MusicCog(commands.Cog, CogLogMixin):
     async def _fetch_tracks_for_music_play(self, query: str, *, search_kind: str = "auto") -> list[wavelink.Playable]:
         """Resolve Lavalink load for /music play: canonical YouTube URLs + YouTube Music text search."""
         raw = query.strip()
-        if _looks_like_http_url(raw):
-            load_url = _normalize_lavalink_youtube_url(raw)
-            search = await wavelink.Playable.search(load_url)
-            tracks = _unwrap_playables(search)
-            if len(tracks) <= 1 and _is_playlist_style_youtube_url(load_url):
-                lid = _youtube_playlist_list_id(load_url)
-                if lid:
-                    canonical = f"https://www.youtube.com/playlist?list={lid}"
-                    try:
-                        search2 = await wavelink.Playable.search(canonical)
-                        t2 = _unwrap_playables(search2)
-                        if len(t2) > len(tracks):
-                            tracks = t2
-                    except LavalinkLoadException:
-                        pass
-            return tracks
-        adjusted = _search_query_for_kind(raw, search_kind)
-        search = await wavelink.Playable.search(adjusted, source=TrackSource.YouTubeMusic)
-        return _unwrap_playables(search)
+        _MUSIC_LOG.info(
+            "fetch_tracks_for_music_play start search_kind=%s url_query=%s preview=%r",
+            search_kind,
+            _looks_like_http_url(raw),
+            _slash_query_preview(raw),
+        )
+        try:
+            if _looks_like_http_url(raw):
+                load_url = _normalize_lavalink_youtube_url(raw)
+                search = await wavelink.Playable.search(load_url)
+                tracks = _unwrap_playables(search)
+                if len(tracks) <= 1 and _is_playlist_style_youtube_url(load_url):
+                    lid = _youtube_playlist_list_id(load_url)
+                    if lid:
+                        canonical = f"https://www.youtube.com/playlist?list={lid}"
+                        try:
+                            search2 = await wavelink.Playable.search(canonical)
+                            t2 = _unwrap_playables(search2)
+                            if len(t2) > len(tracks):
+                                tracks = t2
+                        except LavalinkLoadException:
+                            pass
+                tid0 = getattr(tracks[0], "identifier", None) if tracks else None
+                _MUSIC_LOG.info(
+                    "fetch_tracks_for_music_play URL result count=%s first_id=%s",
+                    len(tracks),
+                    tid0,
+                )
+                return tracks
+            adjusted = _search_query_for_kind(raw, search_kind)
+            search = await wavelink.Playable.search(adjusted, source=TrackSource.YouTubeMusic)
+            out = _unwrap_playables(search)
+            tid0 = getattr(out[0], "identifier", None) if out else None
+            _MUSIC_LOG.info(
+                "fetch_tracks_for_music_play text search count=%s first_id=%s preview=%r",
+                len(out),
+                tid0,
+                _slash_query_preview(adjusted),
+            )
+            return out
+        except Exception:
+            _MUSIC_LOG.warning(
+                "fetch_tracks_for_music_play failed preview=%r node=%s pool=%s",
+                _slash_query_preview(raw),
+                _music_connected_node_label(),
+                _music_pool_registered_node_ids(),
+                exc_info=True,
+            )
+            raise
 
     @nextcord.slash_command(name="music", description="Music player commands", guild_ids=[GUILD_ID])
     async def music(self, interaction: nextcord.Interaction) -> None:
@@ -1593,13 +1731,29 @@ class MusicCog(commands.Cog, CogLogMixin):
             return
 
         guild = interaction.guild
+        _MUSIC_LOG.info(
+            "slash music_play guild=%s user=%s voice_ch=%s search_kind=%s songs=%s node=%s query=%r",
+            guild.id,
+            interaction.user.id,
+            voice_channel.id,
+            search_kind,
+            songs_to_play,
+            _music_connected_node_label(),
+            _slash_query_preview(query),
+        )
 
         blocked_br = self._brainrot_blocks_voice(guild)
         if blocked_br:
+            _MUSIC_LOG.info("slash music_play blocked_brainrot guild=%s", guild.id)
             await self._slash_reply(interaction, blocked_br)
             return
 
         if not await self._ensure_lavalink():
+            _MUSIC_LOG.warning(
+                "slash music_play ensure_lavalink failed guild=%s uri=%s",
+                guild.id,
+                LAVALINK_URI,
+            )
             await self._slash_reply(
                 interaction,
                 f"Could not reach Lavalink at `{LAVALINK_URI}`. Start Lavalink v4 and check LAVALINK_URI / LAVALINK_PASSWORD.",
@@ -1608,6 +1762,11 @@ class MusicCog(commands.Cog, CogLogMixin):
 
         vc = await self._connect_voice(guild, voice_channel)
         if vc is None:
+            _MUSIC_LOG.warning(
+                "slash music_play _connect_voice returned None guild=%s %s",
+                guild.id,
+                self._music_voice_snapshot(guild),
+            )
             await self._slash_reply(interaction, "Could not connect to voice.")
             return
 
@@ -1623,19 +1782,42 @@ class MusicCog(commands.Cog, CogLogMixin):
         try:
             tracks = await self._fetch_tracks_for_music_play(query, search_kind=search_kind)
         except LavalinkLoadException as e:
+            _MUSIC_LOG.warning(
+                "slash music_play LavalinkLoadException guild=%s err=%s node=%s",
+                guild.id,
+                e,
+                _music_connected_node_label(),
+                exc_info=True,
+            )
             await self._slash_reply(interaction, f"Lavalink could not load that query: {e}")
             return
         except InvalidNodeException:
+            _MUSIC_LOG.warning(
+                "slash music_play InvalidNodeException guild=%s pool=%s",
+                guild.id,
+                _music_pool_registered_node_ids(),
+            )
             await self._slash_reply(
                 interaction,
                 "No Lavalink node is connected. Ensure Lavalink v4 is running and credentials match.",
             )
             return
         except Exception as e:
+            _MUSIC_LOG.warning(
+                "slash music_play search unexpected error guild=%s err=%s",
+                guild.id,
+                e,
+                exc_info=True,
+            )
             await self._slash_reply(interaction, f"Search error: {e}")
             return
 
         if not tracks:
+            _MUSIC_LOG.warning(
+                "slash music_play no tracks guild=%s url_query=%s",
+                guild.id,
+                is_url_query,
+            )
             await self._slash_reply(interaction, "No song found!")
             return
 
@@ -1652,7 +1834,19 @@ class MusicCog(commands.Cog, CogLogMixin):
 
         try:
             await vc.play(tracks[0])
+            _MUSIC_LOG.info(
+                "slash music_play play() ok guild=%s track=%s",
+                guild.id,
+                getattr(tracks[0], "identifier", getattr(tracks[0], "title", tracks[0])),
+            )
         except Exception as e:
+            _MUSIC_LOG.warning(
+                "slash music_play play() failed guild=%s err=%s %s",
+                guild.id,
+                e,
+                self._music_voice_snapshot(guild, vc),
+                exc_info=True,
+            )
             await self._slash_reply(interaction, f"Playback failed: {e}")
             return
 
@@ -1665,6 +1859,11 @@ class MusicCog(commands.Cog, CogLogMixin):
             interaction,
             f"Playing in {voice_channel.mention}. Track info and controls are in that channel's chat.{extra}",
         )
+        _MUSIC_LOG.info(
+            "slash music_play finished_ok guild=%s tracks_queued_tail=%s",
+            guild.id,
+            len(vc.queue),
+        )
 
     @music.subcommand(name="stop", description="Disconnect the bot from voice and clear the session")
     async def music_disconnect(self, interaction: nextcord.Interaction) -> None:
@@ -1672,6 +1871,14 @@ class MusicCog(commands.Cog, CogLogMixin):
         if guild is None:
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
+        uid = getattr(interaction.user, "id", 0)
+        _MUSIC_LOG.info(
+            "slash music_stop guild=%s user=%s node=%s snapshot=%s",
+            guild.id,
+            uid,
+            _music_connected_node_label(),
+            self._music_voice_snapshot(guild),
+        )
         await self.full_disconnect_guild(guild.id)
         await interaction.response.send_message("Disconnected from voice channel.")
 
@@ -1705,12 +1912,28 @@ class MusicCog(commands.Cog, CogLogMixin):
         guild = interaction.guild
         assert guild is not None
 
+        _MUSIC_LOG.info(
+            "slash local_folder start guild=%s user=%s voice_ch=%s folder=%s node=%s tracks_found=%s",
+            guild.id,
+            interaction.user.id,
+            voice_channel.id,
+            folder,
+            _music_connected_node_label(),
+            len(paths),
+        )
+
         blocked_br = self._brainrot_blocks_voice(guild)
         if blocked_br:
             await self._slash_reply(interaction, blocked_br)
             return
 
         if not await self._ensure_lavalink():
+            _MUSIC_LOG.warning(
+                "slash local_folder ensure_lavalink failed guild=%s folder=%s uri=%s",
+                guild.id,
+                folder,
+                LAVALINK_URI,
+            )
             await self._slash_reply(
                 interaction,
                 f"Could not reach Lavalink at `{LAVALINK_URI}`. Start Lavalink v4 and check LAVALINK_URI / LAVALINK_PASSWORD.",
@@ -1719,6 +1942,12 @@ class MusicCog(commands.Cog, CogLogMixin):
 
         vc = await self._connect_voice(guild, voice_channel)
         if vc is None:
+            _MUSIC_LOG.warning(
+                "slash local_folder _connect_voice returned None guild=%s folder=%s %s",
+                guild.id,
+                folder,
+                self._music_voice_snapshot(guild),
+            )
             await self._slash_reply(interaction, "Could not connect to voice.")
             return
 
@@ -1849,12 +2078,28 @@ class MusicCog(commands.Cog, CogLogMixin):
         guild = interaction.guild
         assert guild is not None
 
+        _MUSIC_LOG.info(
+            "slash gaming start guild=%s user=%s voice_ch=%s node=%s tracks_total=%s game_folders=%s",
+            guild.id,
+            interaction.user.id,
+            voice_channel.id,
+            _music_connected_node_label(),
+            len(paths_master),
+            len(slugs),
+        )
+
         blocked_br = self._brainrot_blocks_voice(guild)
         if blocked_br:
             await self._slash_reply(interaction, blocked_br)
             return
 
         if not await self._ensure_lavalink():
+            _MUSIC_LOG.warning(
+                "slash gaming ensure_lavalink failed guild=%s uri=%s pool=%s",
+                guild.id,
+                LAVALINK_URI,
+                _music_pool_registered_node_ids(),
+            )
             await self._slash_reply(
                 interaction,
                 f"Could not reach Lavalink at `{LAVALINK_URI}`. Start Lavalink v4 and check LAVALINK_URI / LAVALINK_PASSWORD.",
@@ -1863,6 +2108,11 @@ class MusicCog(commands.Cog, CogLogMixin):
 
         vc = await self._connect_voice(guild, voice_channel)
         if vc is None:
+            _MUSIC_LOG.warning(
+                "slash gaming _connect_voice returned None guild=%s %s",
+                guild.id,
+                self._music_voice_snapshot(guild),
+            )
             await self._slash_reply(interaction, "Could not connect to voice.")
             return
 
@@ -2147,7 +2397,10 @@ def _register_dynamic_music_folder_slash_commands() -> None:
     """Attach one guild slash command per ``MUSIC_CONFIGURED_FOLDER_SLOTS`` entry (import-time)."""
 
     def _make_folder_slash_handler(definition: LocalFolderDefinition):
-        async def _dynamic_folder_slash(self: MusicCog, interaction: nextcord.Interaction) -> None:
+        # First param must be unannotated `self` so Nextcord counts it as cog `self`; `self: MusicCog` skips
+        # their heuristic (see application_command.CallbackMixin counting non-option params) and emits
+        # MissingApplicationCommandParametersWarning ("missing self and/or interaction").
+        async def _dynamic_folder_slash(self, interaction: nextcord.Interaction) -> None:
             await interaction.response.defer()
             if interaction.guild is None:
                 await self._slash_reply(interaction, "This command can only be used in a server.")

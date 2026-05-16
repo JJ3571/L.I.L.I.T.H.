@@ -27,7 +27,7 @@ server:
 lavalink:
   plugins:
     # Lavalink logs recommend staying current; see https://github.com/lavalink-devs/youtube-source/releases
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
       snapshot: false
   server:
     password: "youshallnotpass"
