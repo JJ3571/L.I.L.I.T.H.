@@ -36,7 +36,7 @@ These paths matter if you run **Docker Compose** or Lavalink-backed music:
 | Path | Purpose |
 |------|---------|
 | **`lavalink/application.yml`** | Runtime Lavalink config (gitignored). Copy [`lavalink/application.yml.example`](lavalink/application.yml.example) → `lavalink/application.yml`. **`LAVALINK_PASSWORD`** must match your secrets and interpolates into `lavalink.server.password`; for Docker, **`YOUTUBE_OAUTH_ENABLED`** / **`YOUTUBE_OAUTH_REFRESH_TOKEN`** (optional) are passed on the **`lavalink`** service and map to YouTube OAuth in the example YAML. See [`docs/DOPPLER_ENV_KEYS.md`](docs/DOPPLER_ENV_KEYS.md) and [`lavalink/README.txt`](lavalink/README.txt). |
-| **`local_audio/`** | Repo-root folder mounted read-only into the bot container for music/SFX assets (see `docker-compose.yml`). Create it before `docker compose up` if it does not exist; subfolders depend on what your cogs expect (for example under `local_audio/music/`). The local-image helper (below) uses **`.docker-local-compose-test/local_audio/`** in its staging tree—do not confuse with a differently spelled path. |
+| **`local_audio/`** | Repo-root folder mounted read-only into the bot container when you use the **cloned-repo Docker** workflow (**`.docker-local-build/`** copies Compose but bind-mounts **this** tree — same layout as bare metal). Create before first run if missing; subfolders depend on your cogs (e.g. `local_audio/music/`). |
 | **`logs/`** | Bind-mounted **`./logs`** on the host: the bot writes **`discord_bot.log`** under **`/app/logs`**; the same folder is mounted for Lavalink (**`./logs:/opt/Lavalink/logs`**) so **`lavalink.log`** (see **`logging.file.name`** in `lavalink/application.yml`) appears beside the bot log (single directory, gitignored). Create **`logs/`** before **`docker compose up`** if Compose does not create it automatically. |
 
 **Local music layout:** Optional env **`MUSIC_FOLDER_1`** … **`MUSIC_FOLDER_25`** register flat folders `local_audio/music/<name>` as slash commands `/<name>` (see `.env.example`). Use **`MUSIC_n_SHUFFLE_START=true`** for random seek-in-track; omit or `false` to play each file from the start (queue order is still shuffled on start). **`/gaming`** always uses `local_audio/music/gaming/<game>/` (audio files per game folder). Up to **25** game folders with audio; cover art: optional `cover.png` / `cover.jpg` next to tracks (or one shared `cover.*` under `gaming/`). Names **`gaming`** and **`brainrot`** cannot be used as `MUSIC_FOLDER_*` values.
@@ -52,16 +52,16 @@ Use either workflow (or mix: Doppler locally and `.env` only on a CI host—what
 **Option A — [Doppler](https://www.doppler.com/)**
 
 1. Install the [Doppler CLI](https://docs.doppler.com/docs/cli) and link this repo to your project/config (`doppler configure`, or `doppler setup`).
-2. **Docker Compose:** either  
-   - `./scripts/docker_compose_up.sh` (or a copy at repo root: `./docker_compose_up.sh`) — same as `doppler run -- docker compose up --pull always` (secrets in the Compose process; no need for a plaintext `.env` from `doppler secrets download`), or  
-   - `doppler run -- docker compose up --pull always` — same injection, run manually.
-   - **Local image smoke test (build Dockerfile + Compose):** `./scripts/docker_compose_local_image_test.sh` (default `up --build`) materializes **`.docker-local-compose-test/`** with compose files, Lavalink config, and `local_audio/`, then builds the bot from this repo. Run with secrets the same way as normal Compose, e.g. **`doppler run -- ./scripts/docker_compose_local_image_test.sh`** or a filled staging **`.docker-local-compose-test/.env`**. The script refuses to call Docker if the daemon is not running (avoids long compose noise). `prepare` subcommand only syncs files and does not need Docker.
-3. **Local Python:** use Python **3.12–3.13** (Nextcord on PyPI does not support 3.14 yet). From repo root: `uv sync`, then `doppler run -- uv run python -m main_bot` or `doppler run -- uv run bot`.
+2. **Three ways to run the bot** (pick one):
+   - **Clone → bare metal:** `uv sync`, then `./scripts/run_bot.sh --doppler` (optional `./scripts/run_bot.sh --env` if you export secrets yourself).
+   - **Clone → Docker (build from this repo):** `./scripts/docker_compose_up.sh` materializes **`.docker-local-build/`** on first run (**`./scripts/local_docker_build.sh prepare`**), rewrites bind mounts to repo-root **`local_audio/`**, **`lavalink/application.yml`**, and **`logs/`**, then **`doppler run -- docker compose …`** with **`up --build -d`** by default. Full recycle: **`./scripts/local_docker_deploy.sh`**. Image tag **`discord-bot-sandbox:local-docker-build`**.
+   - **VPS bundle (no clone):** GitHub Releases **`discord-bot-standalone.zip`** — **`startup_script.sh`** / **`docker_deploy.sh`** + published **`ghcr.io/…`** image (see [Published VPS bundle](#published-vps-bundle-no-git-clone) below).
+3. **Python:** use **3.12–3.13** (Nextcord on PyPI does not support 3.14 yet). Prefer `./scripts/run_bot.sh --doppler` or plain **`uv run`** with secrets in your environment.
 
 **Option B — Local `.env` file**
 
 1. Copy `.env.example` → `.env` at the **repository root** and fill in values. `.env` is gitignored—never commit real secrets.
-2. **Docker Compose:** run `docker compose up` (or `docker compose up --pull always -d`) from the repo root. Compose substitutes `${VAR}` from `.env` into the bot service per [`docker-compose.yml`](docker-compose.yml).
+2. **Docker:** run **`./scripts/local_docker_build.sh prepare`** once (seeds **`.docker-local-build/.env`** from repo **`.env`**), then **`docker compose --project-directory .docker-local-build -f docker-compose.yml -f docker-compose.local-build.yml up --build -d`**. **`scripts/docker_compose_up.sh`** always uses **`doppler run`** — use it when you follow Option A; otherwise invoke Compose manually as above. Root **`docker-compose.yml`** is the canonical file copied into **`.docker-local-build/`**; published **`ghcr.io/…`** images target the standalone ZIP layout.
 3. **Local `uv run`:** the app does **not** auto-load `.env`; export variables into your shell or IDE, use Option A for development, or rely on Compose when testing in containers.
 
 Cron/systemd on a VPS often wraps the bot with `doppler run -- …` or an equivalent env file—same variables as `.env.example`.
@@ -112,9 +112,9 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 ├── scripts/
 │   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
 │   ├── deploy_bundle/          # Sources for standalone ZIP (startup/docker_deploy/README + compose header frag)
-│   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
-│   ├── docker_compose_local_image_test.sh  # staging dir + build bot image + compose (see Setup & secrets)
-│   ├── deploy.sh                # clone layout: compose down + compose up with pull
+│   ├── docker_compose_up.sh          # doppler run + compose from `.docker-local-build/` (prepare if missing)
+│   ├── local_docker_build.sh         # prepare | prepare-build — staging compose + repo bind mounts + local image
+│   ├── local_docker_deploy.sh        # compose down + docker_compose_up (cloned-repo Docker recycle)
 │   └── run_bot.sh               # uv run python -m main_bot (--doppler | --env), optional --dir
 ├── src/
 │   └── main_bot/               # Installable package (uv run python -m main_bot)
@@ -434,7 +434,7 @@ Play through game-specific folders under `local_audio/music/gaming/<game>/` (see
 
 Env **`MUSIC_FOLDER_1`** … **`MUSIC_FOLDER_25`** register extra top-level slash commands named **`/<folder>`** (e.g. `/jazz`, `/lofi`) for **`local_audio/music/<folder>/`**. Folder names come **only from these env vars**—dropping MP3s into `local_audio/music/jazz/` does **not** create `/jazz` until **`MUSIC_FOLDER_n=jazz`** (and similar for `lofi`). Restart the bot after env changes.
 
-**Docker Compose (two containers):** Lavalink fetches tracks over HTTP using **`MUSIC_LOCAL_HTTP_HOST`** in URLs; aiohttp listens on **`MUSIC_LOCAL_HTTP_BIND_HOST`** (same as host when unset). The **`docker_compose_local_image_test.sh`** override pins **`hostname: bot`** plus `MUSIC_LOCAL_HTTP_HOST=bot` and **`MUSIC_LOCAL_HTTP_BIND_HOST=0.0.0.0`** for you. Root **`docker-compose.yml`** interpolates sane defaults (`bot` / `0.0.0.0` / `8765`) for those three when unset — override in `.env`/Doppler if your deployment differs.
+**Docker Compose (two containers):** Lavalink fetches tracks over HTTP using **`MUSIC_LOCAL_HTTP_HOST`** in URLs; aiohttp listens on **`MUSIC_LOCAL_HTTP_BIND_HOST`** (same as host when unset). The **`.docker-local-build/docker-compose.local-build.yml`** helper pins **`hostname: bot`** plus `MUSIC_LOCAL_HTTP_HOST=bot` and **`MUSIC_LOCAL_HTTP_BIND_HOST=0.0.0.0`** when you build/run locally. Root **`docker-compose.yml`** interpolates sane defaults (`bot` / `0.0.0.0` / `8765`) for those three when unset — override in `.env`/Doppler if your deployment differs.
 
 **Doppler alone is not enough for folder slots:** each `MUSIC_FOLDER_n` / `MUSIC_n_SHUFFLE_START` pair must appear under **`bot.environment`** in **`docker-compose.yml`** (the checkout ships pairs for slots **1–3**; copy that pattern through **25** when you need more — Compose never injects arbitrary secrets). Recreate **`bot`** after changes.
 

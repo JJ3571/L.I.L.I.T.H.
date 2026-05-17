@@ -4,9 +4,11 @@
 #   • Your shell (e.g. secrets injected by `doppler run`), or
 #   • Repo-root `.env` (Compose loads it automatically for substitution — gitignored).
 #
-# Recommended invocations:
-#   doppler run -- docker compose up --pull always
-#   ./scripts/docker_compose_up.sh   # wraps the same (or ./docker_compose_up.sh if copied to repo root)
+# Cloned-repo Docker (local image build): materialize `.docker-local-build/` + doppler-run Compose via
+#   ./scripts/docker_compose_up.sh    # runs ./scripts/local_docker_build.sh prepare if missing
+#   ./scripts/local_docker_deploy.sh # compose down then docker_compose_up (same staging dir)
+#
+# Published GHCR tags are for the standalone ZIP bundle (`discord-bot-standalone.zip`), not clone workflows.
 #
 # Passing only `DOPPLER_TOKEN=… docker compose up` does NOT set DATABASE_URL etc.
 # Use `doppler run` or write `.env` first — see:

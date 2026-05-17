@@ -23,7 +23,10 @@ data/tierlist/
 .vscode/tasks.json
 .DS_Store
 
-# Staging dir for scripts/docker_compose_local_image_test.sh (local bot image + compose smoke test)
+# Staging dir for scripts/local_docker_build.sh / scripts/docker_compose_up.sh (local bot image + Compose)
+.docker-local-build/
+
+# Legacy staging dirname (safe to delete locally if unused)
 .docker-local-compose-test/
 
 # Byte-compiled / optimized / DLL files

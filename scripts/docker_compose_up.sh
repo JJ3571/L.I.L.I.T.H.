@@ -1,40 +1,34 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-# Run Docker Compose with secrets from your active Doppler project/config for this directory.
-# Compose substitutes `${DATABASE_URL}`, etc. from the **process environment** — `doppler run`
-# injects decrypted values, so you do not need a repo-root `.env` for interpolation.
 #
-# Use this when `doppler secrets download --format env` is not plain `KEY=value` (e.g. some
-# configs or CLI/API paths yield ciphertext like `4:base64:...` in the file — Compose cannot
-# parse that). `doppler run` always resolves secrets the same way the CLI does for execution.
+# Cloned-repo Docker Compose entrypoint: runs Compose from `.docker-local-build/` against a
+# locally built bot image (see scripts/local_docker_build.sh). Secrets via `doppler run`.
 #
-# Optional plaintext `.env` in the compose directory is still read by Compose for any keys you
-# keep only on disk; prefer not committing secrets.
+# If `.docker-local-build/` is missing the compose files, runs `local_docker_build.sh prepare` first.
 #
-# Alternative: put secrets only in `.env` and run `docker compose up` directly (no Doppler).
+# Compose substitutes ${VAR} from the staging `.env` and/or Doppler-injected process env.
 #
-# Passing only `DOPPLER_TOKEN=… docker compose up` does **not** inject app secrets.
-#
-# Requires: doppler CLI configured for this repo (e.g. `doppler configure` or `doppler.yaml`).
+# Requires: doppler CLI configured for this repo; Docker daemon for compose commands.
 #
 # Usage:
-#   ./scripts/docker_compose_up.sh
-#       → doppler run -- docker compose up --pull always (default when no args)
-#   ./scripts/docker_compose_up.sh up --pull always -d
+#   ./scripts/docker_compose_up.sh                         → prepare if needed; up --build -d
+#   ./scripts/docker_compose_up.sh up --build              → foreground / custom flags
 #   ./scripts/docker_compose_up.sh logs -f bot
 #
-# Repo root: parent of scripts/ when this file lives under scripts/;
-# otherwise the directory containing this script (so a repo-root copy still works).
+# Override staging dir: DOCKER_LOCAL_BUILD_WORKDIR or legacy DOCKER_LOCAL_IMAGE_TEST_WORKDIR
+
+set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ "$(basename "$SCRIPT_DIR")" == "scripts" ]]; then
-	REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-else
-	REPO_ROOT="$SCRIPT_DIR"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKDIR="${DOCKER_LOCAL_BUILD_WORKDIR:-${DOCKER_LOCAL_IMAGE_TEST_WORKDIR:-$REPO/.docker-local-build}}"
+
+if [[ ! -f "$WORKDIR/docker-compose.yml" || ! -f "$WORKDIR/docker-compose.local-build.yml" ]]; then
+	echo "[docker_compose_up] Staging missing — running local_docker_build.sh prepare …" >&2
+	"$SCRIPT_DIR/local_docker_build.sh" prepare
 fi
-cd "$REPO_ROOT"
 
 if [[ $# -eq 0 ]]; then
-	set -- up --pull always
+	set -- up --build -d
 fi
-exec doppler run -- docker compose "$@"
+
+exec doppler run -- docker compose --project-directory "$WORKDIR" -f docker-compose.yml -f docker-compose.local-build.yml "$@"
