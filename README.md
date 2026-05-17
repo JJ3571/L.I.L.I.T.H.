@@ -68,12 +68,12 @@ Cron/systemd on a VPS often wraps the bot with `doppler run -- …` or an equiva
 
 ### Published VPS bundle (no Git clone)
 
-Running from **[GHCR](https://docs.github.com/en/packages/getting-started-with-github-container-registry)** only (no repo clone)? Download **`discord-bot-standalone.zip`** from the repo’s **[Releases](https://github.com/jj3571/Discord-Bot-Sandbox/releases)** (built each time you **publish** a GitHub Release) and unpack into **one folder** on the machine. It ships **`docker-compose.yml`**, **`.env.template`**, **`startup_script.sh`**, **`rollout.sh`**, **`lavalink/application.yml.example`**, plus **`README.md`** with the standalone layout explained. Typical upgrade:
+Running from **[GHCR](https://docs.github.com/en/packages/getting-started-with-github-container-registry)** only (no repo clone)? Download **`discord-bot-standalone.zip`** from the repo’s **[Releases](https://github.com/jj3571/Discord-Bot-Sandbox/releases)** (built each time you **publish** a GitHub Release) and unpack into **one folder** on the machine. It ships **`docker-compose.yml`**, **`.env.template`**, **`startup_script.sh`**, **`docker_deploy.sh`**, **`lavalink/application.yml.example`**, plus **`README.md`** with the standalone layout explained. **`startup_script.sh`** / **`docker_deploy.sh`** mirror **`scripts/run_bot.sh`** flags: **`--doppler`** (default; Doppler → `.env` then Compose), **`--env`** (Compose only with an existing **`.env`**), optional **`--dir`** / **`-C`**. Typical upgrade:
 
 ```bash
 cd /path/to/discord-bot-standalone
-chmod +x startup_script.sh rollout.sh
-./rollout.sh
+chmod +x startup_script.sh docker_deploy.sh
+./docker_deploy.sh
 ```
 
 Developers regenerate the artifact locally anytime with **`./scripts/build_deploy_bundle.sh`** (**`dist/discord-bot-standalone.zip`** plus an unpacked **`dist/discord-bot-standalone/`**). That script copies Compose from root **`docker-compose.yml`** (service definitions unchanged; only comments above **`services:`** are swapped for ZIP readers), **`.env.example` → `.env.template`**, **`lavalink/application.yml.example`**, and **`scripts/deploy_bundle/`** helpers — nothing is duplicated manually in-tree.
@@ -111,7 +111,7 @@ discord_bot/                    # clone URL may still show Discord-Bot-Sandbox u
 │   └── coghelp/                # Admin command toggle docs + example snippet
 ├── scripts/
 │   ├── build_deploy_bundle.sh  # dist/discord-bot-standalone.zip (+ folder) from canonical compose/.env
-│   ├── deploy_bundle/          # Sources for standalone ZIP (startup/rollout/README + compose header frag)
+│   ├── deploy_bundle/          # Sources for standalone ZIP (startup/docker_deploy/README + compose header frag)
 │   ├── docker_compose_up.sh     # doppler run + docker compose (supports repo root vs scripts/)
 │   ├── docker_compose_local_image_test.sh  # staging dir + build bot image + compose (see Setup & secrets)
 │   ├── deploy.sh                # clone layout: compose down + compose up with pull

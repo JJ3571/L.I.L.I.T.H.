@@ -6,7 +6,7 @@ Everything you keep on the VPS (or workstation) sits **in one directory** next t
 
 - **`docker-compose.yml`** — YAML body matches repo root **`docker-compose.yml`** (header may differ slightly for ZIP users).
 - **`.env.template`** — copied from repo **`.env.example`** when the bundle was built (`cp .env.template .env` to edit offline).
-- **`startup_script.sh` / `rollout.sh`** — from **`scripts/deploy_bundle/`** when the ZIP was assembled (maintainers edit those helpers in-repo; Compose + env stay single-source).
+- **`startup_script.sh` / `docker_deploy.sh`** — from **`scripts/deploy_bundle/`** when the ZIP was assembled (maintainers edit those helpers in-repo; Compose + env stay single-source). Their **`--doppler`** / **`--env`** / **`--dir`** flags match the repo’s **`scripts/run_bot.sh`** (there: `uv`; here: **`docker compose`**).
 
 **Obtain:** download **`discord-bot-standalone.zip`** from the GitHub **Releases** page, or locally run `./scripts/build_deploy_bundle.sh` from the repository.
 
@@ -16,7 +16,7 @@ Everything you keep on the VPS (or workstation) sits **in one directory** next t
 your-bot-dir/
 ├── docker-compose.yml
 ├── startup_script.sh
-├── rollout.sh
+├── docker_deploy.sh
 ├── README.md            # this file
 ├── .env.template        # reference only until you cp → .env
 ├── .env                 # secrets (never commit)
@@ -39,15 +39,18 @@ From **this deployment directory**:
 
 ```bash
 doppler setup  # once, after doppler login
-chmod +x startup_script.sh rollout.sh
-./startup_script.sh    # doppler secrets download → .env, then compose up (--pull always -d)
+chmod +x startup_script.sh docker_deploy.sh
+./startup_script.sh              # default --doppler: secrets download → .env, then compose up (--pull always -d)
+./startup_script.sh --doppler    # same as above (explicit)
 ```
 
 Upgrades (`docker compose down` + startup again):
 
 ```bash
-./rollout.sh
+./docker_deploy.sh               # compose down + startup_script (pass-through flags, e.g. --env)
 ```
+
+**Optional bundle root** (same idea as **`scripts/run_bot.sh --dir`**): `./startup_script.sh --dir /path/to/bundle up --pull always -d`
 
 No `.env` file on disk: `doppler run -- docker compose up --pull always -d`.
 
@@ -55,7 +58,8 @@ No `.env` file on disk: `doppler run -- docker compose up --pull always -d`.
 
 ```bash
 cp .env.template .env    # edit
-docker compose up --pull always -d
+./startup_script.sh --env          # compose only; skips Doppler download
+# or: docker compose up --pull always -d
 ```
 
 If **GHCR** private for `ghcr.io/jj3571/discord-bot`:

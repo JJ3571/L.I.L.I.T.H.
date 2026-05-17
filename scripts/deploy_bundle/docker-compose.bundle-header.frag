@@ -1,6 +1,8 @@
 # Discord bot + Lavalink (standalone package produced from this repo — no clone required).
 #
-# Secrets via `.env`: copy `.env.template` → `.env`, or run `./startup_script.sh` (Doppler → `.env`).
+# Secrets via `.env`: copy `.env.template` → `.env`, then `./startup_script.sh --env`,
+# or `./startup_script.sh` / `--doppler` (default; Doppler CLI → `.env`). Same `--env` /
+# `--doppler` / `--dir` flags as repo `scripts/run_bot.sh` (here: docker compose).
 # Compose substitutes `${VAR}` from `.env` or your shell. See README.md in this folder.
 #
 # `./local_audio` and `./lavalink/application.yml` are resolved next to this file.

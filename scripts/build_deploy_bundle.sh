@@ -5,7 +5,8 @@
 #   docker-compose.yml     (YAML from `services:` onward; header overlay for ZIP users)
 #   .env.example           → bundle/.env.template
 #   lavalink/application.yml.example
-#   scripts/deploy_bundle/{README.md,startup_script.sh,rollout.sh}
+#   scripts/deploy_bundle/{README.md,startup_script.sh,docker_deploy.sh}
+#   (startup/docker_deploy flags align with scripts/run_bot.sh: --doppler | --env, optional --dir)
 #
 # Usage:
 #   ./scripts/build_deploy_bundle.sh           # writes dist/discord-bot-standalone/ + .zip
@@ -29,8 +30,8 @@ cp "$ROOT/.env.example" "$OUT/.env.template"
 cp "$ROOT/lavalink/application.yml.example" "$OUT/lavalink/application.yml.example"
 cp "$ROOT/scripts/deploy_bundle/README.md" "$OUT/README.md"
 cp "$ROOT/scripts/deploy_bundle/startup_script.sh" "$OUT/startup_script.sh"
-cp "$ROOT/scripts/deploy_bundle/rollout.sh" "$OUT/rollout.sh"
-chmod +x "$OUT/startup_script.sh" "$OUT/rollout.sh"
+cp "$ROOT/scripts/deploy_bundle/docker_deploy.sh" "$OUT/docker_deploy.sh"
+chmod +x "$OUT/startup_script.sh" "$OUT/docker_deploy.sh"
 
 ZIP="$ROOT/dist/${BUNDLE_REL}.zip"
 rm -f "$ZIP"
