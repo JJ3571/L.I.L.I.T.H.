@@ -10,7 +10,8 @@
 #   ./scripts/local_docker_build.sh prepare           # dirs + YAML + .env only (no Docker)
 #   ./scripts/local_docker_build.sh prepare-build     # prepare + docker compose build bot — no up
 #
-# Typical flow: `./scripts/docker_compose_up.sh` (runs prepare if missing) then doppler-run compose up.
+# Typical flow: `./scripts/docker_compose_up.sh` or `./scripts/docker_compose_up.sh --env`
+# (runs prepare if missing). `--doppler` is the default (doppler run); `--env` uses staging `.env` only.
 #
 # Override staging dir:
 #   --workdir PATH   or   DOCKER_LOCAL_BUILD_WORKDIR=PATH   (legacy: DOCKER_LOCAL_IMAGE_TEST_WORKDIR)
@@ -32,7 +33,7 @@ Environment:
   DOCKER_LOCAL_BUILD_WORKDIR       preferred staging directory
   DOCKER_LOCAL_IMAGE_TEST_WORKDIR  legacy fallback (same meaning)
 
-Secrets: use `./scripts/docker_compose_up.sh` (doppler run) or maintain `.docker-local-build/.env`.
+Secrets: `./scripts/docker_compose_up.sh [--doppler|--env]` or maintain `.docker-local-build/.env` for `--env`.
 EOF
 }
 
@@ -53,10 +54,18 @@ if [[ -z "${WORKDIR:-}" ]]; then
 	WORKDIR="${DOCKER_LOCAL_BUILD_WORKDIR:-${DOCKER_LOCAL_IMAGE_TEST_WORKDIR:-$REPO/.docker-local-build}}"
 fi
 
-DOCKER_COMPOSE=(docker compose --project-directory "$WORKDIR" -f docker-compose.yml -f docker-compose.local-build.yml)
+DOCKER_COMPOSE=(
+	docker compose --project-directory "$WORKDIR"
+	-f "$WORKDIR/docker-compose.yml"
+	-f "$WORKDIR/docker-compose.local-build.yml"
+)
 
 _rebuild_compose_argv() {
-	DOCKER_COMPOSE=(docker compose --project-directory "$WORKDIR" -f docker-compose.yml -f docker-compose.local-build.yml)
+	DOCKER_COMPOSE=(
+	docker compose --project-directory "$WORKDIR"
+	-f "$WORKDIR/docker-compose.yml"
+	-f "$WORKDIR/docker-compose.local-build.yml"
+)
 }
 
 _lavalink_listen_for_docker() {
