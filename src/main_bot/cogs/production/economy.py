@@ -246,12 +246,13 @@ class Economy(commands.Cog, CogLogMixin):
     @econ.subcommand(name="balance", description="Check your balance or someone else's")
     async def balance_command(self, interaction: nextcord.Interaction, member: nextcord.Member = nextcord.SlashOption(required=False, description='The member to check the balance of.')):
         member = member or interaction.user
+        await interaction.response.defer()
         balance = await self.get_user_balance(member.id)
 
         embed = nextcord.Embed(title=f"🪙  {balance}", color=nextcord.Color.blue())
         embed.set_author(name=member.display_name, icon_url=member.avatar.url if member.avatar else member.default_avatar.url)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
     @econ.subcommand(name="give", description="Give currency to another user")

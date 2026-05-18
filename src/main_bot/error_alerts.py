@@ -14,7 +14,7 @@ import weakref
 from typing import Any, Optional
 
 import nextcord
-from nextcord.errors import ApplicationCheckFailure
+from nextcord.errors import ApplicationCheckFailure, ApplicationInvokeError
 from nextcord.ext import commands
 
 from main_bot.server_configs.config import ERROR_ALERT_CHANNEL_ID, ERROR_ALERT_USER_ID
@@ -42,6 +42,19 @@ def _format_log_record(record: logging.LogRecord) -> str:
     if record.exc_info and record.exc_info[1] is not None:
         lines.append(_format_exc(record.exc_info[1]))
     return "\n".join(lines).strip()
+
+
+def _is_unknown_interaction_error(exc: BaseException) -> bool:
+    """Discord returns 10062 when the interaction token expired or was already used."""
+    cur: BaseException | None = exc
+    while cur is not None:
+        if getattr(cur, "code", None) == 10062:
+            return True
+        if isinstance(cur, ApplicationInvokeError) and cur.original is not None:
+            cur = cur.original
+            continue
+        cur = cur.__cause__
+    return False
 
 
 class _DiscordLogHandler(logging.Handler):
@@ -101,6 +114,10 @@ def install_error_alerts(bot: commands.Bot) -> None:
             return
 
         if isinstance(exception, ApplicationCheckFailure):
+            return
+
+        if _is_unknown_interaction_error(exception):
+            _LOG.debug("Skipping alert: unknown / expired interaction (10062)", exc_info=exception)
             return
 
         print(f"Ignoring exception in command {interaction.application_command}:", file=sys.stderr)
