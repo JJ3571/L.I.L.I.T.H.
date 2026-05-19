@@ -10,6 +10,9 @@ import asyncpg
 
 _pool: Optional[asyncpg.Pool] = None
 
+# Hosts where we do not auto-append sslmode=require (local dev and bundled Docker Postgres).
+_NO_TLS_AUTO_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "postgres"})
+
 
 def get_database_url() -> str:
     url = os.getenv("DATABASE_URL", "").strip()
@@ -32,7 +35,7 @@ def _normalize_postgres_dsn(url: str) -> str:
             break
     parsed = urlparse(u)
     host = (parsed.hostname or "").lower()
-    if host in ("localhost", "127.0.0.1", "::1") or not host:
+    if host in _NO_TLS_AUTO_HOSTS or not host:
         return u
     pairs = list(parse_qsl(parsed.query, keep_blank_values=True))
     if not any(k.lower() == "sslmode" for k, _ in pairs):

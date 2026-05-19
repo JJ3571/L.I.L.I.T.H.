@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="88" viewBox="0 0 640 88" role="img" aria-labelledby="lilith-title">
+  <title id="lilith-title">L.I.L.I.T.H.</title>
+  <defs>
+    <linearGradient id="lilith-gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="45%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#9333ea"/>
+    </linearGradient>
+  </defs>
+  <text
+    x="320"
+    y="58"
+    text-anchor="middle"
+    font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+    font-size="48"
+    font-weight="700"
+    letter-spacing="0.08em"
+    fill="url(#lilith-gradient)"
+  >L.I.L.I.T.H.</text>
+</svg>

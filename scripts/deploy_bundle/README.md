@@ -10,6 +10,8 @@ Everything you keep on the VPS (or workstation) sits **in one directory** next t
 
 **Obtain:** download **`discord-bot-standalone.zip`** from the GitHub **Releases** page, or locally run `./scripts/build_deploy_bundle.sh` from the repository.
 
+Narrative guide (bare metal vs Docker vs bundle, database moves): **[RUNNING_THE_BOT.md](https://github.com/jj3571/Discord-Bot-Sandbox/blob/main/docs/RUNNING_THE_BOT.md)** in the repository.
+
 ## Folder layout here
 
 ```
@@ -30,6 +32,19 @@ your-bot-dir/
 The bot writes a **combined** rotating log (Nextcord + **`main_bot`**) under **`BOT_LOG_FILE`**. Compose defaults that to **`/app/logs/discord_bot.log`**; create **`logs/`** next to **`docker-compose.yml`** on the host so the file survives container restarts.
 
 Set **`lavalink.server.password`** in **`application.yml`** to match **`LAVALINK_PASSWORD`** in `.env`/Doppler (the bundled example uses Spring placeholders). Optional YouTube OAuth: **`YOUTUBE_OAUTH_ENABLED`** / **`YOUTUBE_OAUTH_REFRESH_TOKEN`** on the **`lavalink`** service (see root **`docker-compose.yml`** and **`docs/DOPPLER_ENV_KEYS.md`**).
+
+## Postgres & pgAdmin (Compose profiles)
+
+The bundled **`docker-compose.yml`** can run **`postgres:17-alpine`** and optional **pgAdmin** via **`COMPOSE_PROFILES`** in `.env` (mirrors repo **`.env.example`**):
+
+| Profile | Effect |
+|---------|--------|
+| **`bundled-db`** | Postgres on **`127.0.0.1:${POSTGRES_HOST_PORT:-5432}`** inside Docker; leave **`DATABASE_URL`** empty so Compose fills in **`postgresql://...@postgres:5432/...?sslmode=disable`**. |
+| **`admin-ui`** | pgAdmin at **`http://127.0.0.1:${PGADMIN_HOST_PORT:-5050}`** — register server host **`postgres`**, port **5432**, credentials from **`POSTGRES_*`**. Use together with **`bundled-db`**. |
+
+**External Postgres only (Neon, RDS):** clear **`bundled-db`** from **`COMPOSE_PROFILES`** and set **`DATABASE_URL`** explicitly (do not leave **`DATABASE_URL`** empty).
+
+Design notes and migration tips: **[docs/POSTGRES.md](https://github.com/jj3571/Discord-Bot-Sandbox/blob/main/docs/POSTGRES.md)** in the repository.
 
 ## Secrets
 

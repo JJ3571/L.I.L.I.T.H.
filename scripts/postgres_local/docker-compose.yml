@@ -1,0 +1,24 @@
+# Local Postgres only — for bare-metal bot (`scripts/run_bot.sh --env`) without full bot+Lavalink compose.
+# Usage: `./scripts/postgres_local/start.sh` from repo root (or any cwd; scripts resolve paths).
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
+      POSTGRES_DB: ${POSTGRES_DB:-discord_bot}
+    volumes:
+      - discord_bot_pg_local:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  discord_bot_pg_local:

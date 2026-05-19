@@ -25,7 +25,17 @@ This bot loads config from environment variables (typically injected by Doppler)
 - `DISCORD_BOT_TOKEN` (string)
 - `GUILD_ID` (int)
 - `APPLICATION_ID` (int)
-- `DATABASE_URL` (string): `postgresql://...` for asyncpg. Neon and most cloud hosts need TLS; use the dashboard connection string with `?sslmode=require` (or rely on the bot normalizing non-local URLs to append `sslmode=require` if it was omitted). If you still see “connection reset” during startup, check Neon project status, IP allowlisting, and VPN/firewall.
+- `DATABASE_URL` (string): `postgresql://...` for asyncpg. Neon and most cloud hosts need TLS; use the dashboard connection string with `?sslmode=require` (or rely on the bot normalizing non-local URLs to append `sslmode=require` if it was omitted). Hostname **`postgres`** (bundled Docker Postgres) skips auto-TLS. If you still see “connection reset” during startup, check Neon project status, IP allowlisting, and VPN/firewall.
+  - **Docker Compose + bundled Postgres:** you may leave **`DATABASE_URL`** empty in `.env`; **`docker-compose.yml`** substitutes a default pointing at the **`postgres`** service (`?sslmode=disable`). If you disable profile **`bundled-db`**, set **`DATABASE_URL`** explicitly — an empty value still expands to the bundled default and will fail without that container.
+  - **Bare metal:** set **`DATABASE_URL`** (Compose substitution does not apply). Optional local DB: **`scripts/postgres_local/start.sh`**.
+
+## Docker Compose substitution only (not read by Python `main_bot` unless also passed into `services.bot.environment`)
+
+These keys are used by **`docker compose`** for variable interpolation (project `.env` or shell). See **[docs/POSTGRES.md](docs/POSTGRES.md)** for full matrix.
+
+- **`COMPOSE_PROFILES`**: e.g. **`bundled-db`** (ship Postgres in compose), **`bundled-db,admin-ui`** (add pgAdmin). Omit **`bundled-db`** when using external Postgres only — and set **`DATABASE_URL`**.
+- **`POSTGRES_USER`**, **`POSTGRES_PASSWORD`**, **`POSTGRES_DB`**, **`POSTGRES_HOST_PORT`**: bundled Postgres container (`bundled-db` profile).
+- **`PGADMIN_EMAIL`**, **`PGADMIN_PASSWORD`**, **`PGADMIN_HOST_PORT`**: pgAdmin (`admin-ui` profile).
 
 ## Optional (feature-dependent)
 

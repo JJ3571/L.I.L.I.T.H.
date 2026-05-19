@@ -4,6 +4,11 @@
 #   • Your shell (e.g. secrets injected by `doppler run`), or
 #   • Repo-root `.env` (Compose loads it automatically for substitution — gitignored).
 #
+# Optional Postgres (bundled) + pgAdmin — Compose profiles (see `.env.example` `COMPOSE_PROFILES`):
+#   • bundled-db  → postgres:17-alpine on discord_bot_net (PG17 for Neon dump/restore parity); bot default DATABASE_URL targets host `postgres`.
+#   • admin-ui    → pgAdmin on http://127.0.0.1:${PGADMIN_HOST_PORT:-5050} (requires bundled-db for DB host `postgres`).
+#   Clear COMPOSE_PROFILES or omit bundled-db when using external Postgres only (Neon, RDS); set DATABASE_URL.
+#
 # Cloned-repo Docker (local image build): materialize `.docker-local-build/` + doppler-run Compose via
 #   ./scripts/docker_compose_up.sh    # runs ./scripts/local_docker_build.sh prepare if missing
 #   ./scripts/local_docker_deploy.sh # compose down then docker_compose_up (same staging dir)
@@ -22,7 +27,11 @@ services:
     image: ghcr.io/jj3571/discord-bot:latest
     # Lavalink starts first; bot does not wait for Lavalink.health (curl/JVM quirks can strand the bot as "waiting").
     # Use MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC in music cog for websocket readiness instead.
+    # Postgres is optional (profile bundled-db); required: false avoids blocking when using external DATABASE_URL only.
     depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
       lavalink:
         condition: service_started
     networks:
@@ -33,7 +42,7 @@ services:
       - ./local_audio:/app/local_audio:ro
       # Persisted data (tierlist images, etc.). These survive image rebuilds.
       - tierlist_data:/app/data
-      # Legacy SQLite dbs (economy.db, waterboard.db, etc.) if using local DB.
+      # Legacy SQLite files only — Postgres data lives in the `pg_data` volume on the postgres service, not here.
       - db_data:/app/databases
       # Combined runtime log (``main_bot`` + Nextcord); inspect on host under ``./logs``.
       - ./logs:/app/logs
@@ -67,7 +76,8 @@ services:
       CRAFTY_PASSWORD: ${CRAFTY_PASSWORD}
       CRAFTY_USERNAME: ${CRAFTY_USERNAME}
       CREATE_FIRETEAM_CHANNEL_ID: ${CREATE_FIRETEAM_CHANNEL_ID}
-      DATABASE_URL: ${DATABASE_URL}
+      # Default targets bundled Postgres (`bundled-db` profile). Override for Neon / external hosts.
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@postgres:5432/${POSTGRES_DB:-discord_bot}?sslmode=disable}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
       ENVIRONMENT: ${ENVIRONMENT}
       ERROR_ALERT_CHANNEL_ID: ${ERROR_ALERT_CHANNEL_ID}
@@ -154,10 +164,55 @@ services:
       retries: 3
       start_period: 20s
 
+  postgres:
+    image: postgres:17-alpine
+    profiles:
+      - bundled-db
+    networks:
+      - discord_bot_net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bot}
+      POSTGRES_DB: ${POSTGRES_DB:-discord_bot}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Optional web UI for Postgres. Enable with COMPOSE_PROFILES=bundled-db,admin-ui — requires bundled-db.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles:
+      - admin-ui
+    networks:
+      - discord_bot_net
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-changeme}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "127.0.0.1:${PGADMIN_HOST_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    restart: unless-stopped
+
 volumes:
   # Named volumes survive container rebuilds — only image changes, data persists.
   tierlist_data:
   db_data:
+  pg_data:
+  pgadmin_data:
 
 networks:
   # Explicit bridge so bot resolves `lavalink` via Compose DNS over the internal net (see LAVALINK_URI above).
