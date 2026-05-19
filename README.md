@@ -15,7 +15,7 @@
   ·
   <a href="docs/CONTRIBUTING.md">Contributing</a>
   ·
-  <a href="docs/RUNNING_THE_BOT.md">Running the bot</a>
+  <a href="docs/WHERE_TO_START.md">Where to Start</a>
 </p>
 
 ---
