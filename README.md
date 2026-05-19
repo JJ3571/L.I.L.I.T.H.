@@ -1,6 +1,28 @@
-# discord_bot - Command Reference
+<p align="center">
+  <img src="assets/lilith-title.svg" alt="L.I.L.I.T.H." width="520" />
+</p>
 
-HUZZAH! This Discord bot started as a sandbox to play around with Discord bot features and slash commands. It has now evolved into a "kitchen sink" bot with economy, gaming, utilities, and entertainment commands. Below is a reference of slash commands loaded from **`cogs/production`** in `main_bot.main` (plus optional top-level commands registered from **`MUSIC_FOLDER_*`** env vars).
+<p align="center">
+  <strong>L</strong>if3 · <strong>I</strong>ntelligence · <strong>L</strong>ogistics · <strong>I</strong>ntegrated · <strong>T</strong>o · <strong>H</strong>elp
+</p>
+
+<p align="center">
+  <em>A kitchen-sink Discord bot — economy, gaming, utilities, and entertainment for your guild.</em>
+</p>
+
+<p align="center">
+  <a href="#-table-of-contents">Command reference</a>
+  ·
+  <a href="docs/CONTRIBUTING.md">Contributing</a>
+  ·
+  <a href="docs/RUNNING_THE_BOT.md">Running the bot</a>
+</p>
+
+---
+
+## Command reference
+
+HUZZAH! **LILITH** started as a sandbox to experiment with Discord slash commands and has grown into the bot below. Slash commands are loaded from **`cogs/production`** in `main_bot.main` (plus optional top-level commands registered from **`MUSIC_FOLDER_*`** env vars).
 
 This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see `.env.example`). To contribute, read **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** (optional commit-style reference: **[docs/CONVENTIONAL_COMMITS.md](docs/CONVENTIONAL_COMMITS.md)**).
 

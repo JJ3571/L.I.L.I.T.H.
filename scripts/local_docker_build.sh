@@ -27,7 +27,7 @@ Usage:
 Prepare writes `.docker-local-build/` under the repo by default:
   • docker-compose.yml — copy of repo root with ./local_audio, ./logs, ./lavalink paths → absolute repo paths
   • docker-compose.local-build.yml — build bot image from this repo’s Dockerfile (+ MUSIC_LOCAL_HTTP_*)
-  • .env — first run only from repo `.env` or `.env.example` (+ Compose-network Lavalink tweaks)
+  • .env — first run only from repo `.env` or `.env.example` (+ Compose-network Lavalink + DATABASE_URL tweaks)
 
 Environment:
   DOCKER_LOCAL_BUILD_WORKDIR       preferred staging directory
@@ -116,6 +116,49 @@ _env_lavalink_uri_for_compose_network() {
 	fi
 }
 
+# Bot container must reach Postgres via Compose DNS hostname ``postgres``, not loopback.
+_env_database_url_for_compose_network() {
+	local envf="$1"
+	if [[ ! -f "$envf" ]]; then
+		return 0
+	fi
+	if ! grep -Eq '^DATABASE_URL=' "$envf"; then
+		return 0
+	fi
+	if ! grep -Eq '^DATABASE_URL=[^[:space:]]+@(127\.0\.0\.1|localhost):5432(/|\?|$|[[:space:]])' "$envf"; then
+		return 0
+	fi
+	python3 - "$envf" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+
+def sub(m: re.Match[str]) -> str:
+    val = m.group(1).strip()
+    if not re.search(r"@(?:127\.0\.0\.1|localhost):5432(?=/|\?|$)", val, flags=re.I):
+        return m.group(0)
+    if val.startswith("postgresql+asyncpg://"):
+        val = "postgresql://" + val[len("postgresql+asyncpg://") :]
+    elif val.startswith("postgres://"):
+        val = "postgresql://" + val[len("postgres://") :]
+    val = re.sub(
+        r"@(?:127\.0\.0\.1|localhost):5432(?=/|\?|$)",
+        "@postgres:5432",
+        val,
+        count=1,
+        flags=re.I,
+    )
+    return "DATABASE_URL=" + val
+
+new, n = re.subn(r"(?m)^DATABASE_URL=(.+)$", sub, text)
+if n:
+    path.write_text(new, encoding="utf-8")
+PY
+}
+
 _rewrite_bind_mounts_to_repo() {
 	local compose_copy="$1"
 	export LB_REPO="$REPO"
@@ -185,10 +228,12 @@ prepare() {
 		if [[ -f "$REPO/.env" ]]; then
 			cp "$REPO/.env" "$env_dst"
 			_env_lavalink_uri_for_compose_network "$env_dst"
-			echo "[local_docker_build] Created $env_dst from repo .env (+ LAVALINK_* Compose tweaks if needed)." >&2
+			_env_database_url_for_compose_network "$env_dst"
+			echo "[local_docker_build] Created $env_dst from repo .env (+ LAVALINK_* / DATABASE_URL Compose tweaks if needed)." >&2
 		else
 			cp "$REPO/.env.example" "$env_dst"
 			_env_lavalink_uri_for_compose_network "$env_dst"
+			_env_database_url_for_compose_network "$env_dst"
 			echo "[local_docker_build] Created $env_dst from .env.example — edit secrets before relying on prod data." >&2
 		fi
 	else

@@ -2,6 +2,8 @@
 """
 Thin wrappers around pg_dump / pg_restore for this project.
 
+When restoring dumps taken from **Neon** (PostgreSQL 17+), the target server should also run **PostgreSQL 17+**, or pg_restore may fail on session settings such as ``transaction_timeout`` (unknown on older servers). This repo's bundled Postgres image is 17-based.
+
 Prerequisites:
   - libpq client tools on PATH (e.g. brew install libpq && brew link --force libpq)
   - DATABASE_URL in the environment

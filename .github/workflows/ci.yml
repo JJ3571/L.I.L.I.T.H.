@@ -19,7 +19,7 @@ jobs:
       DISCORD_BOT_TOKEN: ci-placeholder-token
     services:
       postgres:
-        image: postgres:15
+        image: postgres:17-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
