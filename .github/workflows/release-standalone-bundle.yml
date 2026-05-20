@@ -4,12 +4,13 @@ name: Release standalone bundle
 # one-liner to the release notes (append_body). Re-running for the same tag may duplicate that blurb.
 #
 # - Tag releases from CI: `release` events from GITHUB_TOKEN do not start workflows,
-#   so this workflow runs when `.github/workflows/release.yml` completes (`workflow_run`).
+#   so this workflow runs when the `Release` workflow completes (`workflow_run`).
+#   The `workflows` filter must be the workflow `name:` (Release), not the file path.
 # - Releases published outside that path (e.g. GitHub UI): `release` still triggers this.
 # - Manual: Actions → this workflow → Run workflow (required tag, e.g. v0.4.1).
 on:
   workflow_run:
-    workflows: [.github/workflows/release.yml]
+    workflows: [Release]
     types: [completed]
   workflow_dispatch:
     inputs:

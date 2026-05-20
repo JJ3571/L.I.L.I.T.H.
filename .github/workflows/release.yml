@@ -47,8 +47,9 @@ jobs:
             ghcr.io/jj3571/discord-bot:${{ steps.version.outputs.version }}
             ghcr.io/jj3571/discord-bot:latest
 
-      # Standalone ZIP is attached by `.github/workflows/release-standalone-bundle.yml`
-      # via `workflow_run` (release events from GITHUB_TOKEN do not start workflows).
+      # Standalone ZIP is attached by the "Release standalone bundle" workflow via
+      # `workflow_run` on workflow name `Release` (release events from GITHUB_TOKEN
+      # do not start other workflows).
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
