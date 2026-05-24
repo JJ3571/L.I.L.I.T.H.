@@ -157,8 +157,9 @@ services:
     ports:
       - "127.0.0.1:2333:2333"
     restart: unless-stopped
+    # Include Authorization so healthchecks do not spam ``Authorization missing for 127.0.0.1 on GET /``.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2333/"]
+      test: ["CMD-SHELL", "curl -sf -H \"Authorization: $$LAVALINK_PASSWORD\" http://localhost:2333/"]
       interval: 30s
       timeout: 5s
       retries: 3

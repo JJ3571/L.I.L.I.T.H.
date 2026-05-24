@@ -12,8 +12,13 @@
 # ``PLUGINS_YOUTUBE_OAUTH_ENABLED`` / ``PLUGINS_YOUTUBE_OAUTH_REFRESHTOKEN`` (env overrides YAML). For login fixes: set
 # OAuth enabled and complete the device flow once (watch Lavalink logs for a URL + code), or paste a ``refreshToken``
 # from the logs. Use a **burner** Google account (see
-# https://github.com/lavalink-devs/youtube-source#using-oauth-tokens ). Optional: set
+# https://github.com/lavalink-devs/youtube-source#using-oauth-tokens ). OAuth alone often is not enough: YouTube
+# player script changes break local sig extraction (``Must find sig function from script`` on TVHTML5). Enable
+# ``remoteCipher`` below (or self-host https://github.com/kikkia/yt-cipher ). Optional: set
 # ``logging.level.dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO`` for clearer OAuth messages.
+#
+# ``Authorization missing for … on GET /`` in Lavalink logs is usually Docker healthcheck or the bot HTTP probe hitting
+# ``/`` without the Lavalink password — harmless if ``/v4/websocket`` connects successfully.
 #
 # Jazz folder playback uses loopback HTTP from the bot; keep ``sources.http: true``. Optional ``sources.local`` for manual ``file://`` loads.
 
@@ -109,6 +114,11 @@ plugins:
       - ANDROID_VR
       - WEB
       - WEBEMBEDDED
+    # Offloads YouTube signature deciphering when local extraction fails (common in 2026). Self-host yt-cipher or use a
+    # trusted public instance; see https://github.com/lavalink-devs/youtube-source#using-a-remote-cipher-server
+    remoteCipher:
+      url: "https://cipher.kikkia.dev/"
+      userAgent: "discord-bot-sandbox"
     oauth:
       enabled: "${YOUTUBE_OAUTH_ENABLED:false}"
       # After first successful device login, Lavalink logs your token — set env or paste here to skip the flow on restart.

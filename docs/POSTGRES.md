@@ -62,6 +62,60 @@ If you change **`POSTGRES_USER`**, **`POSTGRES_PASSWORD`**, or **`POSTGRES_DB`**
 
 ## Troubleshooting migrations
 
+### Neon `pg_dump` / `nc`: timeouts on port 5433 but 5432 works
+
+Neon’s **pooled** URL uses host `…-pooler…neon.tech` and port **5433**. The **direct** URL uses host `ep-….neon.tech` (no `-pooler`) and port **5432**. Some VPS or host firewalls allow **5432** but block outbound **5433**.
+
+`pg_dump` must use the **direct** connection with an **explicit** port:
+
+```text
+postgresql://USER:PASS@ep-xxx.c-3.us-west-2.aws.neon.tech:5432/neondb?sslmode=require
+```
+
+If you only remove `-pooler` from the hostname but leave **`:5433`** from the pooled string, clients still dial 5433 and time out. Check `echo "$PGPORT"` — unset it if it is `5433` before migrating.
+
+Quick test on the VPS:
+
+```bash
+nc -vz ep-xxx.c-3.us-west-2.aws.neon.tech 5432    # should succeed
+nc -vz ep-xxx-pooler.c-3.us-west-2.aws.neon.tech 5433   # may time out
+psql 'postgresql://...@ep-xxx...neon.tech:5432/neondb?sslmode=require' -c 'SELECT 1'
+```
+
+Use **Connect → Direct connection** in the Neon console (not Pooled) when copying `SOURCE_DATABASE_URL`.
+
+### `pg_dump`: server version mismatch (client 16, Neon 17)
+
+Neon runs **PostgreSQL 17+**. **`pg_dump` must be the same major version or newer than the server** — Ubuntu’s default `postgresql-client` (16 on 24.04) cannot dump a PG 17 database:
+
+```text
+pg_dump: error: aborting because of server version mismatch
+```
+
+On the VPS, install **PostgreSQL 17 client tools** (PGDG repo), then re-run the migrate script:
+
+```bash
+sudo apt-get install -y postgresql-common
+sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh   # accept prompts
+sudo apt-get install -y postgresql-client-17
+pg_dump --version   # should show 17.x
+```
+
+**Restore** also needs `pg_restore` 17+ when loading a dump taken from Neon. After `postgresql-client-17` is installed, both `pg_dump` and `pg_restore` on `PATH` should be 17.
+
+**Without apt:** dump with the repo’s bundled Postgres image, then restore with the script (local target must still be PG 17+):
+
+```bash
+DUMP=/tmp/botpg.dump
+docker run --rm -v /tmp:/tmp postgres:17-alpine \
+  pg_dump -Fc --no-owner --no-acl -f /tmp/botpg.dump \
+  'postgresql://...@ep-xxx...neon.tech:5432/neondb?sslmode=require'
+
+DATABASE_URL='postgresql://bot:bot@127.0.0.1:5432/discord_bot' \
+  uv run python scripts/postgres_dump_and_restore_helpers.py restore \
+  --input "$DUMP" --clean --if-exists
+```
+
 ### `pg_restore`: unrecognized configuration parameter `transaction_timeout`
 
 Neon runs **PostgreSQL 17+**. Custom-format dumps can include `SET transaction_timeout = 0;`, which **PostgreSQL 16 and older reject**. The bundled/local Postgres image in this repo is **17** so `pg_restore` from Neon generally works. If you still use an older Postgres locally, upgrade the server to **17+** or recreate the volume after updating **`docker-compose.yml`**.
@@ -87,7 +141,7 @@ Postgres and pgAdmin bind to **127.0.0.1** by default. For remote access, prefer
 Use **`scripts/postgres_migrate_hosted_to_local.sh`** (wrapper around `postgres_dump_and_restore_helpers.py`):
 
 ```bash
-SOURCE_DATABASE_URL='postgresql://...@...neon.tech/neondb?sslmode=require' \
+SOURCE_DATABASE_URL='postgresql://...@ep-xxx...neon.tech:5432/neondb?sslmode=require' \
 TARGET_DATABASE_URL='postgresql://bot:bot@127.0.0.1:5432/discord_bot' \
 ./scripts/postgres_migrate_hosted_to_local.sh
 ```

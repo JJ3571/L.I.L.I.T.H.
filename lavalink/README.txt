@@ -45,6 +45,13 @@ Docker / VPS — which container is wrong?
     from the host ``.env`` / Doppler into the **lavalink** service. You can also use Lavalink’s native env names
     (``PLUGINS_YOUTUBE_OAUTH_*``) which override YAML per Lavalink docs.
 
+  • YouTube ``/music play`` still failing after OAuth? Add ``plugins.youtube.remoteCipher`` in ``application.yml`` (see
+    ``application.yml.example``). OAuth fixes visitor/login for TV; ``Must find sig function`` needs remote cipher.
+
+  • ``Authorization missing for … on GET /`` in Lavalink logs is usually the Docker healthcheck or the bot’s unauthenticated
+    HTTP probe to ``/`` — not a failed Wavelink session. If you see ``Connection successfully established from Wavelink``,
+    Lavalink auth for playback is fine.
+
   • On each ``ensure_lavalink``, the bot runs an HTTP GET to ``LAVALINK_URI`` (logged as ``lavalink_http_probe_ok`` /
     ``lavalink_http_probe_failed`` under logger ``nextcord.music``). Same stack as Wavelink uses for REST.
 
