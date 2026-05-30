@@ -286,6 +286,7 @@ class Birthday(commands.Cog, CogLogMixin):
                     f'''
                     SELECT user_id, username, birthday FROM "{_BD}".birthdays
                     WHERE EXTRACT(MONTH FROM birthday::date) = $1
+                    ORDER BY EXTRACT(DAY FROM birthday::date)
                     ''',
                     now.month,
                 )
@@ -293,6 +294,7 @@ class Birthday(commands.Cog, CogLogMixin):
                     f'''
                     SELECT user_id, username, birthday FROM "{_BD}".birthdays
                     WHERE EXTRACT(MONTH FROM birthday::date) = $1
+                    ORDER BY EXTRACT(DAY FROM birthday::date)
                     ''',
                     next_month,
                 )
