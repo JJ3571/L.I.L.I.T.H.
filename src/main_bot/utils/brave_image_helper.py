@@ -121,10 +121,17 @@ def tierlist_image_min_size_px() -> Tuple[int, int]:
     When Brave omits size metadata, the image is still tried and this is enforced at decode time.
 
     Override with ``BRAVE_TIERLIST_IMAGE_MIN_WIDTH`` and ``BRAVE_TIERLIST_IMAGE_MIN_HEIGHT`` (default 400 each).
+    Unset or blank values use the default (empty vars in ``.env`` are common).
     """
-    w = int(os.environ.get("BRAVE_TIERLIST_IMAGE_MIN_WIDTH", "400"))
-    h = int(os.environ.get("BRAVE_TIERLIST_IMAGE_MIN_HEIGHT", "400"))
-    return (max(1, w), max(1, h))
+    default = 400
+
+    def _from_env(key: str) -> int:
+        raw = os.environ.get(key)
+        if raw is None or not str(raw).strip():
+            return default
+        return _as_positive_int(raw.strip()) or default
+
+    return (_from_env("BRAVE_TIERLIST_IMAGE_MIN_WIDTH"), _from_env("BRAVE_TIERLIST_IMAGE_MIN_HEIGHT"))
 
 
 def _as_positive_int(value: Any) -> Optional[int]:
