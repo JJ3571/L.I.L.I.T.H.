@@ -348,11 +348,8 @@ Display a user's Pokemon GO IGN and friend code.
 ### `/pkgo clan-friendcodes`
 Get a list of all Pokemon GO friend codes for the clan.
 
-### `/counter [category]`
-Personal counter with category label; use the message buttons to increment, decrement, or reset.
-
-### `/multicounter <name> <option1> <option2> [option3] [option4] [option5]`
-Multi-option counter (2–5 labels); track several tallies at once with buttons.
+### `/counter [name] [option1] [option2] [option3] [option4] [option5]`
+Personal counter with **+** / **-** (via ⚙️ settings); **Reset** appears only after toggling ⚙️ into decrement mode. **👤** / **👥** control who may use the count button. With no options, creates a simple tally. Provide **option1** and **option2** (up to five labels) for a multi-option counter; optional **name** labels the counter (defaults to `Counter` for multi-option).
 
 ### `/coc [username]`
 Clash of Clans roster: look up one member’s linked accounts, or list the whole clan when `username` is omitted. Adding/editing uses interactive flows (admins or self).

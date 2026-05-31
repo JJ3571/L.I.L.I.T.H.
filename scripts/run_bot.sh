@@ -87,7 +87,7 @@ fi
 cd "$ROOT"
 
 if [[ "$MODE" == doppler ]]; then
-  exec doppler run -- uv run python -m main_bot "${PASS[@]}"
+  exec doppler run -- uv run python -m main_bot ${PASS[@]+"${PASS[@]}"}
 else
-  exec uv run python -m main_bot "${PASS[@]}"
+  exec uv run python -m main_bot ${PASS[@]+"${PASS[@]}"}
 fi

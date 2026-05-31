@@ -38,7 +38,22 @@ class Counter(commands.Cog):
             raise
 
     async def create_tables(self):
-        return
+        await self._sync_multi_counter_id_sequence()
+
+    async def _sync_multi_counter_id_sequence(self):
+        """Align multi_counters id sequence with existing rows (avoids duplicate pkey on insert)."""
+        try:
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(
+                    f'''
+                    SELECT setval(
+                        pg_get_serial_sequence('"{_CT}".multi_counters', 'id'),
+                        (SELECT COALESCE(MAX(id), 0) FROM "{_CT}".multi_counters)
+                    )
+                    '''
+                )
+        except Exception as e:
+            logger.warning(f"Could not sync multi_counters id sequence: {e}")
 
     async def get_user_counter_data(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get counter data for a user."""
@@ -131,23 +146,36 @@ class Counter(commands.Cog):
         try:
             import json
             now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            labels_json = json.dumps(labels)
+            counts_json = json.dumps(counts)
             async with self.bot.pg_pool.acquire() as db:
-                await db.execute(
+                updated = await db.execute(
                     f'''
-                    INSERT INTO "{_CT}".multi_counters (user_id, counter_name, option_labels, option_counts, last_updated, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (user_id, counter_name) DO UPDATE SET
-                    option_labels = EXCLUDED.option_labels,
-                    option_counts = EXCLUDED.option_counts,
-                    last_updated = EXCLUDED.last_updated
+                    UPDATE "{_CT}".multi_counters
+                    SET option_labels = $3, option_counts = $4, last_updated = $5
+                    WHERE user_id = $1 AND counter_name = $2
                     ''',
                     user_id,
                     counter_name,
-                    json.dumps(labels),
-                    json.dumps(counts),
-                    now_iso,
+                    labels_json,
+                    counts_json,
                     now_iso,
                 )
+                if updated == "UPDATE 0":
+                    await self._sync_multi_counter_id_sequence()
+                    await db.execute(
+                        f'''
+                        INSERT INTO "{_CT}".multi_counters
+                            (user_id, counter_name, option_labels, option_counts, last_updated, created_at)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ''',
+                        user_id,
+                        counter_name,
+                        labels_json,
+                        counts_json,
+                        now_iso,
+                        now_iso,
+                    )
             logger.info(f"Updated multi-counter for user {user_id}, counter: {counter_name}")
         except Exception as e:
             logger.error(f"Failed to update multi-counter for user {user_id}: {e}")
@@ -180,12 +208,22 @@ class Counter(commands.Cog):
             logger.error(f"Failed to delete multi-counter for user {user_id}: {e}")
             raise DatabaseError(f"Failed to delete multi-counter: {e}")
 
-    def _create_embed(self, interaction: Interaction, count: int, category: str = 'default') -> nextcord.Embed:
+    def _create_embed(
+        self,
+        interaction: Interaction,
+        count: int,
+        *,
+        counter_name: Optional[str] = None,
+    ) -> nextcord.Embed:
         """Create an embed for the counter display."""
+        if counter_name:
+            title = f"{counter_name}: **{count}**"
+        else:
+            title = f"Count: **{count}**"
         embed = nextcord.Embed(
-            title=f"Count: **{count}**",
-            description=f"*Disappears after 24 hrs.*\nCategory: {category}",
-            color=nextcord.Color.blue()
+            title=title,
+            description="*Disappears after 24 hrs.*",
+            color=nextcord.Color.blue(),
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         return embed
@@ -193,9 +231,9 @@ class Counter(commands.Cog):
     def _create_multi_embed(self, interaction: Interaction, counter_name: str, labels: list, counts: list) -> nextcord.Embed:
         """Create an embed for the multi-counter display."""
         embed = nextcord.Embed(
-            title=f"Multi-Counter: **{counter_name}**",
+            title=f"**{counter_name}**",
             description="*Disappears after 24 hrs.*",
-            color=nextcord.Color.green()
+            color=nextcord.Color.blue()
         )
         
         # Add a field for each counter option
@@ -211,140 +249,129 @@ class Counter(commands.Cog):
 
     @nextcord.slash_command(
         name="counter",
-        description="A personal counter.",
-        guild_ids=[GUILD_ID]
+        description="Create a simple counter, or a multi-option counter with 2–5 labels.",
+        guild_ids=[GUILD_ID],
     )
     async def counter_command(
         self,
         interaction: Interaction,
-        category: str = nextcord.SlashOption(
-            description="Category for your counter",
+        name: str = nextcord.SlashOption(
+            description="Name for your counter",
             required=False,
-            default="default"
-        )
+            max_length=32,
+        ),
+        option1: str = nextcord.SlashOption(
+            description="Label for first counter option (multi-counter)",
+            required=False,
+            max_length=20,
+        ),
+        option2: str = nextcord.SlashOption(
+            description="Label for second counter option (multi-counter)",
+            required=False,
+            max_length=20,
+        ),
+        option3: str = nextcord.SlashOption(
+            description="Label for third counter option (multi-counter)",
+            required=False,
+            max_length=20,
+        ),
+        option4: str = nextcord.SlashOption(
+            description="Label for fourth counter option (multi-counter)",
+            required=False,
+            max_length=20,
+        ),
+        option5: str = nextcord.SlashOption(
+            description="Label for fifth counter option (multi-counter)",
+            required=False,
+            max_length=20,
+        ),
     ):
-        """Create or view your personal counter."""
+        """Create or view a simple counter, or a multi-option counter when 2+ options are given."""
         try:
             user_id = interaction.user.id
             await interaction.response.defer()
+
+            labels = [o for o in [option1, option2, option3, option4, option5] if o]
+
+            if len(labels) == 1:
+                await interaction.followup.send(
+                    "Provide at least two options (option1 and option2) for a multi-option counter.",
+                    ephemeral=True,
+                )
+                return
+
+            if len(labels) >= 2:
+                if len(labels) > 5:
+                    await interaction.followup.send(
+                        "You can provide at most 5 options.",
+                        ephemeral=True,
+                    )
+                    return
+
+                counter_name = name or "Counter"
+                counter_data = await self.get_multi_counter_data(user_id, counter_name)
+
+                if not counter_data:
+                    counts = [0] * len(labels)
+                    await self.update_multi_counter(user_id, counter_name, labels, counts)
+                else:
+                    labels = counter_data["labels"]
+                    counts = counter_data["counts"]
+
+                embed = self._create_multi_embed(interaction, counter_name, labels, counts)
+                view = MultiCounterView(
+                    owner_id=user_id,
+                    counter_name=counter_name,
+                    labels=labels,
+                    counter_cog=self,
+                )
+
+                message = await interaction.followup.send(embed=embed, view=view)
+                view.message = message
+                logger.info(
+                    f"Created multi-counter '{counter_name}' for user {user_id} with {len(labels)} options"
+                )
+                return
 
             counter_data = await self.get_user_counter_data(user_id)
             current_count = 0
 
             if not counter_data:
-                await self.update_user_counter(user_id, 0, category)
+                await self.update_user_counter(user_id, 0, "default")
                 current_count = 0
             else:
                 current_count = counter_data["count"]
-                category = counter_data["category"]
 
-            embed = self._create_embed(interaction, current_count, category)
-            view = CounterView(owner_id=user_id, counter_cog=self)
+            embed = self._create_embed(interaction, current_count, counter_name=name)
+            view = CounterView(owner_id=user_id, counter_cog=self, display_name=name)
 
             message = await interaction.followup.send(embed=embed, view=view)
             view.message = message
-            logger.info(f"Created counter for user {user_id} in category {category}")
+            logger.info(f"Created counter for user {user_id}" + (f" named '{name}'" if name else ""))
         except Exception as e:
             logger.error(f"Error in counter command: {e}")
             await interaction.followup.send(
                 "An error occurred while creating your counter. Please try again later.",
-                ephemeral=True
-            )
-
-    @nextcord.slash_command(
-        name="multicounter",
-        description="Create a multi-option counter with 2-5 labeled options.",
-        guild_ids=[GUILD_ID]
-    )
-    async def multicounter_command(
-        self,
-        interaction: Interaction,
-        name: str = nextcord.SlashOption(
-            description="Name for your multi-counter",
-            required=True,
-            max_length=32
-        ),
-        option1: str = nextcord.SlashOption(
-            description="Label for first counter option",
-            required=True,
-            max_length=20
-        ),
-        option2: str = nextcord.SlashOption(
-            description="Label for second counter option",
-            required=True,
-            max_length=20
-        ),
-        option3: str = nextcord.SlashOption(
-            description="Label for third counter option",
-            required=False,
-            max_length=20
-        ),
-        option4: str = nextcord.SlashOption(
-            description="Label for fourth counter option",
-            required=False,
-            max_length=20
-        ),
-        option5: str = nextcord.SlashOption(
-            description="Label for fifth counter option",
-            required=False,
-            max_length=20
-        )
-    ):
-        """Create or view your multi-option counter."""
-        try:
-            user_id = interaction.user.id
-            await interaction.response.defer()
-
-            # Build labels list, filtering out None values
-            labels = [option1, option2]
-            for option in [option3, option4, option5]:
-                if option:
-                    labels.append(option)
-
-            # Validate number of options
-            if len(labels) < 2 or len(labels) > 5:
-                await interaction.followup.send(
-                    "You must provide between 2 and 5 options for your multi-counter.",
-                    ephemeral=True
-                )
-                return
-
-            # Check if counter already exists
-            counter_data = await self.get_multi_counter_data(user_id, name)
-            
-            if not counter_data:
-                # Create new counter with all counts at 0
-                counts = [0] * len(labels)
-                await self.update_multi_counter(user_id, name, labels, counts)
-            else:
-                # Use existing data
-                labels = counter_data["labels"]
-                counts = counter_data["counts"]
-
-            embed = self._create_multi_embed(interaction, name, labels, counts)
-            view = MultiCounterView(owner_id=user_id, counter_name=name, labels=labels, counter_cog=self)
-
-            message = await interaction.followup.send(embed=embed, view=view)
-            view.message = message
-            logger.info(f"Created multi-counter '{name}' for user {user_id} with {len(labels)} options")
-        except Exception as e:
-            logger.error(f"Error in multicounter command: {e}")
-            await interaction.followup.send(
-                "An error occurred while creating your multi-counter. Please try again later.",
-                ephemeral=True
+                ephemeral=True,
             )
 
 
 # --- UI Views ---
 
+def _visibility_button_label(allow_others: bool) -> str:
+    """👤 = owner only; 👥 = anyone on the server may increment."""
+    return "👥" if allow_others else "👤"
+
+
 class CounterView(nextcord.ui.View):
-    def __init__(self, owner_id: int, counter_cog: 'Counter'):
+    def __init__(self, owner_id: int, counter_cog: 'Counter', display_name: Optional[str] = None):
         super().__init__(timeout=86400.0)  # 24 hours
         self.owner_id = owner_id
         self.message: nextcord.Message = None
         self.counter_cog = counter_cog
-        # Whether others are allowed to increment this counter
+        self.display_name = display_name
         self.allow_others = False
+        self.decrement_mode = False
 
     async def interaction_check(self, interaction: Interaction) -> bool:
         """Check if the interaction is allowed.
@@ -379,7 +406,10 @@ class CounterView(nextcord.ui.View):
         """Update the counter display."""
         try:
             embed = self.message.embeds[0]
-            embed.title = f"Count: **{new_count}**"
+            if self.display_name:
+                embed.title = f"{self.display_name}: **{new_count}**"
+            else:
+                embed.title = f"Count: **{new_count}**"
             
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -394,49 +424,146 @@ class CounterView(nextcord.ui.View):
                 ephemeral=True
             )
 
+    def _apply_count_button_style(self) -> None:
+        """Update the +/- button label and color for increment vs decrement mode."""
+        count_button = next(
+            (item for item in self.children if getattr(item, "custom_id", None) == "increment_counter"),
+            None,
+        )
+        if count_button:
+            count_button.label = "-" if self.decrement_mode else "+"
+            count_button.style = (
+                nextcord.ButtonStyle.red if self.decrement_mode else nextcord.ButtonStyle.green
+            )
+
+    def _sync_reset_button(self) -> None:
+        """Show Reset only while decrement mode is active (after ⚙️ toggle)."""
+        reset_item = next(
+            (item for item in self.children if getattr(item, "custom_id", None) == "reset_counter"),
+            None,
+        )
+        if self.decrement_mode:
+            if reset_item is None:
+                reset_button = nextcord.ui.Button(
+                    label="Reset",
+                    style=nextcord.ButtonStyle.red,
+                    custom_id="reset_counter",
+                    row=1,
+                )
+                reset_button.callback = self._reset_callback
+                self.add_item(reset_button)
+        elif reset_item is not None:
+            self.remove_item(reset_item)
+
     @nextcord.ui.button(
-        label="Increment",
+        label="+",
         style=nextcord.ButtonStyle.green,
-        custom_id="increment_counter"
+        custom_id="increment_counter",
+        row=0,
     )
     async def increment_button(self, button: nextcord.ui.Button, interaction: Interaction):
-        """Increment the counter."""
+        """Increment or decrement the counter depending on mode."""
         try:
             counter_data = await self.counter_cog.get_user_counter_data(self.owner_id)
-            new_count = (counter_data["count"] + 1) if counter_data else 1
+            current = counter_data["count"] if counter_data else 0
+            if self.decrement_mode:
+                new_count = max(0, current - 1)
+            else:
+                new_count = current + 1
             await self.counter_cog.update_user_counter(
                 self.owner_id,
                 new_count,
-                counter_data["category"] if counter_data else "default"
+                counter_data["category"] if counter_data else "default",
             )
             await self._update_display(interaction, new_count)
         except Exception as e:
-            logger.error(f"Error in increment button: {e}")
+            logger.error(f"Error in count button: {e}")
             await interaction.response.send_message(
-                "Failed to increment counter. Please try again.",
-                ephemeral=True
+                "Failed to update counter. Please try again.",
+                ephemeral=True,
             )
 
     @nextcord.ui.button(
-        label="Reset",
-        style=nextcord.ButtonStyle.red,
-        custom_id="reset_counter"
+        label="⚙️",
+        style=nextcord.ButtonStyle.secondary,
+        custom_id="settings",
+        row=1,
     )
-    async def reset_button(self, button: nextcord.ui.Button, interaction: Interaction):
+    async def settings_button(self, button: nextcord.ui.Button, interaction: Interaction):
+        """Toggle between increment and decrement mode."""
+        try:
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can change settings.",
+                    ephemeral=True,
+                )
+                return
+
+            self.decrement_mode = not self.decrement_mode
+            self._apply_count_button_style()
+            self._sync_reset_button()
+
+            await interaction.response.defer()
+            await interaction.followup.edit_message(message_id=self.message.id, view=self)
+        except Exception as e:
+            logger.error(f"Error in counter settings: {e}")
+            await interaction.response.send_message(
+                "Failed to toggle settings. Please try again.",
+                ephemeral=True,
+            )
+
+    @nextcord.ui.button(
+        label="👤",
+        style=nextcord.ButtonStyle.secondary,
+        custom_id="toggle_visibility",
+        row=1,
+    )
+    async def visibility_button(self, button: nextcord.ui.Button, interaction: Interaction):
+        """Toggle who may increment: owner only (👤) or anyone on the server (👥)."""
+        try:
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can change who may increment.",
+                    ephemeral=True,
+                )
+                return
+
+            self.allow_others = not self.allow_others
+            button.label = _visibility_button_label(self.allow_others)
+            button.style = (
+                nextcord.ButtonStyle.success if self.allow_others else nextcord.ButtonStyle.secondary
+            )
+
+            await interaction.response.defer()
+            await interaction.followup.edit_message(message_id=self.message.id, view=self)
+        except Exception as e:
+            logger.error(f"Error toggling counter visibility: {e}")
+            await interaction.response.send_message(
+                "Failed to change who may increment. Please try again.",
+                ephemeral=True,
+            )
+
+    async def _reset_callback(self, interaction: Interaction):
         """Reset the counter to zero."""
         try:
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message(
+                    "Only the counter owner can reset.",
+                    ephemeral=True,
+                )
+                return
             counter_data = await self.counter_cog.get_user_counter_data(self.owner_id)
             await self.counter_cog.update_user_counter(
                 self.owner_id,
                 0,
-                counter_data["category"] if counter_data else "default"
+                counter_data["category"] if counter_data else "default",
             )
             await self._update_display(interaction, 0)
         except Exception as e:
             logger.error(f"Error in reset button: {e}")
             await interaction.response.send_message(
                 "Failed to reset counter. Please try again.",
-                ephemeral=True
+                ephemeral=True,
             )
 
     async def on_timeout(self):
@@ -491,15 +618,14 @@ class MultiCounterView(nextcord.ui.View):
         )
         settings_button.callback = self.settings_callback
         self.add_item(settings_button)
-        # Add allow-others toggle button (owner-only control)
-        allow_button = nextcord.ui.Button(
-            label="🔒 Owner Only",
+        visibility_button = nextcord.ui.Button(
+            label=_visibility_button_label(self.allow_others),
             style=nextcord.ButtonStyle.secondary,
-            custom_id="allow_others",
-            row=1
+            custom_id="toggle_visibility",
+            row=1,
         )
-        allow_button.callback = self.allow_others_callback
-        self.add_item(allow_button)
+        visibility_button.callback = self.visibility_callback
+        self.add_item(visibility_button)
 
     def _add_counter_buttons(self):
         """Add buttons for each counter option."""
@@ -646,41 +772,40 @@ class MultiCounterView(nextcord.ui.View):
         )
         return False
 
-    async def allow_others_callback(self, interaction: Interaction):
-        """Toggle whether others can use the option buttons.
-
-        Only the owner may toggle this. The button's label/style is updated
-        to reflect the current state.
-        """
+    async def visibility_callback(self, interaction: Interaction):
+        """Toggle who may increment option buttons: owner only (👤) or server (👥)."""
         try:
             if interaction.user.id != self.owner_id:
                 await interaction.response.send_message(
-                    "Only the counter owner can change this setting.",
-                    ephemeral=True
+                    "Only the counter owner can change who may increment.",
+                    ephemeral=True,
                 )
                 return
 
             self.allow_others = not self.allow_others
-            # Update button label/style to reflect state
-            allow_item = next((it for it in self.children if hasattr(it, 'custom_id') and it.custom_id == 'allow_others'), None)
-            if allow_item:
-                if self.allow_others:
-                    allow_item.label = "🔓 Allow Others"
-                    allow_item.style = nextcord.ButtonStyle.success
-                else:
-                    allow_item.label = "🔒 Owner Only"
-                    allow_item.style = nextcord.ButtonStyle.secondary
+            visibility_item = next(
+                (
+                    it
+                    for it in self.children
+                    if hasattr(it, "custom_id") and it.custom_id == "toggle_visibility"
+                ),
+                None,
+            )
+            if visibility_item:
+                visibility_item.label = _visibility_button_label(self.allow_others)
+                visibility_item.style = (
+                    nextcord.ButtonStyle.secondary
+                    if self.allow_others
+                    else nextcord.ButtonStyle.secondary
+                )
 
             await interaction.response.defer()
-            await interaction.followup.edit_message(
-                message_id=self.message.id,
-                view=self
-            )
+            await interaction.followup.edit_message(message_id=self.message.id, view=self)
         except Exception as e:
-            logger.error(f"Error toggling allow_others: {e}")
+            logger.error(f"Error toggling counter visibility: {e}")
             await interaction.response.send_message(
-                "Failed to change setting. Please try again.",
-                ephemeral=True
+                "Failed to change who may increment. Please try again.",
+                ephemeral=True,
             )
 
     async def _update_display(self, interaction: Interaction, new_counts: list):

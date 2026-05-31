@@ -182,11 +182,11 @@ class TestCounterDatabase:
 
 
 class TestCounterEmbeds:
-    def test_create_embed_contains_count_and_category(self, counter_cog: Counter) -> None:
+    def test_create_embed_contains_count_and_optional_name(self, counter_cog: Counter) -> None:
         ix = _make_interaction()
-        embed = counter_cog._create_embed(ix, 42, "quests")
+        embed = counter_cog._create_embed(ix, 42, counter_name="quests")
         assert "42" in embed.title
-        assert "quests" in (embed.description or "")
+        assert "quests" in (embed.title or "")
 
     def test_create_multi_embed_fields_match_labels(self, counter_cog: Counter) -> None:
         ix = _make_interaction()
@@ -218,22 +218,13 @@ class TestCounterSlashRegistration:
         assert cmd.name == "counter"
         assert "counter" in (cmd.description or "").lower()
 
-    def test_counter_category_option_optional_with_default(self, counter_cog: Counter) -> None:
-        opt = counter_cog.counter_command.options["category"]
-        assert opt.required is False
-        assert opt.default == "default"
-
-    def test_multicounter_slash_options_required_and_lengths(self, counter_cog: Counter) -> None:
-        cmd = counter_cog.multicounter_command
-        assert cmd.name == "multicounter"
-        assert cmd.options["name"].required is True
-        assert cmd.options["name"].max_length == 32
-        for key in ("option1", "option2"):
-            assert cmd.options[key].required is True
-            assert cmd.options[key].max_length == 20
-        for key in ("option3", "option4", "option5"):
-            assert cmd.options[key].required is False
-            assert cmd.options[key].max_length == 20
+    def test_counter_name_and_options_optional(self, counter_cog: Counter) -> None:
+        opts = counter_cog.counter_command.options
+        assert opts["name"].required is False
+        assert opts["name"].max_length == 32
+        for key in ("option1", "option2", "option3", "option4", "option5"):
+            assert opts[key].required is False
+            assert opts[key].max_length == 20
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +239,16 @@ class TestCounterSlashHandlers:
     ) -> None:
         await counter_cog.create_tables()
         ix = _make_interaction(user_id=77_001)
-        await counter_cog.counter_command.callback(counter_cog, ix, category="pvp")
+        await counter_cog.counter_command.callback(
+            counter_cog,
+            ix,
+            name=None,
+            option1=None,
+            option2=None,
+            option3=None,
+            option4=None,
+            option5=None,
+        )
 
         ix.response.defer.assert_awaited_once()
         ix.followup.send.assert_awaited_once()
@@ -259,20 +259,28 @@ class TestCounterSlashHandlers:
         stored = await counter_cog.get_user_counter_data(77_001)
         assert stored is not None
         assert stored["count"] == 0
-        assert stored["category"] == "pvp"
 
     @pytest.mark.asyncio
-    async def test_counter_command_existing_user_keeps_stored_category(
+    async def test_counter_command_existing_user_keeps_count(
         self, counter_cog: Counter
     ) -> None:
         await counter_cog.create_tables()
-        await counter_cog.update_user_counter(77_002, 5, "legacy")
+        await counter_cog.update_user_counter(77_002, 5, "default")
         ix = _make_interaction(user_id=77_002)
-        await counter_cog.counter_command.callback(counter_cog, ix, category="ignored")
+        await counter_cog.counter_command.callback(
+            counter_cog,
+            ix,
+            name=None,
+            option1=None,
+            option2=None,
+            option3=None,
+            option4=None,
+            option5=None,
+        )
 
         ix.followup.send.assert_awaited_once()
         embed = ix.followup.send.await_args.kwargs["embed"]
-        assert "legacy" in (embed.description or "")
+        assert "**5**" in (embed.title or "")
 
     @pytest.mark.asyncio
     async def test_counter_command_sends_ephemeral_on_unexpected_error(
@@ -286,18 +294,27 @@ class TestCounterSlashHandlers:
             "get_user_counter_data",
             new=AsyncMock(side_effect=RuntimeError("boom")),
         ):
-            await counter_cog.counter_command.callback(counter_cog, ix, category="x")
+            await counter_cog.counter_command.callback(
+                counter_cog,
+                ix,
+                name=None,
+                option1=None,
+                option2=None,
+                option3=None,
+                option4=None,
+                option5=None,
+            )
 
         ix.followup.send.assert_awaited()
         assert ix.followup.send.await_args.kwargs.get("ephemeral") is True
 
     @pytest.mark.asyncio
-    async def test_multicounter_command_creates_multi_row_and_sends_followup(
+    async def test_counter_command_multi_options_creates_row(
         self, counter_cog: Counter
     ) -> None:
         await counter_cog.create_tables()
         ix = _make_interaction(user_id=88_001)
-        await counter_cog.multicounter_command.callback(
+        await counter_cog.counter_command.callback(
             counter_cog,
             ix,
             name="duel",
@@ -315,13 +332,13 @@ class TestCounterSlashHandlers:
         assert data["counts"] == [0, 0]
 
     @pytest.mark.asyncio
-    async def test_multicounter_command_reuses_existing_labels(
+    async def test_counter_command_multi_reuses_existing_labels(
         self, counter_cog: Counter
     ) -> None:
         await counter_cog.create_tables()
         await counter_cog.update_multi_counter(88_002, "scores", ["Old", "New"], [3, 4])
         ix = _make_interaction(user_id=88_002)
-        await counter_cog.multicounter_command.callback(
+        await counter_cog.counter_command.callback(
             counter_cog,
             ix,
             name="scores",
@@ -365,6 +382,40 @@ class TestCounterView:
         view.allow_others = True
         ix = _make_interaction(user_id=11, data={"custom_id": "increment_counter"})
         assert await view.interaction_check(ix) is True
+
+    def test_reset_button_only_in_decrement_mode(self, counter_cog: Counter) -> None:
+        view = CounterView(owner_id=10, counter_cog=counter_cog)
+        assert not any(
+            getattr(item, "custom_id", None) == "reset_counter" for item in view.children
+        )
+        view.decrement_mode = True
+        view._sync_reset_button()
+        assert any(
+            getattr(item, "custom_id", None) == "reset_counter" for item in view.children
+        )
+        view.decrement_mode = False
+        view._sync_reset_button()
+        assert not any(
+            getattr(item, "custom_id", None) == "reset_counter" for item in view.children
+        )
+
+    @pytest.mark.asyncio
+    async def test_decrement_mode_does_not_go_below_zero(self, counter_cog: Counter) -> None:
+        await counter_cog.create_tables()
+        await counter_cog.update_user_counter(21, 0, "default")
+        view = CounterView(owner_id=21, counter_cog=counter_cog)
+        view.decrement_mode = True
+        embed = nextcord.Embed(title="Count: **0**")
+        msg = MagicMock()
+        msg.id = 556
+        msg.embeds = [embed]
+        view.message = msg
+
+        ix = _make_interaction(user_id=21)
+        await view.increment_button.callback(ix)
+
+        row = await counter_cog.get_user_counter_data(21)
+        assert row["count"] == 0
 
     @pytest.mark.asyncio
     async def test_increment_button_updates_db_and_edits_message(
