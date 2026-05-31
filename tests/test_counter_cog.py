@@ -383,7 +383,8 @@ class TestCounterView:
         ix = _make_interaction(user_id=11, data={"custom_id": "increment_counter"})
         assert await view.interaction_check(ix) is True
 
-    def test_reset_button_only_in_decrement_mode(self, counter_cog: Counter) -> None:
+    @pytest.mark.asyncio
+    async def test_reset_button_only_in_decrement_mode(self, counter_cog: Counter) -> None:
         view = CounterView(owner_id=10, counter_cog=counter_cog)
         assert not any(
             getattr(item, "custom_id", None) == "reset_counter" for item in view.children
