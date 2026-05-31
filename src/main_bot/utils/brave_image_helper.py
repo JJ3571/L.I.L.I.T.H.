@@ -24,9 +24,20 @@ _brave_image_search_lock = asyncio.Lock()
 _brave_image_search_last_end: float = 0.0
 
 
+def _env_float(key: str, default: float) -> float:
+    """Read a float env var; unset, blank, or invalid values use ``default``."""
+    raw = os.environ.get(key)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(raw.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _brave_image_search_min_interval_s() -> float:
     """Free tier is often 1 req/s; override with BRAVE_IMAGE_SEARCH_MIN_INTERVAL (seconds)."""
-    return float(os.environ.get("BRAVE_IMAGE_SEARCH_MIN_INTERVAL", "1.05"))
+    return _env_float("BRAVE_IMAGE_SEARCH_MIN_INTERVAL", 1.05)
 
 
 class BraveImageError(Exception):
