@@ -13,7 +13,13 @@ from PIL import Image, ImageDraw
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin, cog_console_line
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.utils.opencode_client import async_chat_completion, brave_web_search, chat_completion
+from main_bot.utils.opencode_client import (
+    OpenCodeError,
+    async_chat_completion,
+    brave_web_search,
+    chat_completion,
+    format_opencode_user_error,
+)
 from main_bot.server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
 
@@ -138,6 +144,9 @@ Generate a helpful and neutral Community Note for the following content. The not
 def generate_zeroni(input_text: str):
     try:
         return chat_completion(input_text, system_prompt=ZERONI_SYSTEM_PROMPT)
+    except OpenCodeError as e:
+        cog_console_line("Say", f"Error during OpenCode API call: {e}")
+        return format_opencode_user_error(e)
     except Exception as e:
         cog_console_line("Say", f"Error during OpenCode API call: {e}")
         return None
@@ -156,6 +165,9 @@ def generate_notes(input_text: str, include_web_search: bool = True):
 
     try:
         return chat_completion(user_prompt, system_prompt=COMMUNITY_NOTES_SYSTEM_PROMPT)
+    except OpenCodeError as e:
+        cog_console_line("Say", f"Error during OpenCode API call: {e}")
+        return format_opencode_user_error(e)
     except Exception as e:
         cog_console_line("Say", f"Error during OpenCode API call with web search: {e}")
         if include_web_search:

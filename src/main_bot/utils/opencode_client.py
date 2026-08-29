@@ -17,12 +17,26 @@ from main_bot.server_configs.config import (
 logger = logging.getLogger(__name__)
 
 OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1"
-DEFAULT_OPENCODE_MODEL = "deepseek-v4-flash"
+DEFAULT_OPENCODE_MODEL = "glm-5.3-flash"
 BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
 
 class OpenCodeError(Exception):
     """Raised when OpenCode Go is misconfigured or returns an error."""
+
+
+def format_opencode_user_error(exc: Exception) -> str:
+    """Turn OpenCode failures into a short Discord-safe message."""
+    msg = str(exc)
+    if "OPENCODE_API_KEY is not configured" in msg:
+        return "❌ Say cog LLM is not configured (`OPENCODE_API_KEY` is missing)."
+    if "RegionError" in msg or "requires explicit opt in" in msg:
+        return (
+            "❌ The configured OpenCode model is not available in your region. "
+            f"Set `OPENCODE_MODEL` to a global model such as `glm-5.3-flash`, `kimi-k2.6`, or `qwen3.6-plus`. "
+            f"Current model: `{opencode_model()}`."
+        )
+    return f"❌ OpenCode API error: {msg[:300]}"
 
 
 def opencode_model() -> str:

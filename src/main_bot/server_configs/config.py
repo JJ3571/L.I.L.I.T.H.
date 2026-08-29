@@ -214,7 +214,7 @@ MUSIC_DEFAULT_PLAYER_VOLUME = max(0, min(_get_int("MUSIC_DEFAULT_PLAYER_VOLUME",
 MUSIC_CONFIGURED_FOLDER_SLOTS: Tuple[MusicFolderEnvSlot, ...] = _load_music_folder_env_slots()
 APPLICATION_ID = _get_int("APPLICATION_ID", 0)
 OPENCODE_API_KEY = _get_str("OPENCODE_API_KEY", "")
-OPENCODE_MODEL = _get_str("OPENCODE_MODEL", "deepseek-v4-flash")
+OPENCODE_MODEL = _get_str("OPENCODE_MODEL", "glm-5.3-flash")
 ENVIRONMENT = _get_str("ENVIRONMENT", "")
 
 
