@@ -208,10 +208,13 @@ MUSIC_LOCAL_HTTP_BIND_HOST = _get_str("MUSIC_LOCAL_HTTP_BIND_HOST", "")
 MUSIC_LOCAL_HTTP_PORT = _get_int("MUSIC_LOCAL_HTTP_PORT", 8765)
 # Voice channel IDs where slash music commands and VC controls are blocked (e.g. recording, watchparty). JSON array of ints; empty = disabled.
 MUSIC_VOICE_CHANNEL_DENYLIST_IDS = frozenset(_get_json_int_list("MUSIC_VOICE_CHANNEL_DENYLIST"))
+# Lavalink/Wavelink player volume on voice join: 100 = 100% (library default), 50 = 50%, up to 1000 for boost.
+MUSIC_DEFAULT_PLAYER_VOLUME = max(0, min(_get_int("MUSIC_DEFAULT_PLAYER_VOLUME", 50), 1000))
 # Optional flat folders under ``local_audio/music/{name}`` exposed as /name slash commands (see music cog).
 MUSIC_CONFIGURED_FOLDER_SLOTS: Tuple[MusicFolderEnvSlot, ...] = _load_music_folder_env_slots()
 APPLICATION_ID = _get_int("APPLICATION_ID", 0)
-GEMINI_API_KEY = _get_str("GEMINI_API_KEY", "")
+OPENCODE_API_KEY = _get_str("OPENCODE_API_KEY", "")
+OPENCODE_MODEL = _get_str("OPENCODE_MODEL", "deepseek-v4-flash")
 ENVIRONMENT = _get_str("ENVIRONMENT", "")
 
 
@@ -288,6 +291,11 @@ waterboard_category_id = _get_int("WATERBOARD_CATEGORY_ID", 0)
 OMDB_API_KEY = _get_str("OMDB_API_KEY", "")
 OMDB_API_URL = _get_str("OMDB_API_URL", "")
 BRAVE_SEARCH_API_KEY = _get_str("BRAVE_SEARCH_API_KEY", "")
+SERPENT_API_KEY = _get_str("SERPENT_API_KEY", "")
+# Tier list images: ``serpent`` (Google via apiserpent.com) or ``brave``. Auto-picks Serpent when its key is set.
+TIERLIST_IMAGE_ENGINE = _get_str("TIERLIST_IMAGE_ENGINE", "").lower()
+# Serpent image engine param: google, bing, yahoo, ddg (default google).
+SERPENT_IMAGE_ENGINE = _get_str("SERPENT_IMAGE_ENGINE", "google")
 
 # Emoji IDs
 heads_emoji_id = _get_int("HEADS_EMOJI_ID", 0)

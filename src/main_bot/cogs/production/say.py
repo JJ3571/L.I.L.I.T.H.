@@ -10,12 +10,10 @@ import io
 import json
 import aiohttp
 from PIL import Image, ImageDraw
-from google import genai
-from google.genai import types
-
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin, cog_console_line
-from main_bot.server_configs.config import GUILD_ID, GEMINI_API_KEY
+from main_bot.server_configs.config import GUILD_ID
+from main_bot.utils.opencode_client import async_chat_completion, brave_web_search, chat_completion
 from main_bot.server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
 
 
@@ -116,93 +114,50 @@ class ComplementaryColorView(nextcord.ui.View):
             item.disabled = True
 
 
+ZERONI_SYSTEM_PROMPT = (
+    "You are Madame Zeroni from the story Holes. You are an old, wise, one-legged woman, "
+    "possibly of Egyptian or Romani descent. You are known for giving advice, making bargains, "
+    "and understanding the weight of promises. You gave Elya Yelnats a piglet and a song in "
+    "exchange for a promise he broke, leading to a curse on his family. Speak with worldly wisdom, "
+    "a touch of cynicism, and directness. Do not suffer fools gladly. Your concerns revolve around "
+    "fate, promises, and consequences."
+)
+
+COMMUNITY_NOTES_SYSTEM_PROMPT = """
+Generate a helpful and neutral Community Note for the following content. The note should:
+1. Evaluate the accuracy of the claim using current, reliable information. If web search is available, prioritize recent and authoritative sources.
+2. Provide factual clarification or necessary context with specific details when possible.
+3. Be concise yet comprehensive - aim for clarity and completeness.
+4. If the content is a question, provide a thorough and informative answer with relevant examples or specifics.
+5. Maintain a neutral, non-argumentative tone while being helpful and informative.
+6. When citing information, mention the general source type (e.g., "according to recent studies", "official sources indicate", "current data shows") without direct links.
+7. If information appears outdated or requires current context, note this and provide updated information when available.
+"""
+
+
 def generate_zeroni(input_text: str):
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-    )
-
-    model = "gemini-flash-latest"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text=input_text),
-            ],
-        ),
-    ]
-    generate_content_config = types.GenerateContentConfig(
-        response_mime_type="text/plain",
-        system_instruction=[
-            types.Part.from_text(text="""You are Madame Zeroni from the story Holes. You are an old, wise, one-legged woman, possibly of Egyptian or Romani descent. You are known for giving advice, making bargains, and understanding the weight of promises. You gave Elya Yelnats a piglet and a song in exchange for a promise he broke, leading to a curse on his family. Speak with worldly wisdom, a touch of cynicism, and directness. Do not suffer fools gladly. Your concerns revolve around fate, promises, and consequences."""),
-        ],
-    )
-
-    response_text_parts = []
     try:
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            response_text_parts.append(chunk.text)
-        return "".join(response_text_parts)
+        return chat_completion(input_text, system_prompt=ZERONI_SYSTEM_PROMPT)
     except Exception as e:
-        cog_console_line("Say", f"Error during Gemini API call: {e}")
+        cog_console_line("Say", f"Error during OpenCode API call: {e}")
         return None
-    
+
+
 def generate_notes(input_text: str, include_web_search: bool = True):
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-    )
-
-    model = "gemini-flash-latest"
-    
-    system_instruction = """
-    Generate a helpful and neutral Community Note for the following content. The note should:
-    1. Evaluate the accuracy of the claim using current, reliable information. If web search is available, prioritize recent and authoritative sources.
-    2. Provide factual clarification or necessary context with specific details when possible.
-    3. Be concise yet comprehensive - aim for clarity and completeness.
-    4. If the content is a question, provide a thorough and informative answer with relevant examples or specifics.
-    5. Maintain a neutral, non-argumentative tone while being helpful and informative.
-    6. When citing information, mention the general source type (e.g., "according to recent studies", "official sources indicate", "current data shows") without direct links.
-    7. If information appears outdated or requires current context, note this and provide updated information when available.
-    """
-    
-    content_parts = [types.Part.from_text(text=input_text)]
-    
+    user_prompt = input_text
     if include_web_search:
-        # Add web search instruction to get current information
-        web_search_prompt = f"""
-        Please search for current, accurate information related to this content to provide the most up-to-date and reliable response: {input_text}
-        """
-        content_parts.append(types.Part.from_text(text=web_search_prompt))
+        search_context = brave_web_search(input_text)
+        if search_context:
+            user_prompt = (
+                f"{input_text}\n\n"
+                "Use these recent web search results for current, accurate context:\n"
+                f"{search_context}"
+            )
 
-    contents = [
-        types.Content(
-            role="user",
-            parts=content_parts,
-        ),
-    ]
-    
-    generate_content_config = types.GenerateContentConfig(
-        response_mime_type="text/plain",
-        system_instruction=[types.Part.from_text(text=system_instruction)],
-        tools=[types.Tool(google_search=types.GoogleSearch())] if include_web_search else None,
-    )
-
-    response_text_parts = []
     try:
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                response_text_parts.append(chunk.text)
-        return "".join(response_text_parts)
+        return chat_completion(user_prompt, system_prompt=COMMUNITY_NOTES_SYSTEM_PROMPT)
     except Exception as e:
-        cog_console_line("Say", f"Error during Gemini API call with web search: {e}")
-        # Fallback to basic version without web search
+        cog_console_line("Say", f"Error during OpenCode API call with web search: {e}")
         if include_web_search:
             cog_console_line("Say", "Retrying without web search...")
             return generate_notes(input_text, include_web_search=False)
@@ -912,7 +867,7 @@ def is_lol_related_query(query: str) -> bool:
 
 async def decide_query_method(query: str) -> str:
     """
-    Use Gemini to decide whether to use web search or MCP tools for a query.
+    Use the configured LLM to decide whether to use web search or MCP tools for a query.
     
     Args:
         query: The user's query
@@ -924,10 +879,7 @@ async def decide_query_method(query: str) -> str:
     if not is_lol_related_query(query):
         return 'web_search'
     
-    # For LoL-related queries, use Gemini to make a more nuanced decision
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
+    # For LoL-related queries, use the LLM to make a more nuanced decision
     decision_prompt = f"""Analyze this query about League of Legends and determine the best data source:
 
 Query: "{query}"
@@ -951,31 +903,10 @@ Respond with ONLY one word: "mcp" if OP.GG MCP tools would provide better data, 
 """
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=decision_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        response_text = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                response_text += chunk.text
-        
-        response_text = response_text.strip().lower()
+        response_text = (await async_chat_completion(decision_prompt) or "").strip().lower()
         if 'mcp' in response_text:
             return 'mcp'
-        else:
-            return 'web_search'
+        return 'web_search'
     except Exception as e:
         cog_console_line("Say", f"Error in decide_query_method: {e}")
         # Default to MCP for LoL queries if decision fails
@@ -984,7 +915,7 @@ Respond with ONLY one word: "mcp" if OP.GG MCP tools would provide better data, 
 async def handle_lol_query_with_mcp(query: str, summoner_name: str = None, tagline: str = None) -> str:
     """
     Handle a League of Legends query using OP.GG MCP tools.
-    Uses Gemini to determine which MCP tool to use and formats the response.
+    Uses the configured LLM to determine which MCP tool to use and formats the response.
     
     Args:
         query: The user's LoL-related query
@@ -994,9 +925,6 @@ async def handle_lol_query_with_mcp(query: str, summoner_name: str = None, tagli
     Returns:
         Formatted response string or None on error. Returns special string "PENDING_TAGLINE" if tagline confirmation is needed.
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
     # Check if this is a summoner search query
     is_summoner_query = 'summoner' in query.lower() or 'player' in query.lower() or summoner_name is not None
     
@@ -1072,7 +1000,7 @@ async def handle_lol_query_with_mcp(query: str, summoner_name: str = None, tagli
     if not available_tools:
         return "Sorry, I couldn't connect to OP.GG's MCP server to retrieve League of Legends data. Please try again later."
     
-    # Use Gemini to determine which tool to use and extract parameters
+    # Use the LLM to determine which tool to use and extract parameters
     # Format tools as a list with detailed parameter information
     tools_list = []
     for name, desc in available_tools.items():
@@ -1152,26 +1080,10 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
 """
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=tool_selection_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-        )
-        
-        response_text = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                response_text += chunk.text
-        
+        response_text = await async_chat_completion(
+            tool_selection_prompt,
+            response_format="json",
+        ) or ""
         # Parse the JSON response
         try:
             tool_decision = json.loads(response_text)
@@ -1196,7 +1108,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                 properties = schema.get('properties', {})
             
             # Override game_name/summoner_name parameters if we have an extracted summoner_name
-            # This prevents Gemini from using the entire query as the game_name
+            # This prevents the LLM from using the entire query as the game_name
             if summoner_name:
                 # Check for common parameter names that should contain the summoner name
                 name_params = ['game_name', 'summoner_name', 'name', 'username', 'player_name']
@@ -1265,7 +1177,7 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                         elif param == 'champion':
                             # Try to extract champion name from query if not provided
                             if not tool_args.get(param):
-                                # This is a fallback - ideally Gemini should extract it
+                                # This is a fallback - ideally the LLM should extract it
                                 cog_console_line("Say", f"Warning: Champion name not provided for required parameter '{param}'")
                         elif enum_values:
                             # Use first enum value as default
@@ -1336,34 +1248,15 @@ Example for "What is Yasuo's win rate in ranked mid lane?":
                 else:
                     return f"❌ Error retrieving data: {error_message}"
         
-        # Use Gemini to format the MCP result into a user-friendly response
+        # Use the LLM to format the MCP result into a user-friendly response
         formatting_prompt = f"""The user asked: "{query}"
 
 I retrieved this data from OP.GG:
 {json.dumps(mcp_result, indent=2)}
 
 Please format this data into a clear, helpful response that directly answers the user's question. Be concise but informative. If the data is complex, summarize the key points."""
-        
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=formatting_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        formatted_response = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                formatted_response += chunk.text
-        
+
+        formatted_response = await async_chat_completion(formatting_prompt) or ""
         return formatted_response.strip() if formatted_response else str(mcp_result)
         
     except Exception as e:
@@ -1372,7 +1265,7 @@ Please format this data into a clear, helpful response that directly answers the
 
 async def format_summoner_analysis(mcp_result: dict, summoner_name: str, tagline: str, limit: int = 10) -> str:
     """
-    Format summoner match history data into a readable analysis using Gemini.
+    Format summoner match history data into a readable analysis using the configured LLM.
     
     Args:
         mcp_result: Raw MCP tool result from lol_list_summoner_matches
@@ -1383,9 +1276,6 @@ async def format_summoner_analysis(mcp_result: dict, summoner_name: str, tagline
     Returns:
         Formatted analysis string
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
     analysis_prompt = f"""Analyze this League of Legends match history data for summoner {summoner_name}#{tagline}:
 
 {json.dumps(mcp_result, indent=2)}
@@ -1401,26 +1291,7 @@ Please provide a comprehensive analysis including:
 Be concise but informative. Format the response in a clear, readable way."""
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=analysis_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        analysis_response = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                analysis_response += chunk.text
-        
+        analysis_response = await async_chat_completion(analysis_prompt) or ""
         return analysis_response.strip() if analysis_response else "Unable to generate analysis."
     except Exception as e:
         cog_console_line("Say", f"Error formatting summoner analysis: {e}")
@@ -1428,7 +1299,7 @@ Be concise but informative. Format the response in a clear, readable way."""
 
 async def format_matchup_guide(mcp_result: dict, my_champion: str, opponent_champion: str, position: str) -> str:
     """
-    Format lane matchup guide data into a readable response using Gemini.
+    Format lane matchup guide data into a readable response using the configured LLM.
     
     Args:
         mcp_result: Raw MCP tool result from lol_get_lane_matchup_guide
@@ -1439,9 +1310,6 @@ async def format_matchup_guide(mcp_result: dict, my_champion: str, opponent_cham
     Returns:
         Formatted matchup guide string
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
     guide_prompt = f"""Format this League of Legends lane matchup guide for {my_champion} vs {opponent_champion} in {position}:
 
 {json.dumps(mcp_result, indent=2)}
@@ -1457,26 +1325,7 @@ Please organize the information clearly, including:
 Make it easy to read and actionable."""
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=guide_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        guide_response = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                guide_response += chunk.text
-        
+        guide_response = await async_chat_completion(guide_prompt) or ""
         return guide_response.strip() if guide_response else "Unable to generate matchup guide."
     except Exception as e:
         cog_console_line("Say", f"Error formatting matchup guide: {e}")
@@ -1484,7 +1333,7 @@ Make it easy to read and actionable."""
 
 async def format_esports_schedule(mcp_result: dict) -> str:
     """
-    Format esports schedule data into a readable response using Gemini.
+    Format esports schedule data into a readable response using the configured LLM.
     
     Args:
         mcp_result: Raw MCP tool result from lol_esports_list_schedules
@@ -1492,9 +1341,6 @@ async def format_esports_schedule(mcp_result: dict) -> str:
     Returns:
         Formatted schedule string
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
     schedule_prompt = f"""Format this League of Legends esports schedule:
 
 {json.dumps(mcp_result, indent=2)}
@@ -1508,26 +1354,7 @@ Please organize upcoming matches clearly, including:
 Make it easy to scan and understand when matches are happening."""
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=schedule_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        schedule_response = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                schedule_response += chunk.text
-        
+        schedule_response = await async_chat_completion(schedule_prompt) or ""
         return schedule_response.strip() if schedule_response else "Unable to generate schedule."
     except Exception as e:
         cog_console_line("Say", f"Error formatting esports schedule: {e}")
@@ -1535,7 +1362,7 @@ Make it easy to scan and understand when matches are happening."""
 
 async def format_team_standings(mcp_result: dict, league: str) -> str:
     """
-    Format team standings data into a readable response using Gemini.
+    Format team standings data into a readable response using the configured LLM.
     
     Args:
         mcp_result: Raw MCP tool result from lol_esports_list_team_standings
@@ -1544,9 +1371,6 @@ async def format_team_standings(mcp_result: dict, league: str) -> str:
     Returns:
         Formatted standings string
     """
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    model = "gemini-flash-latest"
-    
     standings_prompt = f"""Format this League of Legends {league.upper()} team standings:
 
 {json.dumps(mcp_result, indent=2)}
@@ -1560,26 +1384,7 @@ Please organize the standings clearly, showing:
 Make it easy to read and compare teams."""
     
     try:
-        contents = [
-            types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=standings_prompt)],
-            ),
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            response_mime_type="text/plain",
-        )
-        
-        standings_response = ""
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if chunk.text:
-                standings_response += chunk.text
-        
+        standings_response = await async_chat_completion(standings_prompt) or ""
         return standings_response.strip() if standings_response else "Unable to generate standings."
     except Exception as e:
         cog_console_line("Say", f"Error formatting team standings: {e}")
@@ -2484,8 +2289,8 @@ Please respond to the user's reply in context of the previous conversation."""
                         self.cog_print(f"Error in handle_lol_query_with_mcp: {e}")
                         api_response_content = f"❌ An error occurred while processing your League of Legends query: {str(e)}. Please try again or use a slash command like `/opgg_summoner`."
                 else:
-                    # Use Gemini web search for general queries
-                    self.cog_print(f"Using Gemini web search for query: {context_prompt[:50]}...")
+                    # Use web search + OpenCode for general queries
+                    self.cog_print(f"Using web search for query: {context_prompt[:50]}...")
                     try:
                         loop = asyncio.get_event_loop()
                         api_response_content = await loop.run_in_executor(

@@ -499,8 +499,15 @@ async def _ddl_tierlist(conn: asyncpg.Connection) -> None:
             created_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             message_id BIGINT,
-            channel_id BIGINT
+            channel_id BIGINT,
+            image_search_prefix TEXT
         )
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE "tierlist".tier_lists
+        ADD COLUMN IF NOT EXISTS image_search_prefix TEXT
         """
     )
     await conn.execute(

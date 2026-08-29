@@ -33,6 +33,7 @@ from main_bot.server_configs.config import (
     LAVALINK_PASSWORD,
     LAVALINK_URI,
     MUSIC_CONFIGURED_FOLDER_SLOTS,
+    MUSIC_DEFAULT_PLAYER_VOLUME,
     MUSIC_LOCAL_HTTP_BIND_HOST,
     MUSIC_LOCAL_HTTP_HOST,
     MUSIC_LOCAL_HTTP_PORT,
@@ -1041,6 +1042,16 @@ class MusicCog(commands.Cog, CogLogMixin):
         await self._local_http.start()
         return self._local_http.url_for_file(folder, path)
 
+    async def _apply_default_player_volume(self, player: wavelink.Player) -> None:
+        """Set Lavalink playback volume when the bot first joins voice (Wavelink default is 100 = 100%)."""
+        if player.volume == MUSIC_DEFAULT_PLAYER_VOLUME:
+            return
+        try:
+            await player.set_volume(MUSIC_DEFAULT_PLAYER_VOLUME)
+        except Exception as e:
+            gid = player.guild.id if player.guild else "?"
+            self.cog_print(f"[music] default player volume ({MUSIC_DEFAULT_PLAYER_VOLUME}) failed guild={gid}: {e}")
+
     async def _connect_voice(
         self,
         guild: nextcord.Guild,
@@ -1087,6 +1098,7 @@ class MusicCog(commands.Cog, CogLogMixin):
             )
             pl = cast(wavelink.Player, player)
             pl.autoplay = AutoPlayMode.partial
+            await self._apply_default_player_volume(pl)
             _MUSIC_LOG.info(
                 "_connect_voice new_connection guild=%s ch=%s %s",
                 guild.id,

@@ -13,15 +13,16 @@ from nextcord import Interaction, SlashOption, TextInputStyle
 from nextcord.ext import commands, tasks
 
 from main_bot.paths import PROJECT_ROOT
-from main_bot.server_configs.config import BRAVE_SEARCH_API_KEY, GUILD_ID, admin_user_ids
-from main_bot.utils.brave_image_helper import (
-    BraveImageError,
-    fetch_brave_image_result_rows,
-    filter_brave_rows_to_previewable,
-    search_and_save_brave_option_image,
+from main_bot.server_configs.config import GUILD_ID, admin_user_ids
+from main_bot.utils.tierlist_image_search import (
+    TierlistImageError,
+    fetch_image_result_rows,
+    image_search_configured,
+    image_search_provider_name,
+    preview_url_from_row,
     tierlist_image_min_size_px,
     tierlist_option_image_search_query,
-    try_save_image_from_brave_result_row,
+    try_save_image_from_result_row,
 )
 from main_bot.utils.tierlist_image_generator import TIER_ORDER, generate_tierlist_image
 
@@ -32,9 +33,9 @@ ITEMS_SUBDIR = os.fspath(PROJECT_ROOT / "data" / "tierlist" / "items")
 FINAL_SUBDIR = os.fspath(PROJECT_ROOT / "data" / "tierlist" / "final")
 LIVE_IMAGE_FILENAME = "live_tierlist.png"
 VOTE_ITEM_FILENAME = "vote_item.jpg"
-PICK_PREVIEW_FILENAME = "option_preview.jpg"
-# How many Brave search pages (× count per request) to walk when every hit on a page fails preview.
-_PICKER_MAX_BRAVE_PAGES = 8
+# How many search pages / larger fetches to try when results are sparse.
+_PICKER_MAX_SEARCH_PAGES = 8
+_MAX_TIERLIST_OPTIONS = 25
 
 TIER_SCORES: Dict[str, int] = {"S": 5, "A": 4, "B": 3, "C": 2, "D": 1, "F": 0, "N/A": -1}
 SCORE_TO_TIER: Dict[int, str] = {v: k for k, v in TIER_SCORES.items()}
@@ -125,6 +126,26 @@ def _unique_autocomplete_dict(names_to_values: List[Tuple[str, str]]) -> Dict[st
 
 def clamp_int(value: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
+
+
+def _can_manage_tierlist(user_id: int, tl_row: Any) -> bool:
+    if user_id in set(admin_user_ids or []):
+        return True
+    return int(tl_row["creator_id"]) == int(user_id)
+
+
+def _option_has_image(opt: Dict[str, Any]) -> bool:
+    p = opt.get("local_image_path")
+    return bool(p and os.path.isfile(str(p)))
+
+
+def _option_select_label(opt: Dict[str, Any], *, max_len: int = 95) -> str:
+    mark = "✓ " if _option_has_image(opt) else ""
+    text = str(opt.get("option_text") or "")
+    room = max(1, max_len - len(mark))
+    if len(text) > room:
+        text = text[: max(0, room - 1)] + "…"
+    return mark + text
 
 
 def _tierlist_image_subtitle(*, list_status: str, n_votes: Optional[int] = None) -> str:
@@ -325,7 +346,7 @@ async def _edit_tierlist_picker_message(
 
 
 class TierListOptionImageView(nextcord.ui.View):
-    """Cycle Brave image results per option; used at list creation (creator) and in admin settings."""
+    """Pick images per option via dropdown + result carousel; used from list settings."""
 
     def __init__(
         self,
@@ -334,9 +355,7 @@ class TierListOptionImageView(nextcord.ui.View):
         list_id: int,
         list_title: str,
         user_id: int,
-        channel_id: int,
         options: List[Dict[str, Any]],
-        flow: str,
         image_search_prefix: Optional[str] = None,
     ) -> None:
         super().__init__(timeout=1800.0)
@@ -346,33 +365,60 @@ class TierListOptionImageView(nextcord.ui.View):
         p = (image_search_prefix or "").strip()
         self._image_search_prefix: Optional[str] = p or None
         self.user_id = user_id
-        self.channel_id = channel_id
         self.options = options
-        self.flow = flow
         self.opt_i = 0
-        self.brave_rows: List[Dict[str, Any]] = []
+        self.search_rows: List[Dict[str, Any]] = []
         self.result_idx = 0
         self.next_api_offset = 0
-        self._last_url: Optional[str] = None
         self._warn: str = ""
         self._search_query: str = ""
         self._picker_message_id: Optional[int] = None
-        self._brave_query_overrides: Dict[int, str] = {}
+        self._query_overrides: Dict[int, str] = {}
+        self._rows_cache: Dict[int, List[Dict[str, Any]]] = {}
+        self._embed_preview_url: Optional[str] = None
+        self._add_option_select()
+
+    def _add_option_select(self) -> None:
+        opts = [
+            nextcord.SelectOption(
+                label=_option_select_label(o),
+                value=str(int(o["option_id"])),
+                default=(i == self.opt_i),
+            )
+            for i, o in enumerate(self.options[:25])
+        ]
+        sel = nextcord.ui.Select(
+            placeholder="Choose a tier list option…",
+            options=opts,
+            row=0,
+            min_values=1,
+            max_values=1,
+        )
+        sel.callback = self._on_option_select
+        self.add_item(sel)
+        self._option_select = sel
+
+    def _refresh_option_select(self) -> None:
+        for ch in list(self.children):
+            if isinstance(ch, nextcord.ui.Select) and ch.row == 0:
+                self.remove_item(ch)
+                break
+        self._add_option_select()
 
     def _option_id(self) -> int:
         return int(self.options[self.opt_i]["option_id"])
 
-    def _default_brave_query(self) -> str:
+    def _default_search_query(self) -> str:
         return tierlist_option_image_search_query(
             str(self.options[self.opt_i]["option_text"]),
             image_search_prefix=self._image_search_prefix,
         )
 
-    def _effective_brave_query(self) -> str:
-        o = str(self._brave_query_overrides.get(self._option_id(), "")).strip()
+    def _effective_search_query(self) -> str:
+        o = str(self._query_overrides.get(self._option_id(), "")).strip()
         if o:
             return o
-        return self._default_brave_query()
+        return self._default_search_query()
 
     def _sync_picker_message_id(self, interaction: Interaction) -> None:
         if self._picker_message_id is None and interaction.message is not None:
@@ -399,300 +445,292 @@ class TierListOptionImageView(nextcord.ui.View):
     def _path_for(self, option_id: int) -> str:
         return os.path.join(_item_dir(self.list_id), f"{option_id}.jpg")
 
-    async def _ensure_rows_for_option(self) -> str:
+    async def _ensure_rows_for_option(self, *, force: bool = False) -> str:
         self._warn = ""
-        if not BRAVE_SEARCH_API_KEY:
-            self.brave_rows = []
+        oid = self._option_id()
+        if not force and oid in self._rows_cache:
+            self.search_rows = list(self._rows_cache[oid])
+            self.result_idx = 0
+            return ""
+        if not image_search_configured():
+            self.search_rows = []
             self.result_idx = 0
             self.next_api_offset = 0
-            return "No `BRAVE_SEARCH_API_KEY` — use **Skip** for each option or add a key."
-        self.brave_rows = []
+            return "No image search API key — set `SERPENT_API_KEY` or `BRAVE_SEARCH_API_KEY`, or **Clear image** / **Done**."
+        self.search_rows = []
         self.result_idx = 0
         self.next_api_offset = 0
         session = await self.cog._get_session()
         mw, mh = tierlist_image_min_size_px()
         try:
-            q = self._effective_brave_query()
+            q = self._effective_search_query()
             self._search_query = q
             off = 0
-            for _ in range(_PICKER_MAX_BRAVE_PAGES):
-                page, self.next_api_offset = await fetch_brave_image_result_rows(
+            for _ in range(_PICKER_MAX_SEARCH_PAGES):
+                page, self.next_api_offset = await fetch_image_result_rows(
                     session,
                     q,
-                    count=20,
+                    count=25,
                     offset=off,
-                    timeout_s=25,
+                    timeout_s=45,
                     min_source_width=mw,
                     min_source_height=mh,
                 )
                 if not page:
                     break
-                good = await filter_brave_rows_to_previewable(session, page)
-                self.brave_rows.extend(good)
-                if self.brave_rows:
-                    return ""
+                self.search_rows.extend(page)
+                if self.search_rows:
+                    break
                 off = self.next_api_offset
-        except BraveImageError as e:
+        except TierlistImageError as e:
             return str(e)
-        if not self.brave_rows:
+        self._rows_cache[oid] = list(self.search_rows)
+        if not self.search_rows:
+            provider = image_search_provider_name()
             return (
-                f"No working image previews for this option (min decode size {mw}×{mh} px). "
-                "Try **Search terms** or **More results**, or **Skip**."
+                f"No image results from **{provider}** for this option. "
+                "Try **Search terms** or **More results**, or **Done** to finish."
             )
         return ""
 
     async def _load_more_rows(self) -> str:
-        if not BRAVE_SEARCH_API_KEY:
-            return "Brave key is not configured."
+        if not image_search_configured():
+            return "Image search is not configured."
         session = await self.cog._get_session()
         mw, mh = tierlist_image_min_size_px()
-        off = int(self.next_api_offset)
-        added = 0
+        seen = {preview_url_from_row(r) for r in self.search_rows}
         try:
-            q = self._effective_brave_query()
+            q = self._effective_search_query()
             self._search_query = q
-            for _ in range(_PICKER_MAX_BRAVE_PAGES):
-                page, new_off = await fetch_brave_image_result_rows(
+            off = int(self.next_api_offset)
+            for _ in range(_PICKER_MAX_SEARCH_PAGES):
+                page, new_off = await fetch_image_result_rows(
                     session,
                     q,
-                    count=20,
+                    count=25,
                     offset=off,
-                    timeout_s=25,
+                    timeout_s=45,
                     min_source_width=mw,
                     min_source_height=mh,
                 )
                 if not page:
-                    if added:
-                        return ""
                     return "No additional image results for this query."
                 self.next_api_offset = new_off
-                good = await filter_brave_rows_to_previewable(session, page)
                 off = new_off
-                if good:
-                    self.brave_rows.extend(good)
-                    added += len(good)
+                added = 0
+                for row in page:
+                    u = preview_url_from_row(row)
+                    if u and u not in seen:
+                        seen.add(u)
+                        self.search_rows.append(row)
+                        added += 1
+                if added:
+                    self._rows_cache[self._option_id()] = list(self.search_rows)
                     return ""
-        except BraveImageError as e:
+        except TierlistImageError as e:
             return str(e)
-        return (
-            "No additional **working** image results (hits load as previews). "
-            "Try **Search terms** or a different query."
-        )
+        return "No additional image results for this query."
 
     async def build_embed_and_file(self) -> Tuple[nextcord.Embed, Optional[nextcord.File]]:
         opt = self.options[self.opt_i]
-        oid = int(opt["option_id"])
-        path = self._path_for(oid)
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        provider = image_search_provider_name()
 
         desc = (
             f"**{opt['option_text']}**\n\n"
-            "◀ / ▶ — previous / next result · **Search terms** — custom Brave query for this item · "
-            "**Confirm** — use this image · **Skip** — no image for this option."
+            "Use the **dropdown** to switch options · ◀ / ▶ browse results · "
+            "**Search terms** — custom query · **Save image** — keep the preview · "
+            "**Clear image** — remove saved art · **Done** — update the public list."
         )
-        if self.flow == "create":
-            desc += "\n\n*Tier list will be created after confirming the last picture.*"
-        else:
-            desc += "\n\n*Tier list images updated once you complete this task.*"
-
         embed = nextcord.Embed(
-            title=f"Option image ({self.opt_i + 1}/{len(self.options)})",
+            title="Option images",
             description=desc,
             color=nextcord.Color.dark_teal(),
         )
         if self._warn:
             embed.add_field(name="Notice", value=self._warn[:1020], inline=False)
+        if _option_has_image(opt):
+            embed.add_field(name="Saved", value="This option already has an image on the list.", inline=False)
 
-        fq = (self._search_query or "")[:200]
-        if not self.brave_rows:
-            self._last_url = None
-            embed.set_footer(text=f"List {self.list_id} · no previews loaded")
+        fq = (self._search_query or "")[:180]
+        self._embed_preview_url = None
+
+        if not self.search_rows:
+            embed.set_footer(text=f"{provider} · list {self.list_id} · no results loaded")
             return embed, None
-        # Always clamp to current length (stale nrows + row[i] on another code path was a source of
-        # IndexError if the list was shortened between awaits or in concurrent view callbacks).
-        self.result_idx = self.result_idx % len(self.brave_rows)
 
-        def set_result_footer() -> None:
-            nr = len(self.brave_rows)
-            if fq:
-                if nr:
-                    embed.set_footer(
-                        text=f"q: {fq}\n{self.result_idx + 1}/{nr} · list {self.list_id} · next offset {self.next_api_offset}"
-                    )
-                else:
-                    embed.set_footer(
-                        text=f"q: {fq}\nlist {self.list_id} · next offset {self.next_api_offset}"
-                    )
-            else:
-                if nr:
-                    embed.set_footer(
-                        text=f"Brave {self.result_idx + 1}/{nr} · list {self.list_id} · offset {self.next_api_offset}"
-                    )
-                else:
-                    embed.set_footer(
-                        text=f"Brave — list {self.list_id} · offset {self.next_api_offset}"
-                    )
+        self.result_idx = self.result_idx % len(self.search_rows)
+        row = self.search_rows[self.result_idx]
+        preview = preview_url_from_row(row)
+        nr = len(self.search_rows)
+        footer = f"q: {fq}\n{self.result_idx + 1}/{nr} · {provider} · list {self.list_id}"
+        if preview:
+            self._embed_preview_url = preview
+            embed.set_image(url=preview)
+            embed.set_footer(text=footer)
+            return embed, None
 
-        session = await self.cog._get_session()
-        # Rows are pre-filtered to previewable; on rare failure (transient) drop the row and retry.
-        guard = 0
-        while self.brave_rows and guard <= len(self.brave_rows) + 2:
-            guard += 1
-            nrow = len(self.brave_rows)
-            if nrow == 0:
-                break
-            self.result_idx = self.result_idx % nrow
-            row = self.brave_rows[self.result_idx]
-            url = await try_save_image_from_brave_result_row(session, row, output_path=path)
-            if url:
-                self._last_url = url
-                set_result_footer()
-                embed.set_image(url=f"attachment://{PICK_PREVIEW_FILENAME}")
-                return embed, nextcord.File(path, filename=PICK_PREVIEW_FILENAME)
-            del self.brave_rows[self.result_idx]
-            if self.result_idx >= len(self.brave_rows) and self.brave_rows:
-                self.result_idx = 0
-
-        self._last_url = None
-        set_result_footer()
-        if not self.brave_rows:
-            note = "\n\n*No working preview left for this item — use **More results** or **Search terms**.*"
-            embed.description = (embed.description or "") + note
+        embed.set_footer(text=footer + " · preview URL missing")
         return embed, None
 
-    async def _commit_and_advance(self, interaction: Interaction, accept_image: bool) -> None:
-        opt = self.options[self.opt_i]
-        oid = int(opt["option_id"])
-        path = self._path_for(oid)
-        async with self.cog.bot.pg_pool.acquire() as db:
-            if accept_image and self._last_url and os.path.isfile(path):
-                await db.execute(
-                    f"""
-                    UPDATE "{_TL}".tier_options SET image_url = $1, local_image_path = $2
-                    WHERE option_id = $3
-                    """,
-                    self._last_url,
-                    path,
-                    oid,
-                )
-            else:
-                if os.path.isfile(path):
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
-                await db.execute(
-                    f"""
-                    UPDATE "{_TL}".tier_options SET image_url = NULL, local_image_path = NULL
-                    WHERE option_id = $1
-                    """,
-                    oid,
-                )
-
-        self.opt_i += 1
-        if self.opt_i >= len(self.options):
-            await self._complete_flow(interaction)
+    async def _save_current_image(self, interaction: Interaction) -> None:
+        if not self.search_rows:
+            self._warn = "No image result to save — try **Search terms** or **More results**."
+            emb, f = await self.build_embed_and_file()
+            await self._edit_picker(interaction, emb, f)
             return
+        oid = self._option_id()
+        path = self._path_for(oid)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        row = self.search_rows[self.result_idx % len(self.search_rows)]
+        session = await self.cog._get_session()
+        url = await try_save_image_from_result_row(session, row, output_path=path)
+        if not url:
+            self._warn = "Could not download that image — try another result or query."
+            emb, f = await self.build_embed_and_file()
+            await self._edit_picker(interaction, emb, f)
+            return
+        async with self.cog.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f"""
+                UPDATE "{_TL}".tier_options SET image_url = $1, local_image_path = $2
+                WHERE option_id = $3
+                """,
+                url,
+                path,
+                oid,
+            )
+        self.options[self.opt_i]["local_image_path"] = path
+        self._warn = "Image saved for this option."
+        self._refresh_option_select()
+        emb, f = await self.build_embed_and_file()
+        await self._edit_picker(interaction, emb, f)
+
+    async def _clear_current_image(self, interaction: Interaction) -> None:
+        oid = self._option_id()
+        path = self._path_for(oid)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        async with self.cog.bot.pg_pool.acquire() as db:
+            await db.execute(
+                f"""
+                UPDATE "{_TL}".tier_options SET image_url = NULL, local_image_path = NULL
+                WHERE option_id = $1
+                """,
+                oid,
+            )
+        self.options[self.opt_i]["local_image_path"] = None
+        self._warn = "Image removed for this option."
+        self._refresh_option_select()
+        emb, f = await self.build_embed_and_file()
+        await self._edit_picker(interaction, emb, f)
+
+    async def _finish(self, interaction: Interaction) -> None:
+        await self.cog._refresh_main_tierlist_message(self.list_id)
+        for ch in self.children:
+            if isinstance(ch, (nextcord.ui.Button, nextcord.ui.Select)):
+                ch.disabled = True
+        em = nextcord.Embed(
+            title="Images updated",
+            description="The public tier list message has been refreshed.",
+            color=nextcord.Color.green(),
+        )
+        await _edit_tierlist_picker_message(
+            interaction, embed=em, file=None, view=None, message_id=self._picker_message_id
+        )
+        self.stop()
+
+    async def _on_option_select(self, interaction: Interaction) -> None:
+        await interaction.response.defer()
+        val = (interaction.data.get("values") or [None])[0]
+        if not val:
+            return
+        new_i = next(
+            (i for i, o in enumerate(self.options) if str(int(o["option_id"])) == str(val)),
+            self.opt_i,
+        )
+        self.opt_i = new_i
+        self.result_idx = 0
+        self._warn = ""
         w = await self._ensure_rows_for_option()
         self._warn = w
+        self._refresh_option_select()
         emb, f = await self.build_embed_and_file()
         await self._edit_picker(interaction, emb, f)
 
-    async def _complete_flow(self, interaction: Interaction) -> None:
-        if self.flow == "create":
-            await self.cog._finalize_tierlist_after_image_wizard(
-                interaction, list_id=self.list_id, channel_id=self.channel_id, view_to_stop=self
-            )
-        else:
-            await self.cog._refresh_main_tierlist_message(self.list_id)
-            for ch in self.children:
-                if isinstance(ch, nextcord.ui.Button):
-                    ch.disabled = True
-            em = nextcord.Embed(
-                title="Image selection saved",
-                description="The tier list message has been updated.",
-                color=nextcord.Color.green(),
-            )
-            await _edit_tierlist_picker_message(
-                interaction, embed=em, file=None, view=None, message_id=self._picker_message_id
-            )
-            self.stop()
-
-    @nextcord.ui.button(label="◀", style=nextcord.ButtonStyle.secondary, row=0)
+    @nextcord.ui.button(label="◀", style=nextcord.ButtonStyle.secondary, row=1)
     async def prev_hit(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
         await interaction.response.defer()
-        if not self.brave_rows:
+        if not self.search_rows:
             return
-        n = len(self.brave_rows)
-        self.result_idx = (self.result_idx - 1) % n
+        self.result_idx = (self.result_idx - 1) % len(self.search_rows)
         emb, f = await self.build_embed_and_file()
         await self._edit_picker(interaction, emb, f)
 
-    @nextcord.ui.button(label="▶", style=nextcord.ButtonStyle.secondary, row=0)
+    @nextcord.ui.button(label="▶", style=nextcord.ButtonStyle.secondary, row=1)
     async def next_hit(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
         await interaction.response.defer()
-        if not self.brave_rows:
+        if not self.search_rows:
             return
-        n = len(self.brave_rows)
-        self.result_idx = (self.result_idx + 1) % n
+        self.result_idx = (self.result_idx + 1) % len(self.search_rows)
         emb, f = await self.build_embed_and_file()
         await self._edit_picker(interaction, emb, f)
 
-    @nextcord.ui.button(label="More results", style=nextcord.ButtonStyle.primary, row=0)
+    @nextcord.ui.button(label="More results", style=nextcord.ButtonStyle.primary, row=1)
     async def more_results(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
         await interaction.response.defer()
         err = await self._load_more_rows()
-        if err and not self.brave_rows:
+        if err:
             self._warn = err
-        elif err:
-            self._warn = err
-        if self.result_idx >= len(self.brave_rows) and self.brave_rows:
-            self.result_idx = len(self.brave_rows) - 1
+        if self.search_rows and self.result_idx >= len(self.search_rows):
+            self.result_idx = len(self.search_rows) - 1
         emb, f = await self.build_embed_and_file()
         await self._edit_picker(interaction, emb, f)
 
     @nextcord.ui.button(label="Search terms", style=nextcord.ButtonStyle.secondary, row=2)
-    async def edit_brave_query(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
-        if not BRAVE_SEARCH_API_KEY:
-            await interaction.response.send_message(
-                "Brave image search is not configured.", ephemeral=True
-            )
+    async def edit_search_query(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        if not image_search_configured():
+            await interaction.response.send_message("Image search is not configured.", ephemeral=True)
             return
         self._sync_picker_message_id(interaction)
         if self._picker_message_id is None:
             await interaction.response.send_message(
-                "Could not identify the image picker. Try again from list creation or Settings.",
+                "Could not identify the image picker. Try again from **Settings**.",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_modal(OptionBraveQueryModal(self))
+        await interaction.response.send_modal(OptionImageQueryModal(self))
 
-    @nextcord.ui.button(label="Confirm", style=nextcord.ButtonStyle.success, row=1)
+    @nextcord.ui.button(label="Save image", style=nextcord.ButtonStyle.success, row=3)
     async def confirm(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
         await interaction.response.defer()
-        if self._last_url:
-            await self._commit_and_advance(interaction, accept_image=True)
-        else:
-            await self._commit_and_advance(interaction, accept_image=False)
+        await self._save_current_image(interaction)
 
-    @nextcord.ui.button(label="Skip (no image)", style=nextcord.ButtonStyle.secondary, row=1)
-    async def skip(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+    @nextcord.ui.button(label="Clear image", style=nextcord.ButtonStyle.secondary, row=3)
+    async def clear_image(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
         await interaction.response.defer()
-        await self._commit_and_advance(interaction, accept_image=False)
+        await self._clear_current_image(interaction)
+
+    @nextcord.ui.button(label="Done", style=nextcord.ButtonStyle.primary, row=4)
+    async def done(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        await interaction.response.defer()
+        await self._finish(interaction)
 
 
-class OptionBraveQueryModal(nextcord.ui.Modal):
+class OptionImageQueryModal(nextcord.ui.Modal):
     def __init__(self, pview: TierListOptionImageView) -> None:
         super().__init__(title="Custom image search", auto_defer=False)
         self._pview = pview
         oid = pview._option_id()
-        cur = (pview._brave_query_overrides.get(oid) or "").strip()
-        default = pview._default_brave_query()
+        cur = (pview._query_overrides.get(oid) or "").strip()
+        default = pview._default_search_query()
         ph = f"Default (empty = this): {default}"
         if len(ph) > 100:
             ph = ph[:97] + "..."
         self._query = nextcord.ui.TextInput(
-            label="Brave search text",
+            label="Image search text",
             style=TextInputStyle.paragraph,
             default_value=cur or None,
             required=False,
@@ -707,11 +745,13 @@ class OptionBraveQueryModal(nextcord.ui.Modal):
         oid = v._option_id()
         text = (self._query.value or "").strip()
         if text:
-            v._brave_query_overrides[oid] = text
+            v._query_overrides[oid] = text
         else:
-            v._brave_query_overrides.pop(oid, None)
-        w = await v._ensure_rows_for_option()
+            v._query_overrides.pop(oid, None)
+        v._rows_cache.pop(oid, None)
+        w = await v._ensure_rows_for_option(force=True)
         v._warn = w
+        v._refresh_option_select()
         emb, f = await v.build_embed_and_file()
         await _edit_tierlist_picker_message(
             interaction,
@@ -720,6 +760,274 @@ class OptionBraveQueryModal(nextcord.ui.Modal):
             view=v,
             message_id=v._picker_message_id,
         )
+
+
+class TierListSettingsView(nextcord.ui.View):
+    def __init__(
+        self,
+        *,
+        cog: "TierList",
+        list_id: int,
+        list_title: str,
+        user_id: int,
+        image_search_prefix: Optional[str],
+    ) -> None:
+        super().__init__(timeout=600.0)
+        self.cog = cog
+        self.list_id = list_id
+        self.list_title = list_title
+        self.user_id = user_id
+        self.image_search_prefix = image_search_prefix
+
+    async def interaction_check(self, interaction: Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu is not for you.", ephemeral=True)
+            return False
+        return True
+
+    @nextcord.ui.button(label="Option images", style=nextcord.ButtonStyle.primary, row=0)
+    async def images_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        option_rows = await self.cog._load_option_dicts(self.list_id)
+        if not option_rows:
+            await interaction.followup.send("This list has no options.", ephemeral=True)
+            return
+        pview = TierListOptionImageView(
+            cog=self.cog,
+            list_id=self.list_id,
+            list_title=self.list_title,
+            user_id=self.user_id,
+            options=option_rows,
+            image_search_prefix=self.image_search_prefix,
+        )
+        warn = await pview._ensure_rows_for_option()
+        pview._warn = warn
+        emb, att = await pview.build_embed_and_file()
+        send_kw: Dict[str, Any] = {"embed": emb, "view": pview, "ephemeral": True}
+        if att is not None:
+            send_kw["file"] = att
+        sent = await interaction.followup.send(**send_kw)
+        mid = getattr(sent, "id", None)
+        if mid is not None:
+            pview._picker_message_id = int(mid)
+
+    @nextcord.ui.button(label="Edit options", style=nextcord.ButtonStyle.secondary, row=0)
+    async def edit_options_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        option_rows = await self.cog._load_option_dicts(self.list_id)
+        eview = TierListOptionsEditView(
+            cog=self.cog,
+            list_id=self.list_id,
+            list_title=self.list_title,
+            user_id=self.user_id,
+            options=option_rows,
+        )
+        emb = eview.build_embed()
+        await interaction.followup.send(embed=emb, view=eview, ephemeral=True)
+
+
+class TierListOptionsEditView(nextcord.ui.View):
+    def __init__(
+        self,
+        *,
+        cog: "TierList",
+        list_id: int,
+        list_title: str,
+        user_id: int,
+        options: List[Dict[str, Any]],
+    ) -> None:
+        super().__init__(timeout=1200.0)
+        self.cog = cog
+        self.list_id = list_id
+        self.list_title = list_title
+        self.user_id = user_id
+        self.options = options
+        self.selected_i = 0
+        self._message_id: Optional[int] = None
+        self._add_option_select()
+
+    def _add_option_select(self) -> None:
+        if not self.options:
+            return
+        opts = [
+            nextcord.SelectOption(
+                label=_option_select_label(o, max_len=98),
+                value=str(int(o["option_id"])),
+                default=(i == self.selected_i),
+            )
+            for i, o in enumerate(self.options[:25])
+        ]
+        sel = nextcord.ui.Select(
+            placeholder="Select an option to rename or remove…",
+            options=opts,
+            row=0,
+            min_values=1,
+            max_values=1,
+        )
+        sel.callback = self._on_select
+        self.add_item(sel)
+
+    def _refresh_select(self) -> None:
+        for ch in list(self.children):
+            if isinstance(ch, nextcord.ui.Select) and ch.row == 0:
+                self.remove_item(ch)
+                break
+        self._add_option_select()
+
+    def build_embed(self) -> nextcord.Embed:
+        n = len(self.options)
+        return nextcord.Embed(
+            title=f"Edit options — {self.list_title}",
+            description=(
+                f"**{n}** option(s) (max {_MAX_TIERLIST_OPTIONS}).\n\n"
+                "**Add option** — append a new entry · **Rename** / **Remove** — apply to the selection · "
+                "**Done** — refresh the public tier list."
+            ),
+            color=nextcord.Color.blurple(),
+        )
+
+    async def interaction_check(self, interaction: Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This editor is not for you.", ephemeral=True)
+            return False
+        return True
+
+    async def _edit_self(self, interaction: Interaction) -> None:
+        if interaction.message is not None:
+            self._message_id = int(interaction.message.id)
+        if self._message_id is None:
+            return
+        await interaction.followup.edit_message(
+            self._message_id,
+            embed=self.build_embed(),
+            view=self if self.options else None,
+        )
+
+    async def _on_select(self, interaction: Interaction) -> None:
+        await interaction.response.defer()
+        val = (interaction.data.get("values") or [None])[0]
+        if not val:
+            return
+        self.selected_i = next(
+            (i for i, o in enumerate(self.options) if str(int(o["option_id"])) == str(val)),
+            0,
+        )
+        self._refresh_select()
+        await self._edit_self(interaction)
+
+    @nextcord.ui.button(label="Add option", style=nextcord.ButtonStyle.success, row=1)
+    async def add_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        if len(self.options) >= _MAX_TIERLIST_OPTIONS:
+            await interaction.response.send_message(
+                f"A tier list can have at most **{_MAX_TIERLIST_OPTIONS}** options.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(TierListAddOptionModal(self))
+
+    @nextcord.ui.button(label="Rename", style=nextcord.ButtonStyle.primary, row=1)
+    async def rename_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        if not self.options:
+            await interaction.response.send_message("No options to rename.", ephemeral=True)
+            return
+        await interaction.response.send_modal(TierListRenameOptionModal(self))
+
+    @nextcord.ui.button(label="Remove", style=nextcord.ButtonStyle.danger, row=1)
+    async def remove_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        if not self.options:
+            await interaction.response.send_message("No options to remove.", ephemeral=True)
+            return
+        if len(self.options) <= 1:
+            await interaction.response.send_message(
+                "Cannot remove the last option — a tier list needs at least one.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        opt = self.options[self.selected_i]
+        err = await self.cog.remove_tierlist_option(self.list_id, int(opt["option_id"]))
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+        self.options = await self.cog._load_option_dicts(self.list_id)
+        self.selected_i = min(self.selected_i, max(0, len(self.options) - 1))
+        self._refresh_select()
+        await self._edit_self(interaction)
+
+    @nextcord.ui.button(label="Done", style=nextcord.ButtonStyle.secondary, row=2)
+    async def done_btn(self, button: nextcord.ui.Button, interaction: Interaction) -> None:
+        await interaction.response.defer()
+        await self.cog._refresh_main_tierlist_message(self.list_id)
+        for ch in self.children:
+            ch.disabled = True
+        self._message_id = self._message_id or (
+            int(interaction.message.id) if interaction.message else None
+        )
+        if self._message_id:
+            em = nextcord.Embed(
+                title="Options updated",
+                description="The public tier list has been refreshed.",
+                color=nextcord.Color.green(),
+            )
+            await interaction.followup.edit_message(self._message_id, embed=em, view=None)
+
+
+class TierListAddOptionModal(nextcord.ui.Modal):
+    def __init__(self, parent: TierListOptionsEditView) -> None:
+        super().__init__(title="Add tier list option")
+        self._parent = parent
+        self._text = nextcord.ui.TextInput(
+            label="New option name",
+            style=TextInputStyle.short,
+            required=True,
+            max_length=120,
+        )
+        self.add_item(self._text)
+
+    async def callback(self, interaction: Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        text = (self._text.value or "").strip()
+        if not text:
+            await interaction.followup.send("Option name cannot be empty.", ephemeral=True)
+            return
+        _, err = await self._parent.cog.add_tierlist_option(self._parent.list_id, text)
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+        self._parent.options = await self._parent.cog._load_option_dicts(self._parent.list_id)
+        self._parent.selected_i = len(self._parent.options) - 1
+        self._parent._refresh_select()
+        await self._parent._edit_self(interaction)
+
+
+class TierListRenameOptionModal(nextcord.ui.Modal):
+    def __init__(self, parent: TierListOptionsEditView) -> None:
+        super().__init__(title="Rename option")
+        self._parent = parent
+        opt = parent.options[parent.selected_i]
+        self._option_id = int(opt["option_id"])
+        self._text = nextcord.ui.TextInput(
+            label="Option name",
+            style=TextInputStyle.short,
+            default_value=str(opt["option_text"]),
+            required=True,
+            max_length=120,
+        )
+        self.add_item(self._text)
+
+    async def callback(self, interaction: Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        text = (self._text.value or "").strip()
+        if not text:
+            await interaction.followup.send("Option name cannot be empty.", ephemeral=True)
+            return
+        err = await self._parent.cog.rename_tierlist_option(
+            self._parent.list_id, self._option_id, text
+        )
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+        self._parent.options = await self._parent.cog._load_option_dicts(self._parent.list_id)
+        self._parent._refresh_select()
+        await self._parent._edit_self(interaction)
 
 
 def _voting_tier_label(tier: str) -> str:
@@ -1096,8 +1404,9 @@ class TierList(commands.Cog):
                 list_id = await db.fetchval(
                     f"""
                     INSERT INTO "{_TL}".tier_lists
-                        (guild_id, creator_id, list_title, list_mode, status, duration_hours, created_at, expires_at)
-                    VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)
+                        (guild_id, creator_id, list_title, list_mode, status, duration_hours,
+                         created_at, expires_at, image_search_prefix)
+                    VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)
                     RETURNING list_id
                     """,
                     interaction.guild_id or 0,
@@ -1107,6 +1416,7 @@ class TierList(commands.Cog):
                     duration_hours,
                     now.isoformat(),
                     expires.isoformat(),
+                    image_search_prefix,
                 )
 
                 for idx, opt in enumerate(options):
@@ -1121,101 +1431,29 @@ class TierList(commands.Cog):
                         idx,
                     )
 
-        option_rows = await self._load_option_dicts(int(list_id))
-        if not option_rows or not interaction.channel:
+        if not interaction.channel:
             await interaction.followup.send(
-                "List created, but the image picker could not be opened in this context.", ephemeral=True
+                "List created, but it could not be posted in this context.", ephemeral=True
             )
             return
 
-        pview = TierListOptionImageView(
-            cog=self,
+        await self._publish_new_tierlist(
+            interaction,
             list_id=int(list_id),
-            list_title=title,
-            user_id=interaction.user.id,
-            channel_id=interaction.channel.id,
-            options=option_rows,
-            flow="create",
-            image_search_prefix=image_search_prefix,
+            channel_id=int(interaction.channel.id),
         )
-        warn = await pview._ensure_rows_for_option()
-        pview._warn = warn
-        emb, att = await pview.build_embed_and_file()
-        try:
-            send_kw: Dict[str, Any] = {"embed": emb, "view": pview, "ephemeral": True}
-            if att is not None:
-                send_kw["file"] = att
-            sent = await interaction.followup.send(**send_kw)
-            mid = getattr(sent, "id", None)
-            if mid is not None:
-                pview._picker_message_id = int(mid)
-        except Exception:
-            logger.exception("Could not start tier list image setup list_id=%s", list_id)
-            await interaction.followup.send("Could not open the image selection UI. Try **Settings** on the list later.", ephemeral=True)
 
-    async def _fetch_images_for_list(self, *, list_id: int, title: str) -> int:
-        """Returns count of options that received a local image file."""
-        async with self.bot.pg_pool.acquire() as db:
-            rows = await db.fetch(
-                f"""
-                SELECT option_id, option_text FROM "{_TL}".tier_options
-                WHERE list_id = $1 ORDER BY option_index ASC
-                """,
-                list_id,
-            )
-
-        session = await self._get_session()
-        sem = asyncio.Semaphore(3)
-        n_ok = 0
-
-        async def process_one(r: Any) -> None:
-            nonlocal n_ok
-            async with sem:
-                opt_id = int(r["option_id"])
-                opt_text = str(r["option_text"])
-                try:
-                    out_path = os.path.join(_item_dir(list_id), f"{opt_id}.jpg")
-                    used_url = await search_and_save_brave_option_image(
-                        session,
-                        title,
-                        opt_text,
-                        output_path=out_path,
-                        search_query=tierlist_option_image_search_query(opt_text),
-                    )
-                    if not used_url:
-                        return
-                    async with self.bot.pg_pool.acquire() as db2:
-                        await db2.execute(
-                            f"""
-                            UPDATE "{_TL}".tier_options SET image_url = $1, local_image_path = $2
-                            WHERE option_id = $3
-                            """,
-                            used_url,
-                            out_path,
-                            opt_id,
-                        )
-                    n_ok += 1
-                except BraveImageError:
-                    return
-                except Exception:
-                    return
-
-        await asyncio.gather(*[process_one(r) for r in rows])
-        return n_ok
-
-    async def _finalize_tierlist_after_image_wizard(
+    async def _publish_new_tierlist(
         self,
         interaction: Interaction,
         *,
         list_id: int,
         channel_id: int,
-        view_to_stop: "TierListOptionImageView",
     ) -> None:
-        """Build live image, post the public list message, store ids; called after the image picker flow."""
+        """Build live image, post the public list message, and store Discord message ids."""
         async with self.bot.pg_pool.acquire() as db:
             row = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', int(list_id))
         if not row:
-            view_to_stop.stop()
             return
 
         live_path = _live_png_path(int(list_id))
@@ -1229,29 +1467,14 @@ class TierList(commands.Cog):
                 subtitle=_tierlist_image_subtitle(list_status=str(row.get("status", "active")), n_votes=n_votes),
             )
         except Exception:
-            logger.exception("Post-wizard live image failed for list_id=%s", list_id)
+            logger.exception("Live image failed for new list_id=%s", list_id)
 
         channel: Optional[Any] = self.bot.get_channel(int(channel_id)) if channel_id else None
         if channel is None:
-            for ch in view_to_stop.children:
-                if isinstance(ch, nextcord.ui.Button):
-                    ch.disabled = True
-            em = nextcord.Embed(
-                title="List saved, channel missing",
-                description="I could not find the channel to post the list. Use an admin to fix or repost.",
-                color=nextcord.Color.orange(),
+            await interaction.followup.send(
+                "List saved, but the channel could not be found to post the public message.",
+                ephemeral=True,
             )
-            try:
-                await _edit_tierlist_picker_message(
-                    interaction,
-                    embed=em,
-                    file=None,
-                    view=view_to_stop,
-                    message_id=view_to_stop._picker_message_id,
-                )
-            except Exception:
-                pass
-            view_to_stop.stop()
             return
 
         embed, main_file = await self._build_main_message_payload(list_id=int(list_id), include_image=True)
@@ -1263,11 +1486,7 @@ class TierList(commands.Cog):
         try:
             msg = await channel.send(**send_kw)  # type: ignore[misc]
         except Exception as e:
-            try:
-                await interaction.followup.send(f"Failed to post the list: {e}", ephemeral=True)
-            except Exception:
-                pass
-            view_to_stop.stop()
+            await interaction.followup.send(f"Failed to post the list: {e}", ephemeral=True)
             return
 
         async with self.bot.pg_pool.acquire() as db:
@@ -1280,29 +1499,24 @@ class TierList(commands.Cog):
                 int(list_id),
             )
         self.bot.add_view(main_view)
-        for ch in view_to_stop.children:
-            if isinstance(ch, nextcord.ui.Button):
-                ch.disabled = True
-        done = nextcord.Embed(
-            title="Tier list is live",
-            description=f"Public message: {msg.jump_url}",
-            color=nextcord.Color.green(),
+        hint = (
+            f"Tier list **{row['list_title']}** is live: {msg.jump_url}\n\n"
+            "Use **⚙️ Settings** on that message to add images or edit options."
         )
-        try:
-            await _edit_tierlist_picker_message(
-                interaction,
-                embed=done,
-                file=None,
-                view=None,
-                message_id=view_to_stop._picker_message_id,
-            )
-        except Exception:
-            pass
-        view_to_stop.stop()
-        try:
-            await interaction.followup.send("Tierlist created; Photos selected.", ephemeral=True)
-        except Exception:
-            pass
+        await interaction.followup.send(hint, ephemeral=True)
+
+    async def _finalize_tierlist_after_image_wizard(
+        self,
+        interaction: Interaction,
+        *,
+        list_id: int,
+        channel_id: int,
+        view_to_stop: Optional["TierListOptionImageView"] = None,
+    ) -> None:
+        """Legacy entry point; new lists publish via :meth:`_publish_new_tierlist`."""
+        await self._publish_new_tierlist(interaction, list_id=list_id, channel_id=channel_id)
+        if view_to_stop is not None:
+            view_to_stop.stop()
 
     async def _build_main_message_payload(
         self, *, list_id: int, include_image: bool
@@ -1350,42 +1564,39 @@ class TierList(commands.Cog):
                 logger.exception("Failed to add persistent view for list_id=%s", r["list_id"])
 
     async def handle_settings_button(self, interaction: Interaction, list_id: int) -> None:
-        if interaction.user.id not in set(admin_user_ids or []):
-            await interaction.response.send_message("You need admin access to use these settings.", ephemeral=True)
-            return
         async with self.bot.pg_pool.acquire() as db:
             tl = await db.fetchrow(f'SELECT * FROM "{_TL}".tier_lists WHERE list_id = $1', list_id)
         if not tl or str(tl["status"]) != "active":
             await interaction.response.send_message("Tier list not found or not active.", ephemeral=True)
             return
-        option_rows = await self._load_option_dicts(int(list_id))
-        if not option_rows:
-            await interaction.response.send_message("This list has no options to edit.", ephemeral=True)
+        if not _can_manage_tierlist(interaction.user.id, tl):
+            await interaction.response.send_message(
+                "Only the list creator or a bot admin can change settings.", ephemeral=True
+            )
             return
+        prefix = tl.get("image_search_prefix")
+        if isinstance(prefix, str):
+            prefix = prefix.strip() or None
+        else:
+            prefix = None
         await interaction.response.defer(ephemeral=True)
-        pview = TierListOptionImageView(
+        emb = nextcord.Embed(
+            title=f"Settings — {tl['list_title']}",
+            description=(
+                "**Option images** — search and save pictures per option (Google via Serpent when configured).\n"
+                "**Edit options** — add, rename, or remove entries."
+            ),
+            color=nextcord.Color.dark_teal(),
+        )
+        emb.set_footer(text=f"List ID: {list_id}")
+        view = TierListSettingsView(
             cog=self,
             list_id=int(list_id),
             list_title=str(tl["list_title"]),
             user_id=interaction.user.id,
-            channel_id=interaction.channel_id or 0,
-            options=option_rows,
-            flow="settings",
+            image_search_prefix=prefix,
         )
-        warn = await pview._ensure_rows_for_option()
-        pview._warn = warn
-        emb, att = await pview.build_embed_and_file()
-        try:
-            send_kw: Dict[str, Any] = {"embed": emb, "view": pview, "ephemeral": True}
-            if att is not None:
-                send_kw["file"] = att
-            sent = await interaction.followup.send(**send_kw)
-            mid = getattr(sent, "id", None)
-            if mid is not None:
-                pview._picker_message_id = int(mid)
-        except Exception as e:
-            logger.exception("Settings image UI failed: %s", e)
-            await interaction.followup.send("Could not open the image settings UI. Try again.", ephemeral=True)
+        await interaction.followup.send(embed=emb, view=view, ephemeral=True)
 
     async def handle_vote_button(self, interaction: Interaction, list_id: int) -> None:
         async with self.bot.pg_pool.acquire() as db:
@@ -1464,6 +1675,112 @@ class TierList(commands.Cog):
                 list_id,
             )
         return [dict(r) for r in rows]
+
+    async def add_tierlist_option(
+        self, list_id: int, option_text: str
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        text = (option_text or "").strip()
+        if not text:
+            return None, "Option name cannot be empty."
+        async with self.bot.pg_pool.acquire() as db:
+            tl = await db.fetchrow(
+                f'SELECT status FROM "{_TL}".tier_lists WHERE list_id = $1', list_id
+            )
+            if not tl or str(tl["status"]) != "active":
+                return None, "Tier list not found or not active."
+            n = await db.fetchval(
+                f'SELECT COUNT(*) FROM "{_TL}".tier_options WHERE list_id = $1', list_id
+            )
+            if int(n) >= _MAX_TIERLIST_OPTIONS:
+                return None, f"A tier list can have at most **{_MAX_TIERLIST_OPTIONS}** options."
+            max_idx = await db.fetchval(
+                f'SELECT COALESCE(MAX(option_index), -1) FROM "{_TL}".tier_options WHERE list_id = $1',
+                list_id,
+            )
+            oid = await db.fetchval(
+                f"""
+                INSERT INTO "{_TL}".tier_options (list_id, option_text, option_index)
+                VALUES ($1, $2, $3)
+                RETURNING option_id
+                """,
+                list_id,
+                text,
+                int(max_idx) + 1,
+            )
+        return {"option_id": int(oid), "option_text": text}, None
+
+    async def rename_tierlist_option(
+        self, list_id: int, option_id: int, option_text: str
+    ) -> Optional[str]:
+        text = (option_text or "").strip()
+        if not text:
+            return "Option name cannot be empty."
+        async with self.bot.pg_pool.acquire() as db:
+            r = await db.fetchrow(
+                f"""
+                SELECT o.option_id FROM "{_TL}".tier_options o
+                JOIN "{_TL}".tier_lists l ON l.list_id = o.list_id
+                WHERE o.list_id = $1 AND o.option_id = $2 AND l.status = 'active'
+                """,
+                list_id,
+                option_id,
+            )
+            if not r:
+                return "Option not found on an active list."
+            await db.execute(
+                f'UPDATE "{_TL}".tier_options SET option_text = $1 WHERE option_id = $2',
+                text,
+                option_id,
+            )
+        return None
+
+    async def remove_tierlist_option(self, list_id: int, option_id: int) -> Optional[str]:
+        async with self.bot.pg_pool.acquire() as db:
+            n = await db.fetchval(
+                f'SELECT COUNT(*) FROM "{_TL}".tier_options WHERE list_id = $1', list_id
+            )
+            if int(n) <= 1:
+                return "Cannot remove the last option."
+            r = await db.fetchrow(
+                f"""
+                SELECT o.local_image_path FROM "{_TL}".tier_options o
+                JOIN "{_TL}".tier_lists l ON l.list_id = o.list_id
+                WHERE o.list_id = $1 AND o.option_id = $2 AND l.status = 'active'
+                """,
+                list_id,
+                option_id,
+            )
+            if not r:
+                return "Option not found on an active list."
+            img_path = r.get("local_image_path")
+            async with db.transaction():
+                await db.execute(
+                    f'DELETE FROM "{_TL}".tier_votes WHERE list_id = $1 AND option_id = $2',
+                    list_id,
+                    option_id,
+                )
+                await db.execute(
+                    f'DELETE FROM "{_TL}".tier_options WHERE option_id = $1', option_id
+                )
+                rows = await db.fetch(
+                    f"""
+                    SELECT option_id FROM "{_TL}".tier_options
+                    WHERE list_id = $1 ORDER BY option_index ASC, option_id ASC
+                    """,
+                    list_id,
+                )
+                for idx, row in enumerate(rows):
+                    await db.execute(
+                        f'UPDATE "{_TL}".tier_options SET option_index = $1 WHERE option_id = $2',
+                        idx,
+                        row["option_id"],
+                    )
+        if img_path and os.path.isfile(str(img_path)):
+            try:
+                os.remove(str(img_path))
+            except OSError:
+                pass
+        return None
 
     async def get_user_tier_for_option(
         self, *, list_id: int, user_id: int, option_id: int

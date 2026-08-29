@@ -193,9 +193,6 @@ class DependencyChecker:
             elif package_name.lower() == 'discord-webhook':
                 import discord_webhook
                 installed_version = getattr(discord_webhook, '__version__', 'unknown')
-            elif package_name.lower() == 'google-genai':
-                import google.genai
-                installed_version = getattr(google.genai, '__version__', 'unknown')
             elif package_name.lower() == 'pillow':
                 import PIL
                 installed_version = PIL.__version__
@@ -273,12 +270,15 @@ class DependencyChecker:
         """Check optional feature dependencies"""
         print("🔧 Checking Optional Features...")
         
-        # Google Gemini AI
+        # OpenCode Go (Say cog LLM)
         try:
-            import google.genai
-            print("✅ Google Gemini AI: Available")
+            from main_bot.server_configs.config import OPENCODE_API_KEY
+            if OPENCODE_API_KEY:
+                print("✅ OpenCode Go: API key configured")
+            else:
+                self.log_issue('WARNING', 'OPENCODE_API_KEY', "Say cog LLM features will be disabled")
         except ImportError:
-            self.log_issue('WARNING', 'google-genai', "Gemini AI features will be disabled")
+            self.log_issue('WARNING', 'main_bot', "Could not verify OpenCode Go configuration")
         
         # PIL for image processing
         try:
@@ -381,7 +381,6 @@ class DependencyChecker:
                 {'name': 'requests', 'version': '2.32.3', 'operator': '=='},
                 {'name': 'pytz', 'version': '2024.2', 'operator': '=='},
                 {'name': 'discord-webhook', 'version': '1.4.1', 'operator': '=='},
-                {'name': 'google-genai', 'version': '1.10.0', 'operator': '=='},
                 {'name': 'Pillow', 'version': '11.1.0', 'operator': '=='}
             ]
             for dep in known_deps:

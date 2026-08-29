@@ -49,7 +49,8 @@ These keys are used by **`docker compose`** for variable interpolation (project 
 - `MUSIC_LOCAL_HTTP_PORT` (int): Port for that HTTP server (default `8765`).
 - `MUSIC_FOLDER_1` … `MUSIC_FOLDER_25` (strings): Register `local_audio/music/<name>` as top-level slash command `/<name>` (see `README.md`). Reserved: `gaming`, `brainrot`. **Docker:** each key must appear under `services.bot.environment` in `docker-compose.yml` (copy the `MUSIC_FOLDER_n` + `MUSIC_n_SHUFFLE_START` stanza); the bundled file forwards slots 1–3 as templates for up to 25.
 - `MUSIC_VOICE_CHANNEL_DENYLIST` (JSON array of int channel IDs, optional): Blocks slash music / VC controls in those channels.
-- `GEMINI_API_KEY` (string)
+- `OPENCODE_API_KEY` (string, **secret**) — OpenCode Go API key for the Say cog (Zeroni, Community Notes, OP.GG formatting). Subscribe at https://opencode.ai/auth
+- `OPENCODE_MODEL` (string, optional) — OpenCode Go model id (default `deepseek-v4-flash`). Examples: `deepseek-v4-pro`, `kimi-k2.6`, `glm-5.2`
 - `ENVIRONMENT` (string: `development` or `production`) used by `is_development_environment()`
 - `LOAD_DEVELOPMENT_COGS` (optional): when set to `1`, `true`, `yes`, or `on`, the bot loads extensions under `main_bot.cogs.development` in addition to `production`. When set to `0`, `false`, `no`, or `off`, development extensions are not loaded even if `DEVELOPMENT_COG_EXTENSIONS_ENABLED` is True in `main.py`. If unset, the default comes from `DEVELOPMENT_COG_EXTENSIONS_ENABLED` in `main_bot/main.py`.
 - `FULL_DEBUG_IN_TERMINAL` (optional): same truthy/falsy tokens as `LOAD_DEVELOPMENT_COGS`. When truthy, selected cogs emit verbose `[DEBUG]` lines via **`main_bot`** logging (**`cog_print`**) with optional **`APP_LOG_STDOUT_MIRROR`** echo. If unset, defaults to **false**.
@@ -100,8 +101,12 @@ These keys are used by **`docker compose`** for variable interpolation (project 
 
 - `OMDB_API_KEY` (string)
 - `OMDB_API_URL` (string)
-- `BRAVE_SEARCH_API_KEY` (string)
+- `BRAVE_SEARCH_API_KEY` (string) — tier list image search (when Serpent is not configured) and Say cog Community Notes web grounding
 - `BRAVE_IMAGE_SEARCH_MIN_INTERVAL` (optional, seconds) — default `1.05`; Brave Image Search free tier is ~1 request/s, so the bot serializes image searches. Increase if you still see `429` from Brave.
+- `SERPENT_API_KEY` (string) — [Serpent API](https://apiserpent.com) key for Google Images tier list search (preferred when set)
+- `SERPENT_IMAGE_SEARCH_MIN_INTERVAL` (optional, seconds) — default `1.05`; spacing between Serpent image API calls
+- `SERPENT_IMAGE_ENGINE` (optional) — `google`, `bing`, `yahoo`, or `ddg` (default `google`)
+- `TIERLIST_IMAGE_ENGINE` (optional) — force `serpent` or `brave` when both API keys are set
 
 ## TCG / Say (JSON + strings)
 
