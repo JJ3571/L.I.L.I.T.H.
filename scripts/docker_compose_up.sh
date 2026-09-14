@@ -1,22 +1,24 @@
 #!/usr/bin/env bash
 #
-# Cloned-repo Docker Compose entrypoint: runs Compose from `.docker-local-build/` against a
-# locally built bot image (see scripts/local_docker_build.sh). Secrets: `doppler run` (--doppler)
-# or the staged `.env` only (--env). Flag semantics align with scripts/run_bot.sh.
+# Cloned-repo Docker Compose entrypoint: runs Compose from `.docker-local-build/`
+# against a locally built bot image (see scripts/local_docker_build.sh).
 #
-# If `.docker-local-build/` is missing the compose files, runs `local_docker_build.sh prepare` first.
+# Default mode uses the staged `.env` (--env). Pass --doppler to inject secrets
+# with the Doppler CLI instead.
 #
-# Compose substitutes ${VAR} from the staging `.env` and/or Doppler-injected process env (--doppler).
+# If `.docker-local-build/` is missing the compose files, runs
+# `local_docker_build.sh prepare` first.
 #
-# Requires: Docker daemon for compose commands. --doppler also needs the Doppler CLI for this repo.
+# Requires: Docker daemon. --doppler also needs the Doppler CLI for this repo.
 #
 # Usage:
-#   ./scripts/docker_compose_up.sh                              → --doppler; prepare if needed; up --build -d
-#   ./scripts/docker_compose_up.sh --env                        → compose only (needs staging .env)
-#   ./scripts/docker_compose_up.sh --env up --build             → foreground / custom flags
+#   ./scripts/docker_compose_up.sh                    → --env; prepare if needed; up --build -d
+#   ./scripts/docker_compose_up.sh --doppler          → doppler run -- docker compose …
+#   ./scripts/docker_compose_up.sh up --build         → foreground / custom flags
 #   ./scripts/docker_compose_up.sh logs -f bot
 #
-# Override staging dir: --dir / --workdir, DOCKER_LOCAL_BUILD_WORKDIR, or legacy DOCKER_LOCAL_IMAGE_TEST_WORKDIR
+# Override staging dir: --dir / --workdir, DOCKER_LOCAL_BUILD_WORKDIR, or legacy
+# DOCKER_LOCAL_IMAGE_TEST_WORKDIR
 
 set -euo pipefail
 
@@ -27,9 +29,9 @@ usage() {
 	cat >&2 <<'EOF'
 Usage: docker_compose_up.sh [--doppler|--env] [--dir DIR|-C DIR|--workdir DIR|-w DIR] [--] [docker compose args]
 
-  --doppler    Run: doppler run -- docker compose … (default). Secrets inject at runtime.
-  --env        Run docker compose only; requires `.docker-local-build/.env` (after prepare).
-  --dir, -C    Staging directory (same as --workdir / -w). Overrides DOCKER_LOCAL_BUILD_WORKDIR for this run.
+  --env        Run docker compose only (default). Requires `.docker-local-build/.env`.
+  --doppler    Run: doppler run -- docker compose …
+  --dir, -C    Staging directory (same as --workdir / -w). Overrides DOCKER_LOCAL_BUILD_WORKDIR.
 
 If no compose args are given, defaults to: up --build -d
 
@@ -82,7 +84,7 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-MODE="${MODE:-doppler}"
+MODE="${MODE:-env}"
 
 if [[ -n "$WORKDIR_CLI" ]]; then
 	WORKDIR="$WORKDIR_CLI"

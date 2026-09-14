@@ -10,8 +10,8 @@
 #   ./scripts/local_docker_build.sh prepare           # dirs + YAML + .env only (no Docker)
 #   ./scripts/local_docker_build.sh prepare-build     # prepare + docker compose build bot — no up
 #
-# Typical flow: `./scripts/docker_compose_up.sh` or `./scripts/docker_compose_up.sh --env`
-# (runs prepare if missing). `--doppler` is the default (doppler run); `--env` uses staging `.env` only.
+# Typical flow: `./scripts/docker_compose_up.sh` (runs prepare if missing).
+# Default secrets mode is `--env` (staging `.env`). Pass `--doppler` for Doppler injection.
 #
 # Override staging dir:
 #   --workdir PATH   or   DOCKER_LOCAL_BUILD_WORKDIR=PATH   (legacy: DOCKER_LOCAL_IMAGE_TEST_WORKDIR)

@@ -1,3 +1,8 @@
+# OP.GG MCP tool schema notes (developer reference)
+#
+# This file lists tool names and closed field sets for OP.GG MCP integrations.
+# It is not an operator guide. User-facing slash commands are in the README.
+
 lol_list_summoner_matches
 Returns recent match history with per-game stats for the target summoner only (excludes enemy stats). MUST call for match history, performance analysis, or improvement tips. DO NOT call for profile/rank queries. Use lol_get_summoner_game_detail for full game details with all players.
 • game_name (string) - REQUIRED
@@ -31,7 +36,7 @@ game_history.*.game_type: Game queue type (SOLORANKED, FLEXRANKED, NORMAL, ARAM,
 game_history.*.average_tier_info: Average rank tier of players in the match
 game_history..participants..team_key: Team side (RED=bottom-right, BLUE=top-left)
 
-ol_get_summoner_game_detail
+lol_get_summoner_game_detail
 Returns full match detail (teams, participants, builds, bans) for a specific game id whenever the user drills into a single match.
 • region (string) - REQUIRED
 └ Server region code (e.g., KR, NA, EUW)

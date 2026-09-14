@@ -1,99 +1,149 @@
 # Contributing
 
-This is a maintainer-run side project — no review SLA or roadmap promises. Contributions that **improve the bot for broad use** are welcome. Very guild-specific cogs may land here for now; if the tree gets crowded, we may reorganize folders or even separate out a plugin/module structure to keep cogs organized for general use.
+This is a maintainer-run side project. There is no review SLA. Contributions that improve the bot for broad use are welcome.
 
----
+Clone this repository when you need the source tree. Typical reasons:
+
+- Open a pull request
+- Add or edit custom cogs
+- Change bot code and test a local Docker image
+
+Basic clone-and-build steps are in [QUICKSTART.md — Option B](QUICKSTART.md#option-b--clone-and-build-a-local-image). This document covers contribution rules and deeper local workflows.
+
+To run the published image without a clone, see [QUICKSTART.md — Option A](QUICKSTART.md#option-a--install-script-published-image).
 
 ## Before you open a pull request
 
-1. **Open a GitHub issue first** (bug, feature, or discussion) and describe the change.
-2. **Link that issue in your PR** body (`Fixes #123` or “See #123”). Blind drive-by PRs without context are harder to review and will be ignored.
-3. Follow **branch naming** examples: `feature/issue-42-mtg-throttle`, `fix/logging-embed-width`, `docs/setup-doppler`, `chore/ci-uv-cache`. Pick a prefix (`feature/`, `fix/`, `docs/`, `chore/`, …) and include a short slug/explanation (issue number optional but helpful).
-4. **Commit messages:** optional; following **[CONVENTIONAL_COMMITS.md](CONVENTIONAL_COMMITS.md)** (prefixes like `feat:`, `fix:`, `docs:`, …) keeps history and release notes readable.
+1. Open a GitHub issue first. Describe the change.
+2. Link that issue in the pull request body. E.g.: `Fixes #123`.
+3. Use a clear branch name. Examples: `feature/issue-42-mtg-throttle`, `fix/logging-embed-width`, `docs/quickstart`.
+4. Not required, but try and follow [CONVENTIONAL_COMMITS.md](CONVENTIONAL_COMMITS.md) for commit messages.
 
----
 
-## Reviews & merging
 
-- Currently **one maintainer**, just me — effectively **one approval** to merge.
-- **I would prefer GitHub’s squash merge** when merging PRs (one commit per change on `main`), but **a normal merge commit is still fine**. You don’t need a special local workflow—no obligation to rebase for a perfectly straight line unless you’re asked when resolving conflicts.
+## Python and tooling
 
----
+- Target Python 3.13 for local development. The project supports Python 3.12 and 3.13 per `pyproject.toml`.
+- Use [uv](https://docs.astral.sh/uv/).
+- Sync dependencies with `uv sync`. Add `--group dev` for tests.
 
-## Python & tooling
 
-- **Target Python 3.13** for development and local testing (CI uses a version compatible with `requires-python` in `[pyproject.toml](../pyproject.toml)`). Bumping the supported range is only when something like Nextcord requires it. Project was originally dependent on Python 3.12 but was bumped up with Nextcord v3. 
-- This project uses **[uv](https://docs.astral.sh/uv/)**. Run — `uv sync` (include `--group dev` for tests), then run the bot via the scripts below.
 
-### Running the bot locally (no Docker)
+## Run from a clone
 
-Use `**[scripts/run_bot.sh](../scripts/run_bot.sh)`** with a mode flag (full runbook: **[RUNNING_THE_BOT.md](RUNNING_THE_BOT.md)**):
+After you clone, configure secrets the same way as the quick start.
 
-- **Doppler:** `./scripts/run_bot.sh --doppler`
-- **Plain env** (you export / load vars yourself — `uv` does not read `.env`): `./scripts/run_bot.sh --env`
+```bash
+cp .env.example .env
+cp lavalink/application.yml.example lavalink/application.yml
+mkdir -p logs local_audio/music
+```
 
-Optional `**--dir DIR`** (or `**-C DIR**`) sets the process working directory; the default is the repository root (parent of `**scripts/**`, derived from this script’s path). On a VPS, that matches a checkout at `**/home/discord_bot**` when `**scripts/run_bot.sh**` lives under that tree — use `**./scripts/run_bot.sh --doppler**` (systemd `**WorkingDirectory**` is optional but still useful for relative paths elsewhere).
+Set `DISCORD_BOT_TOKEN`, `APPLICATION_ID`, and `GUILD_ID` in `.env`. Leave `DATABASE_URL` empty for the bundled Postgres profile.
 
-### Docker
+### Build a local Docker image  (for code changes)
 
-- **Compose** (root `[docker-compose.yml](../docker-compose.yml)`) and `**uv run`** paths should both remain working. See **[RUNNING_THE_BOT.md](RUNNING_THE_BOT.md)** for `**docker_compose_up.sh`**, `**.docker-local-build/**`, and the ZIP bundle entrypoints.
-- **Clone → Docker (local image):** `[scripts/local_docker_build.sh](../scripts/local_docker_build.sh)` `**prepare`** / `**prepare-build**` materializes `**.docker-local-build/**` (gitignored): copies root `**docker-compose.yml**` with bind-mount paths rewritten to repo `**local_audio/**`, `**lavalink/application.yml**`, and `**logs/**`, adds `**docker-compose.local-build.yml**` (Dockerfile build → `**discord-bot-sandbox:local-docker-build**`, `**hostname: bot**`, `**MUSIC_LOCAL_HTTP_***`). First `**prepare**` seeds `**.docker-local-build/.env**` from repo `**.env**` or `**.env.example**` (with Compose-network `**LAVALINK_***` and `**DATABASE_URL**` tweaks when points at loopback Postgres). Run stacks via `[scripts/docker_compose_up.sh](../scripts/docker_compose_up.sh)` (`**doppler run**` + compose; runs `**prepare**` if staging files are missing; default `**up --build -d**`) or `[scripts/local_docker_deploy.sh](../scripts/local_docker_deploy.sh)` (`**compose down**` then `**docker_compose_up**`). Override staging dir with `**--workdir**` / `**DOCKER_LOCAL_BUILD_WORKDIR**` (legacy: `**DOCKER_LOCAL_IMAGE_TEST_WORKDIR**`).
-- **Standalone release ZIP (`discord-bot-standalone.zip`):** `[scripts/build_deploy_bundle.sh](../scripts/build_deploy_bundle.sh)` assembles `**dist/discord-bot-standalone/`** and a `**dist/discord-bot-standalone.zip**` from the single-source files in the repo: slices `**docker-compose.yml**` from `**services:**` onward merged with `**scripts/deploy_bundle/docker-compose.bundle-header.frag**`, copies `**.env.example**` → `**bundle/.env.template**`, `**lavalink/application.yml.example**`, plus `**scripts/deploy_bundle/{README.md,startup_script.sh,docker_deploy.sh}**`. `**dist/**` is gitignored; run locally to verify packaging or before publishing a Release.
-- When you change `**[docker-compose.yml](../docker-compose.yml)**`, `**[.env.example](../.env.example)**`, or `**[DOPPLER_ENV_KEYS.md](DOPPLER_ENV_KEYS.md)**` for the same Compose/env surface (for example `**BOT_LOG_FILE**`, `**logs/**` bind mount), also run `**./scripts/build_deploy_bundle.sh**` before release and note that in the PR so the unpacked ZIP stays in sync.
+Use this path when you change Python source, cogs, or the Dockerfile. Compose builds from this repository instead of pulling the Docker image from Github.
 
----
+```bash
+./scripts/docker_compose_up.sh
+```
+
+That command prepares `.docker-local-build/` if needed, builds the bot image, and starts the stack. Default secrets mode is `--env`.
+
+
+| Task                   | Command                                         |
+| ---------------------- | ----------------------------------------------- |
+| Start or rebuild       | `./scripts/docker_compose_up.sh`                |
+| Follow logs            | `./scripts/docker_compose_up.sh logs -f bot`    |
+| Full recycle           | `./scripts/local_docker_deploy.sh`              |
+| Prepare staging only   | `./scripts/local_docker_build.sh prepare`       |
+| Prepare and build only | `./scripts/local_docker_build.sh prepare-build` |
+
+
+See [SCRIPTS.md](SCRIPTS.md) for details.
+
+### Host Python without Docker
+
+```bash
+uv sync --group dev
+./scripts/run_bot.sh
+```
+
+See [BARE_METAL.md](BARE_METAL.md).
+
+### Published image from a clone
+
+You can run root `docker compose up -d` from a clone. That still pulls `ghcr.io/jj3571/discord-bot:latest`. Prefer the install script in [QUICKSTART.md](QUICKSTART.md) unless you already have the repository open for other work.
+
+`scripts/bot.sh` wraps that same published-image compose file. Use it for backup, restore, and doctor checks. It does not build a local image.
 
 ## Database
 
-- **Any PostgreSQL** works for local dev; point `**DATABASE_URL`** at it. Bundled Docker Postgres (`**COMPOSE_PROFILES=bundled-db**`), pgAdmin (`**admin-ui**`), bare-metal `**scripts/postgres_local/**`, and Neon migration helpers are documented in **[POSTGRES.md](POSTGRES.md)**.
-- **Existing schema (especially economy)** is treated as stable. Changes that break live instances need **strong justification**, a **migration / upgrade path**, and would align with a **major** semantic version bump — discuss in the issue first.
+Point `DATABASE_URL` at any PostgreSQL server, or use the bundled Compose profile. See [DATABASE.md](DATABASE.md).
 
----
+Treat the existing schema as stable. Schema changes that break live instances need strong justification, a migration path, and a major version discussion in the issue first. 
 
 ## Cogs layout
 
-- `**main_bot/cogs/production/`** — what ships for “real” deployments. **PRs should land finished, working cogs here** (or clearly extension points there).
-- `**main_bot/cogs/development/`** — sandboxes for experiments; fine on `main` while WIP. Don’t rely on it for production stability. 
-- Prefer **avoiding tight coupling** between cogs unless necessary; **economy / voice / shared “core”** patterns are reasonable import targets.
-- `**testing/`**, `**debugging/**`, `**archived/**` — are moreso 'labeled' folder for holding older or non-working cogs; don’t move large refactors without coordination in the issue.
-- **Admin command toggle (cog docs):** `[coghelp/ADMIN_COMMAND_TOGGLE.md](coghelp/ADMIN_COMMAND_TOGGLE.md)` (operator overview), `[coghelp/ADMIN_COMMAND_TOGGLE_GUIDE.md](coghelp/ADMIN_COMMAND_TOGGLE_GUIDE.md)` (developer integration), `[coghelp/example_admin_cog.py](coghelp/example_admin_cog.py)` (snippet).
 
----
+| Path                                  | Role                                             |
+| ------------------------------------- | ------------------------------------------------ |
+| `main_bot/cogs/production/`           | Finished cogs for real deployments               |
+| `main_bot/cogs/development/`          | Experiments. Do not rely on these for production |
+| `testing/`, `debugging/`, `archived/` | Older or non-working cogs                        |
 
-## Config & secrets
 
-- New or renamed **environment variables**: update `**[.env.example](../.env.example)`**, `**[DOPPLER_ENV_KEYS.md](DOPPLER_ENV_KEYS.md)**`, and the `**environment:**` block in root `**[docker-compose.yml](../docker-compose.yml)**` (standalone ZIP is generated from those). Lavalink and local audio expectations stay in `**[README.md](../README.md)**` and `**lavalink/application.yml.example**`.
+Prefer loose coupling between cogs. Shared economy and voice helpers are reasonable import targets.
 
----
+To add a custom cog for local use:
 
-## What to verify before asking for merge
+1. Place the module under `src/main_bot/cogs/development/` or `production/`.
+2. Confirm `main_bot/main.py` loads that package path.
+3. Rebuild and run with `./scripts/docker_compose_up.sh`.
 
-1. `**uv run pytest**` (or match `**[.github/workflows/ci.yml](../.github/workflows/ci.yml)**`: `uv sync --group dev`, then `uv run pytest`).
-2. **Manual check** of the behaviour you changed (you don’t need to click every slash command in the guild, but **your** feature/fix/path should be tested). For user-facing slash/embed changes, a **short note in the PR** (what you tested, Discord-side) helps.
-3. **Docker regression (feature/fix touches runtime/container paths):** run `**./scripts/local_docker_build.sh prepare-build`** or `**./scripts/docker_compose_up.sh**` against `**.docker-local-build/**` so the bot still boots under Compose from your branch.
+Admin command toggle docs:
 
----
+- [coghelp/ADMIN_COMMAND_TOGGLE.md](coghelp/ADMIN_COMMAND_TOGGLE.md) — operator overview
+- [coghelp/ADMIN_COMMAND_TOGGLE_GUIDE.md](coghelp/ADMIN_COMMAND_TOGGLE_GUIDE.md) — developer guide
+- [coghelp/example_admin_cog.py](coghelp/example_admin_cog.py) — example snippet
 
-## Versioning (expectation)
 
-- Breaking changes to **public behaviour** or **data** (especially DB) should be called out in the issue/PR and routed through **[semantic versioning](https://semver.org/)** discussions when we cut releases.
 
-### Cutting a release (`scripts/tag_release.sh`)
+## Config and secrets
 
-Maintainers cut versions from a clone with `**./scripts/tag_release.sh`** (run from the repository root; the script is executable).
+When you add or rename an environment variable, update all of these files:
 
-1. It detects the latest plain `**vX.Y.Z**` tag (no `-beta`-style suffix), or assumes `**0.0.0**` if none exist.
-2. You choose **patch**, **minor**, **major**, or **custom** `X.Y.Z` interactively.
-3. Optionally sync `**pyproject.toml`** `version`, commit `**chore: bump version to …**`, create an **annotated** git tag `**vX.Y.Z`**, and `**git push**` the tag (and branch, if you committed the bump).
+1. `[.env.example](../.env.example)`
+2. [CONFIGURATION.md](CONFIGURATION.md)
+3. The `environment:` block in `[docker-compose.yml](../docker-compose.yml)`
 
-Pushing `**v*.*.***` triggers `**[.github/workflows/release.yml](../.github/workflows/release.yml)**` (Docker image to GHCR + GitHub Release). `**[.github/workflows/deploy.yml](../.github/workflows/deploy.yml)**` and the standalone bundle workflow are wired from that pipeline as documented in those files.
+Lavalink and local audio details live in [MUSIC.md](MUSIC.md) and `lavalink/application.yml.example`.
 
-Prefer a **clean working tree** before running it; if Git reports dirty files, resolve or stash unless you deliberately continue—tagging with unrelated local changes is easy to regret.
+Optional Doppler notes live in [SECRETS_DOPPLER.md](SECRETS_DOPPLER.md).
 
----
+## What to verify before merge
 
-## License & conduct
+1. Run `uv run pytest` (or match `.github/workflows/ci.yml`).
+2. Manually test the behaviour you changed.
+3. If you change container paths, run `./scripts/local_docker_build.sh prepare-build` or `./scripts/docker_compose_up.sh`.
 
-- No extra **license or CLA** requirements beyond what the repository already states (if empty, then that's still true).
-- No separate **Code of Conduct** doc — still be respectful and constructive in issues and PRs. Be a normal human being, please.
 
+
+## Versioning and releases
+
+Call out breaking changes to public behaviour or data in the issue and pull request. Discuss semantic versioning before a release.
+
+Maintainers cut versions with `./scripts/tag_release.sh` from the repository root.
+
+1. The script detects the latest plain `vX.Y.Z` tag.
+2. You choose patch, minor, major, or a custom version.
+3. Optional: sync `pyproject.toml`, commit, create an annotated tag, and push.
+
+Pushing `v*.*.*` triggers `.github/workflows/release.yml` (GHCR image and GitHub Release). `.github/workflows/deploy.yml` then deploys with Docker Compose. See [VPS_DEPLOY.md](VPS_DEPLOY.md).
+
+Prefer a clean working tree before you tag.
+
+## License and conduct
+
+No extra license or CLA requirements beyond the repository statements. Be respectful in issues and pull requests!

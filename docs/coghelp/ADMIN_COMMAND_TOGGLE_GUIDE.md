@@ -1,277 +1,156 @@
-# Admin Command Toggle System - Developer Guide
+# Admin command toggle — developer guide
 
-This guide explains how to integrate the admin command toggle functionality into your own cogs, allowing you to create slash commands that can be dynamically enabled/disabled without code changes.
+This guide shows how to add toggleable admin commands to a cog. Operator usage is in [ADMIN_COMMAND_TOGGLE.md](ADMIN_COMMAND_TOGGLE.md). An example lives in [example_admin_cog.py](example_admin_cog.py).
 
 ## Overview
 
-The admin command toggle system allows you to:
-- **Hide administrative commands** by default to keep Discord clean
-- **Enable commands on-demand** when configuration is needed
-- **Auto-reload cogs** when commands are toggled
-- **Manage multiple cogs** with their own command sets
+The toggle system can:
 
-## Quick Start
+- Hide administrative commands by default
+- Enable commands on demand
+- Reload cogs when commands change
+- Manage multiple cogs with separate command sets
 
-### 1. Update Admin Command Manager
+## Quick start
 
-First, add your cog to the admin command manager in `utils/admin_command_manager.py`:
+### 1. Register commands in the manager
+
+Edit `src/main_bot/utils/admin_command_manager.py`. Add your cog to `get_all_admin_commands` and `get_command_description`.
 
 ```python
 def get_all_admin_commands(self, cog_name: str) -> Dict[str, bool]:
-    """Get all admin commands for a cog with their enabled status"""
     all_commands = {
         "CraftyController": {
-            "crafty_servers": "List all Minecraft servers",
-            # ... existing commands ...
+            "automation_config": "Configure server automation settings",
+            "automation_status": "View automation settings for all servers",
         },
-        # Add your new cog here:
         "YourCogName": {
             "your_admin_command": "Description of your admin command",
             "another_admin_command": "Another admin command description",
-        }
+        },
     }
     # ... rest of method
 ```
 
-```python
-def get_command_description(self, cog_name: str, command_name: str) -> str:
-    """Get description for a command"""
-    descriptions = {
-        "CraftyController": {
-            # ... existing descriptions ...
-        },
-        # Add your cog descriptions:
-        "YourCogName": {
-            "your_admin_command": "Description of your admin command",
-            "another_admin_command": "Another admin command description",
-        }
-    }
-    # ... rest of method
-```
+Keys must match the Python method names on the cog.
 
-### 2. Create Your Cog with Toggleable Commands
+### 2. Create the cog with conditional registration
 
 ```python
 import nextcord
 from nextcord.ext import commands
 from nextcord import slash_command, SlashOption
-from utils.admin_command_manager import admin_command_manager
-from server_configs.config import GUILD_ID
+
+from main_bot.utils.admin_command_manager import admin_command_manager
+from main_bot.server_configs.config import GUILD_ID
+
 
 def conditional_slash_command(*args, **kwargs):
-    """Decorator that conditionally registers slash commands based on admin settings"""
     def decorator(func):
         command_name = func.__name__
-        cog_name = "YourCogName"  # Replace with your actual cog name
-        
+        cog_name = "YourCogName"
+
         if admin_command_manager.is_command_enabled(cog_name, command_name):
             return slash_command(*args, **kwargs)(func)
-        else:
-            # Create a dummy command object to handle autocomplete decorators
-            class DummyCommand:
-                def __init__(self, func):
-                    self.func = func
-                    self._disabled_admin_command = True
-                
-                def on_autocomplete(self, param_name):
-                    """Dummy autocomplete decorator for disabled commands"""
-                    def autocomplete_decorator(autocomplete_func):
-                        return autocomplete_func
-                    return autocomplete_decorator
-                
-                def __call__(self, *args, **kwargs):
-                    return self.func(*args, **kwargs)
-            
-            return DummyCommand(func)
+
+        class DummyCommand:
+            def __init__(self, func):
+                self.func = func
+                self._disabled_admin_command = True
+
+            def on_autocomplete(self, param_name):
+                def autocomplete_decorator(autocomplete_func):
+                    return autocomplete_func
+
+                return autocomplete_decorator
+
+            def __call__(self, *args, **kwargs):
+                return self.func(*args, **kwargs)
+
+        return DummyCommand(func)
+
     return decorator
+
 
 class YourCogName(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-    
-    # Regular command - always visible
+
     @slash_command(guild_ids=[GUILD_ID])
     async def regular_command(self, interaction: nextcord.Interaction):
-        """This command is always visible"""
-        await interaction.response.send_message("This is a regular command!")
-    
-    # Admin command - toggleable visibility
+        await interaction.response.send_message("This command is always visible.")
+
     @conditional_slash_command(guild_ids=[GUILD_ID])
     async def your_admin_command(
         self,
         interaction: nextcord.Interaction,
-        setting: str = SlashOption(description="Configuration setting", required=True)
+        setting: str = SlashOption(description="Configuration setting", required=True),
     ):
-        """This is an admin command that can be hidden/shown"""
-        await interaction.response.send_message(f"Admin command executed with setting: {setting}")
-    
-    # Autocomplete still works with disabled commands
+        await interaction.response.send_message(f"Admin command with setting: {setting}")
+
     @your_admin_command.on_autocomplete("setting")
     async def setting_autocomplete(self, interaction: nextcord.Interaction, current: str):
         choices = ["option1", "option2", "option3"]
         filtered = [opt for opt in choices if current.lower() in opt.lower()]
         await interaction.response.send_autocomplete(filtered[:25])
 
+
 def setup(bot):
     bot.add_cog(YourCogName(bot))
 ```
 
-### 3. Update Admin Toggle Choices
+### 3. Add the cog to `/admin_toggle` choices
 
-Add your cog to the choices in `cogs/production/admin_command_toggle.py`:
+Edit `src/main_bot/cogs/production/admin_command_toggle.py`. Add your cog name to the `choices` list for the cog option.
 
 ```python
 cog: str = SlashOption(
     description="Cog to manage",
-    choices=["CraftyController", "YourCogName"],  # Add your cog here
+    choices=["CraftyController", "YourCogName"],
     required=False,
-    default="CraftyController"
-),
+    default="CraftyController",
+)
 ```
 
-## Configuration Examples
+## Default enabled set
 
-### Default Command States
+Toggleable admin commands start disabled when `admin_commands.json` is first created. Always-visible commands use `@slash_command` and do not need an entry in the enabled set.
 
-You can set which commands start enabled/disabled by updating the default configuration in `utils/admin_command_manager.py`:
+Config path: `src/main_bot/server_configs/admin_commands.json`.
 
-```python
-def load_config(self):
-    # ... existing code ...
-    else:
-        # Default configuration
-        self.enabled_commands = {
-            "CraftyController": {
-                "crafty_servers", "crafty_start", "crafty_stop", 
-                # Regular commands enabled by default
-            },
-            "YourCogName": {
-                "regular_command",  # Always-visible commands
-                # Admin commands start disabled by default
-            }
-        }
-```
+## Operator commands after integration
 
-## Usage Examples
-
-Once integrated, users can manage your commands:
-
-```bash
-# List all commands for your cog
+```text
 /admin_toggle list cog:YourCogName
-
-# Enable an admin command (auto-applies changes)
 /admin_toggle enable cog:YourCogName command:your_admin_command
-
-# Disable an admin command (auto-applies changes)  
 /admin_toggle disable cog:YourCogName command:your_admin_command
-
-# Manual reload if auto-reload fails
 /admin_toggle reload cog:YourCogName
 ```
 
-## Advanced Features
+## Best practices
 
-### Custom Conditional Logic
+1. Use clear method names. Toggle keys are those method names.
+2. Disable configuration commands by default.
+3. Keep always-visible commands on `@slash_command`.
+4. Document which commands are toggleable in the cog help text.
 
-You can create more complex conditional logic:
+## Testing
 
-```python
-def conditional_slash_command(*args, **kwargs):
-    def decorator(func):
-        command_name = func.__name__
-        cog_name = "YourCogName"
-        
-        # Custom logic - only enable if both conditions are met
-        if (admin_command_manager.is_command_enabled(cog_name, command_name) and 
-            some_other_condition()):
-            return slash_command(*args, **kwargs)(func)
-        else:
-            return DummyCommand(func)
-    return decorator
-```
+```bash
+uv run python -c "import main_bot.cogs.production.your_cog_name; print('import ok')"
 
-### Per-Server Configuration
-
-You could extend the system to have per-server command visibility:
-
-```python
-def is_command_enabled(self, cog_name: str, command_name: str, guild_id: Optional[int] = None) -> bool:
-    """Check if a command is enabled, optionally per-guild"""
-    # Implementation depends on your needs
-```
-
-### Command Categories
-
-Group related admin commands:
-
-```python
-ADMIN_COMMAND_CATEGORIES = {
-    "YourCogName": {
-        "basic": ["command1", "command2"],
-        "advanced": ["admin_command1", "admin_command2"],
-        "dangerous": ["delete_everything", "reset_all"]
-    }
-}
-
-# Enable/disable entire categories
-def enable_category(self, cog_name: str, category: str):
-    # Implementation...
-```
-
-## Best Practices
-
-### 1. Command Naming
-- Use clear, descriptive command names
-- Prefix admin commands with cog name for clarity
-- Group related commands with consistent naming
-
-### 2. Default States
-- **Enable** frequently-used commands by default
-- **Disable** configuration/administrative commands by default
-- **Enable** troubleshooting commands if your cog is complex
-
-### 3. Error Handling
-- Always handle the case where disabled commands might be called
-- Provide helpful error messages
-- Log command toggle events for debugging
-
-### 4. Documentation
-- Document which commands are admin-only
-- Explain what each command does in descriptions
-- Update your cog's README with toggle instructions
-
-## Testing Your Implementation
-
-```python
-# Test that your cog imports correctly
-python -c "import cogs.production.your_cog_name; print('✅ Cog imports successfully')"
-
-# Test command registration
-python -c "
-from utils.admin_command_manager import admin_command_manager
+uv run python -c "
+from main_bot.utils.admin_command_manager import admin_command_manager
 commands = admin_command_manager.get_all_admin_commands('YourCogName')
 for cmd, enabled in commands.items():
-    status = '✅' if enabled else '❌'
-    print(f'{status} {cmd}')
+    print(cmd, enabled)
 "
 ```
 
 ## Troubleshooting
 
-### Commands Not Appearing After Enable
-- Check that auto-reload succeeded
-- Manually run `/admin_toggle reload`
-- Verify command name matches exactly (case-sensitive)
-
-### Import Errors
-- Ensure `admin_command_manager` is imported correctly
-- Check that your cog name is added to all required dictionaries
-- Verify conditional decorator is applied correctly
-
-### Autocomplete Issues
-- Make sure autocomplete decorators come after the conditional decorator
-- Check that DummyCommand handles autocomplete methods
-- Test with both enabled and disabled states
-
-This system provides a clean, maintainable way to manage command visibility across all your cogs while keeping the Discord interface uncluttered! 🚀
+| Symptom | Check |
+|---------|-------|
+| Command missing after enable | Run `/admin_toggle reload`. Confirm the method name matches the toggle key. |
+| Import errors | Import `main_bot.utils.admin_command_manager`. Confirm the cog name in every dictionary. |
+| Autocomplete broken | Place autocomplete decorators after the conditional decorator. Confirm `DummyCommand` keeps `on_autocomplete`. |

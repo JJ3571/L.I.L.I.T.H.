@@ -1,26 +1,29 @@
-# Docker Compose + Doppler
+# Docker Compose
 #
-# `environment` uses ${VAR} so Compose substitutes from:
-#   • Your shell (e.g. secrets injected by `doppler run`), or
-#   • Repo-root `.env` (Compose loads it automatically for substitution — gitignored).
+# `environment` uses ${VAR} so Compose substitutes from the repo-root `.env`
+# file (gitignored). Compose loads `.env` automatically for substitution.
 #
-# Optional Postgres (bundled) + pgAdmin — Compose profiles (see `.env.example` `COMPOSE_PROFILES`):
-#   • bundled-db  → postgres:17-alpine on discord_bot_net (PG17 for Neon dump/restore parity); bot default DATABASE_URL targets host `postgres`.
-#   • admin-ui    → pgAdmin on http://127.0.0.1:${PGADMIN_HOST_PORT:-5050} (requires bundled-db for DB host `postgres`).
-#   Clear COMPOSE_PROFILES or omit bundled-db when using external Postgres only (Neon, RDS); set DATABASE_URL.
+# Default Postgres is bundled via the Compose profile `bundled-db`
+# (see `.env.example` `COMPOSE_PROFILES`):
+#   • bundled-db  → postgres:17-alpine on discord_bot_net. The bot default
+#                   DATABASE_URL targets host `postgres`.
+#   • admin-ui    → pgAdmin on http://127.0.0.1:${PGADMIN_HOST_PORT:-5050}
+#                   (requires bundled-db for DB host `postgres`).
+# Clear COMPOSE_PROFILES (or omit bundled-db) when you use an external
+# Postgres URL. Set DATABASE_URL in `.env` for that case.
 #
-# Cloned-repo Docker (local image build): materialize `.docker-local-build/` + doppler-run Compose via
-#   ./scripts/docker_compose_up.sh    # runs ./scripts/local_docker_build.sh prepare if missing
-#   ./scripts/local_docker_deploy.sh # compose down then docker_compose_up (same staging dir)
+# Operator entry point (recommended):
+#   ./scripts/bot.sh up
 #
-# Published GHCR tags are for the standalone ZIP bundle (`discord-bot-standalone.zip`), not clone workflows.
+# Cloned-repo local image build (developers):
+#   ./scripts/docker_compose_up.sh     # prepare staging if missing; --env default
+#   ./scripts/local_docker_deploy.sh   # compose down then docker_compose_up
 #
-# Passing only `DOPPLER_TOKEN=… docker compose up` does NOT set DATABASE_URL etc.
-# Use `doppler run` or write `.env` first — see:
-# https://docs.doppler.com/docs/docker-compose#option-2-container-env-vars
+# Optional Doppler: pass --doppler to the scripts above. See docs/SECRETS_DOPPLER.md.
 #
-# Optional music folder slash commands (`MUSIC_FOLDER_1` … `25`, `music.py`): Compose only forwards env keys
-# listed under services.bot.environment. This file wires the first three slots; duplicate the pattern for 4–25.
+# Optional music folder slash commands (`MUSIC_FOLDER_1` … `25`, `music.py`):
+# Compose only forwards env keys listed under services.bot.environment.
+# This file wires the first three slots. Duplicate the pattern for slots 4–25.
 #
 services:
   bot:
@@ -80,7 +83,7 @@ services:
       CRAFTY_PASSWORD: ${CRAFTY_PASSWORD}
       CRAFTY_USERNAME: ${CRAFTY_USERNAME}
       CREATE_FIRETEAM_CHANNEL_ID: ${CREATE_FIRETEAM_CHANNEL_ID}
-      # Default targets bundled Postgres (`bundled-db` profile). Override for Neon / external hosts.
+      # Default targets bundled Postgres (`bundled-db` profile). Override for an external host.
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@postgres:5432/${POSTGRES_DB:-discord_bot}?sslmode=disable}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
       ENVIRONMENT: ${ENVIRONMENT}
@@ -95,7 +98,7 @@ services:
       # Lavalink WS/HTTP as seen FROM THE BOT CONTAINER. Do NOT use localhost/127.0.0.1 here:
       # that points at the bot container itself when running in Docker, so Wavelink never connects.
       # Default is Compose DNS hostname `lavalink` on the shared Docker network below.
-      # Host/Doppler LAVALINK_URI (often localhost for laptop dev) is intentionally NOT plumbed here
+      # Host LAVALINK_URI (often localhost for laptop dev) is intentionally NOT plumbed here
       # unless you pass LAVALINK_DOCKER_URI to override — e.g. external Lavalink: http://other:2333
       LAVALINK_URI: ${LAVALINK_DOCKER_URI:-http://lavalink:2333}
       LEAGUE_CHANNEL_ID: ${LEAGUE_CHANNEL_ID}

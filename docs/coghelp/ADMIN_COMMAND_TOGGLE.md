@@ -1,74 +1,69 @@
-# Admin Command Toggle System
+# Admin command toggle — operator guide
 
-This system allows you to dynamically show/hide admin commands without editing code or restarting the bot.
+This system shows or hides selected admin commands without a code edit. Changes apply after the cog reloads.
 
 ## Overview
 
-- **Core commands** (start, stop, restart, status, etc.) are enabled by default
-- **Administrative commands** (automation, configuration) are disabled by default  
-- Commands can be toggled on/off via Discord slash commands
-- Changes apply immediately after reloading the cog
+- Core Crafty commands stay available by default.
+- Toggleable admin commands start disabled.
+- Discord administrators control visibility with `/admin_toggle`.
+- Settings persist in `src/main_bot/server_configs/admin_commands.json`.
 
 ## Commands
 
 ### `/admin_toggle list`
-Shows all available admin commands and their current status:
-- ✅ = Currently enabled and visible in Discord
-- ❌ = Currently disabled and hidden from Discord
+
+Show every toggleable admin command and its status.
+
+- Enabled commands appear in Discord.
+- Disabled commands stay hidden.
 
 ### `/admin_toggle enable [command]`
-Enables a specific admin command. Use autocomplete to see available commands.
 
-### `/admin_toggle disable [command]`  
-Disables a specific admin command. Use autocomplete to see available commands.
+Enable one admin command. Use autocomplete to pick the command key.
+
+### `/admin_toggle disable [command]`
+
+Disable one admin command.
 
 ### `/admin_toggle reload`
-Manually reloads a cog (rarely needed since enable/disable auto-reload).
 
-## Usage Examples
+Reload the cog manually. Enable and disable already reload in most cases.
 
-```
-# See current status of all commands
+## Usage examples
+
+```text
 /admin_toggle list
-
-# Enable automation commands (auto-applies changes)
 /admin_toggle enable automation_config
 /admin_toggle enable automation_status
-
-# Later, disable them when not needed (auto-applies changes)
-/admin_toggle disable automation_config  
+/admin_toggle disable automation_config
 /admin_toggle disable automation_status
-
-# Manual reload only if auto-reload fails
 /admin_toggle reload
 ```
 
-## Default Configuration
+Toggle keys match Python method names (`automation_config`, `automation_status`). Discord may expose them as `/crafty_automation`, `/crafty_automation_status`, or as `/crafty` subcommands when registered.
 
-**Always Available (New Clean Structure):**
-- `/crafty servers` - List servers
-- `/crafty start` - Start servers  
-- `/crafty stop` - Stop servers
-- `/crafty restart` - Restart servers
-- `/crafty status` - Server statistics
-- `/crafty backup` - Create backups
-- `/crafty command` - Send console commands (Admin only)
+## Default Crafty configuration
 
-**Toggleable Admin Commands (Disabled by default):**
-- `/crafty automation` - Configure auto-shutdown settings
-- `/crafty automation-status` - View automation status
+Always available:
 
-## Technical Details
+- `/crafty servers`
+- `/crafty start`
+- `/crafty stop`
+- `/crafty restart`
+- `/crafty status`
+- `/crafty backup`
+- `/crafty command` (admin only)
 
-- Configuration stored in `src/main_bot/server_configs/admin_commands.json` (next to the `server_configs` package; older installs may have a one-time file at repo-root `server_configs/admin_commands.json` that is migrated on load)
-- Uses conditional decorators to register/skip commands at load time
-- Only administrators can use `/admin_toggle` commands
-- Changes persist across bot restarts
-- Autocomplete shows command status (✅/❌) for easy identification
+Toggleable (disabled by default):
+
+- Automation config (`automation_config`)
+- Automation status (`automation_status`)
 
 ## Permissions
 
-- Only users with Administrator permissions can toggle admin commands
-- All `/admin_toggle` commands are ephemeral (only visible to the user who runs them)
+Only users with the Discord Administrator permission can run `/admin_toggle`. Responses are ephemeral.
 
-This system is perfect for keeping your Discord command list clean while having administrative tools available when needed!
+## Developer guide
+
+To add toggleable commands to a new cog, see [ADMIN_COMMAND_TOGGLE_GUIDE.md](ADMIN_COMMAND_TOGGLE_GUIDE.md).
