@@ -12,6 +12,8 @@ Basic clone-and-build steps are in [QUICKSTART.md — Option B](QUICKSTART.md#op
 
 To run the published image without a clone, see [QUICKSTART.md — Option A](QUICKSTART.md#option-a--install-script-published-image).
 
+Cursor Cloud Agents (and other coding agents) should also read [AGENTS.md](../AGENTS.md).
+
 ## Before you open a pull request
 
 1. Open a GitHub issue first. Describe the change.
@@ -145,5 +147,4 @@ Pushing `v*.*.*` triggers `.github/workflows/release.yml` (GHCR image and GitHub
 Prefer a clean working tree before you tag.
 
 ## License and conduct
-
 No extra license or CLA requirements beyond the repository statements. Be respectful in issues and pull requests!

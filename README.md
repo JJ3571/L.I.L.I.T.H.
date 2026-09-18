@@ -39,6 +39,7 @@ This bot targets a single Discord guild; channels, roles, and IDs come from envi
 | [docs/BARE_METAL.md](docs/BARE_METAL.md) | Host Python without Docker |
 | [docs/SECRETS_DOPPLER.md](docs/SECRETS_DOPPLER.md) | Optional Doppler injection |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Clone, local builds, pull requests |
+| [AGENTS.md](AGENTS.md) | Instructions for coding agents (local and Cursor Cloud) |
 | [docs/CONVENTIONAL_COMMITS.md](docs/CONVENTIONAL_COMMITS.md) | Optional commit message style |
 
 ## Quick start (summary)
