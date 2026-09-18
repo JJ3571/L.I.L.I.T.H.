@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Optional
 
 import aiohttp
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 OPENCODE_BASE_URL = "https://opencode.ai/zen/go/v1"
 DEFAULT_OPENCODE_MODEL = "glm-5.3-flash"
 BRAVE_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+# OpenCode Go rejects generic SDK/library user agents; identify this bot instead.
+OPENCODE_USER_AGENT = "lilith-discord-bot/1.0"
 
 
 class OpenCodeError(Exception):
@@ -36,6 +39,8 @@ def format_opencode_user_error(exc: Exception) -> str:
             f"Set `OPENCODE_MODEL` to a global model such as `glm-5.3-flash`, `kimi-k2.6`, or `qwen3.6-plus`. "
             f"Current model: `{opencode_model()}`."
         )
+    if "MissingSessionID" in msg or "x-opencode-session" in msg:
+        return "❌ OpenCode API error: the request was missing a session header. Please try again."
     return f"❌ OpenCode API error: {msg[:300]}"
 
 
@@ -43,12 +48,20 @@ def opencode_model() -> str:
     return OPENCODE_MODEL or DEFAULT_OPENCODE_MODEL
 
 
-def _headers() -> dict[str, str]:
+def new_session_id() -> str:
+    """Opaque per-conversation id for OpenCode Go routing and prompt cache."""
+    return str(uuid.uuid4())
+
+
+def _headers(session_id: Optional[str] = None) -> dict[str, str]:
     if not OPENCODE_API_KEY:
         raise OpenCodeError("OPENCODE_API_KEY is not configured")
     return {
         "Authorization": f"Bearer {OPENCODE_API_KEY}",
         "Content-Type": "application/json",
+        "User-Agent": OPENCODE_USER_AGENT,
+        # Required by OpenCode Go; missing this returns HTTP 400 MissingSessionID.
+        "x-opencode-session": session_id or new_session_id(),
     }
 
 
@@ -91,13 +104,14 @@ def chat_completion(
     system_prompt: Optional[str] = None,
     *,
     response_format: Optional[str] = None,
+    session_id: Optional[str] = None,
     timeout_s: float = 120.0,
 ) -> Optional[str]:
     """Synchronous OpenCode Go chat completion."""
     payload = _build_payload(user_prompt, system_prompt, response_format=response_format)
     response = requests.post(
         f"{OPENCODE_BASE_URL}/chat/completions",
-        headers=_headers(),
+        headers=_headers(session_id),
         json=payload,
         timeout=timeout_s,
     )
@@ -111,6 +125,7 @@ async def async_chat_completion(
     system_prompt: Optional[str] = None,
     *,
     response_format: Optional[str] = None,
+    session_id: Optional[str] = None,
     timeout_s: float = 120.0,
 ) -> Optional[str]:
     """Async OpenCode Go chat completion."""
@@ -119,7 +134,7 @@ async def async_chat_completion(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
             f"{OPENCODE_BASE_URL}/chat/completions",
-            headers=_headers(),
+            headers=_headers(session_id),
             json=payload,
         ) as response:
             body = await response.text()
