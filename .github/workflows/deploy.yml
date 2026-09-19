@@ -51,6 +51,6 @@ jobs:
             fi
 
             docker compose down
-            doppler run --docker compose up -d --pull always
+            doppler run -- docker compose up -d --pull always
 #           The default Deploy behavior is using a local .env file. I prefer Doppler.
 #           docker compose up -d --pull always
