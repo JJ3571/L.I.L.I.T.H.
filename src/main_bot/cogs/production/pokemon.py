@@ -12,7 +12,6 @@ import difflib
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids
 
 _PK = "pokemon"
 
@@ -1366,7 +1365,7 @@ class Pokemon(commands.Cog, CogLogMixin):
     # @pkgo.subcommand(name="admin-add", description="Admin-only: Add a friend code for another user.")
     # async def admin_add(self, interaction: nextcord.Interaction, user: nextcord.User, in_game_name: str, friend_code: str):
     #     # Check if the user is an admin
-    #     if interaction.user.id not in admin_user_ids:
+    #     if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
     #         await interaction.response.send_message(
     #             "You do not have permission to use this command.", ephemeral=True
     #         )

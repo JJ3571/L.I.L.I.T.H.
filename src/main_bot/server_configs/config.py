@@ -3,7 +3,7 @@ import os
 import re
 import socket
 import ast
-from typing import Any, Dict, FrozenSet, List, NamedTuple, Tuple
+from typing import Any, Dict, List, NamedTuple, Tuple
 
 
 def _get_str(name: str, default: str = "") -> str:
@@ -135,10 +135,6 @@ def _get_json_str_list(name: str) -> List[str]:
     return out
 
 
-def _frozenset_lower(items: List[str]) -> FrozenSet[str]:
-    return frozenset(s.casefold().strip() for s in items if s and s.strip())
-
-
 def _get_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -206,8 +202,6 @@ LAVALINK_PASSWORD = _get_str("LAVALINK_PASSWORD", "youshallnotpass")
 MUSIC_LOCAL_HTTP_HOST = _get_str("MUSIC_LOCAL_HTTP_HOST", "127.0.0.1")
 MUSIC_LOCAL_HTTP_BIND_HOST = _get_str("MUSIC_LOCAL_HTTP_BIND_HOST", "")
 MUSIC_LOCAL_HTTP_PORT = _get_int("MUSIC_LOCAL_HTTP_PORT", 8765)
-# Voice channel IDs where slash music commands and VC controls are blocked (e.g. recording, watchparty). JSON array of ints; empty = disabled.
-MUSIC_VOICE_CHANNEL_DENYLIST_IDS = frozenset(_get_json_int_list("MUSIC_VOICE_CHANNEL_DENYLIST"))
 # Lavalink/Wavelink player volume on voice join: 100 = 100% (library default), 50 = 50%, up to 1000 for boost.
 MUSIC_DEFAULT_PLAYER_VOLUME = max(0, min(_get_int("MUSIC_DEFAULT_PLAYER_VOLUME", 50), 1000))
 # Optional flat folders under ``local_audio/music/{name}`` exposed as /name slash commands (see music cog).
@@ -262,30 +256,7 @@ if not DISCORD_BOT_TOKEN:
     print("[CONFIG] DISCORD_BOT_TOKEN is empty/missing (Doppler may not be injecting env vars).")
 
 
-# -------- Cog/shared config (formerly server_configs/cogs_config.py) --------
-
-# Admins
-admin_user_ids = _get_json_int_list("ADMIN_USER_IDS")
-
-# Error alerts (Discord ping + embed). Both zero = disabled.
-# Prefer a staff channel for ERROR_ALERT_CHANNEL_ID so delivery does not depend on DMs.
-ERROR_ALERT_USER_ID = _get_int("ERROR_ALERT_USER_ID", 0)
-ERROR_ALERT_CHANNEL_ID = _get_int("ERROR_ALERT_CHANNEL_ID", 0)
-
-# Channel IDs
-voice_channel_ids = _get_json_int_list("VOICE_CHANNEL_IDS")
-create_fireteam_channel_id = _get_int("CREATE_FIRETEAM_CHANNEL_ID", 0)
-watch_party_channel_id = _get_int("WATCH_PARTY_CHANNEL_ID", 0)
-watch_party_event_id = _get_int("WATCH_PARTY_EVENT_ID", 0)
-league_channel_id = _get_int("LEAGUE_CHANNEL_ID", 0)
-backup_channel_id = _get_int("BACKUP_CHANNEL_ID", 0)
-bot_spam_id = _get_int("BOT_SPAM_ID", 0)
-afk_channel_id = _get_int("AFK_CHANNEL_ID", 0)
-
-# Category IDs
-seen_category_id = _get_int("SEEN_CATEGORY_ID", 0)
-hidden_category_id = _get_int("HIDDEN_CATEGORY_ID", 0)
-waterboard_category_id = _get_int("WATERBOARD_CATEGORY_ID", 0)
+# -------- Cog/shared config (secrets + infra; guild snowflakes live in guild_settings / .setup) --------
 
 # API keys
 OMDB_API_KEY = _get_str("OMDB_API_KEY", "")
@@ -297,37 +268,12 @@ TIERLIST_IMAGE_ENGINE = _get_str("TIERLIST_IMAGE_ENGINE", "").lower()
 # Serpent image engine param: google, bing, yahoo, ddg (default google).
 SERPENT_IMAGE_ENGINE = _get_str("SERPENT_IMAGE_ENGINE", "google")
 
-# Emoji IDs
-heads_emoji_id = _get_int("HEADS_EMOJI_ID", 0)
-tails_emoji_id = _get_int("TAILS_EMOJI_ID", 0)
-# Economy UI (brainrot purchase buttons, etc.): guild emoji typically named ``coin``.
-coin_emoji_id = _get_int("COIN_EMOJI_ID", 0)
-
-# Birthdays
-birthday_announcement_channel_id = _get_int("BIRTHDAY_ANNOUNCEMENT_CHANNEL_ID", 0)
-birthday_reaction_channel_id = _get_int("BIRTHDAY_REACTION_CHANNEL_ID", 0)
-birthday_role_id = _get_int("BIRTHDAY_ROLE_ID", 0)
-birthday_emoji_id = _get_int("BIRTHDAY_EMOJI_ID", 0)
-birthday_channel_id = _get_int("BIRTHDAY_CHANNEL_ID", 0)
-
-# TCG config (JSON)
+# TCG display (JSON) — stays in env for v1 (poor modal fit)
 MANA_SYMBOLS = _get_json_dict("MANA_SYMBOLS")
 
-# MTG autocard: union of MTG_AUTOLINK_CHANNEL_IDS and MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS
-# (cooldown-listed channels are always autocard-eligible even if omitted from CHANNEL_IDS).
-_mtg_autolink_explicit_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_CHANNEL_IDS"))
-# Rate limit applies in these channels (see tcg.MTG_AUTOLINK_COOLDOWN_SEC). Empty = no throttle anywhere.
-mtg_autolink_cooldown_channel_ids = frozenset(_get_json_int_list("MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS"))
-mtg_autolink_channel_ids = _mtg_autolink_explicit_ids | mtg_autolink_cooldown_channel_ids
-mtg_autolink_blocked_names = _frozenset_lower(_get_json_str_list("MTG_AUTOLINK_BLOCKED_NAMES"))
-mtg_autolink_max_cards_per_message = _get_int("MTG_AUTOLINK_MAX_CARDS_PER_MESSAGE", 5) # Not in Doppler
-mtg_autolink_max_word_span = max(1, min(_get_int("MTG_AUTOLINK_MAX_WORD_SPAN", 4), 8)) # Not in Doppler
-
-# Say config (JSON + strings)
+# Say config (JSON + webhook secret) — avatars/webhook stay in env for v1
 webhook_url = _get_str("WEBHOOK_URL", "")
 character_avatars = _get_json_dict("CHARACTER_AVATARS")
-ZERONI_REACTION_EMOJI = _get_str("ZERONI_REACTION_EMOJI", "")
-COMMUNITY_NOTES_REACTION_EMOJI = _get_str("COMMUNITY_NOTES_REACTION_EMOJI", "")
 
 # Bot log viewer (.logging): optional systemd unit on Linux (e.g. discord_bot); else tails ``BOT_LOG_FILE``.
 # When ``BOT_LOG_FILE`` is unset, logs go to ``<project>/logs/discord_bot.log`` (see ``main_bot.paths.runtime_bot_log_path``).

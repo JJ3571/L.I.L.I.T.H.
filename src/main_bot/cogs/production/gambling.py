@@ -5,8 +5,8 @@ import asyncio
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import heads_emoji_id, tails_emoji_id
 
 class Gambling(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
@@ -77,8 +77,9 @@ class Gambling(commands.Cog, CogLogMixin):
 
         coin_flip = random.choice(["heads", "tails"])
 
-        heads_emoji = self.bot.get_emoji(heads_emoji_id)
-        tails_emoji = self.bot.get_emoji(tails_emoji_id)
+        gs = get_settings()
+        heads_emoji = self.bot.get_emoji(gs.get_int("heads_emoji_id"))
+        tails_emoji = self.bot.get_emoji(gs.get_int("tails_emoji_id"))
 
         # Use default text if emojis fail to load
         heads_str = str(heads_emoji) if heads_emoji else "Heads"

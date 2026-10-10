@@ -1,7 +1,8 @@
 import nextcord
 from nextcord.ext import commands
 
-from main_bot.server_configs.config import admin_user_ids, birthday_channel_id, birthday_role_id
+from main_bot.guild_settings import get_settings
+
 
 class Role_Debug(commands.Cog):
     def __init__(self, bot):
@@ -9,7 +10,8 @@ class Role_Debug(commands.Cog):
 
     @nextcord.slash_command(name="add_birthday_role", description="Add the birthday role to a user")
     async def add_birthday_role(self, interaction: nextcord.Interaction, user: nextcord.Member):
-        role = interaction.guild.get_role(birthday_role_id)
+        birthday_role_id = get_settings().get_int("birthday_role_id")
+        role = interaction.guild.get_role(birthday_role_id) if birthday_role_id else None
         if role:
             try:
                 await user.add_roles(role)
@@ -27,7 +29,8 @@ class Role_Debug(commands.Cog):
 
     @nextcord.slash_command(name="remove_birthday_role", description="Remove the birthday role from a user")
     async def remove_birthday_role(self, interaction: nextcord.Interaction, user: nextcord.Member):
-        role = interaction.guild.get_role(birthday_role_id)
+        birthday_role_id = get_settings().get_int("birthday_role_id")
+        role = interaction.guild.get_role(birthday_role_id) if birthday_role_id else None
         if role:
             try:
                 await user.remove_roles(role)

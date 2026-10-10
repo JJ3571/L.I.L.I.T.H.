@@ -12,8 +12,9 @@ import nextcord
 from nextcord import Interaction, SlashOption, TextInputStyle
 from nextcord.ext import commands, tasks
 
+from main_bot.guild_settings import is_bot_admin
 from main_bot.paths import PROJECT_ROOT
-from main_bot.server_configs.config import GUILD_ID, admin_user_ids
+from main_bot.server_configs.config import GUILD_ID
 from main_bot.utils.tierlist_image_search import (
     TierlistImageError,
     fetch_image_result_rows,
@@ -128,10 +129,10 @@ def clamp_int(value: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
 
 
-def _can_manage_tierlist(user_id: int, tl_row: Any) -> bool:
-    if user_id in set(admin_user_ids or []):
+def _can_manage_tierlist(user: nextcord.abc.User, tl_row: Any) -> bool:
+    if isinstance(user, nextcord.Member) and is_bot_admin(user):
         return True
-    return int(tl_row["creator_id"]) == int(user_id)
+    return int(tl_row["creator_id"]) == int(user.id)
 
 
 def _option_has_image(opt: Dict[str, Any]) -> bool:
@@ -1569,7 +1570,7 @@ class TierList(commands.Cog):
         if not tl or str(tl["status"]) != "active":
             await interaction.response.send_message("Tier list not found or not active.", ephemeral=True)
             return
-        if not _can_manage_tierlist(interaction.user.id, tl):
+        if not _can_manage_tierlist(interaction.user, tl):
             await interaction.response.send_message(
                 "Only the list creator or a bot admin can change settings.", ephemeral=True
             )

@@ -24,7 +24,7 @@
 
 HUZZAH! LILITH started as a sandbox to experiment with Discord slash commands and has grown into the bot below. Slash commands are loaded from cogs/production in main_bot.main (plus optional top-level commands registered from MUSIC_FOLDER_* env vars).
 
-This bot targets a single Discord guild; channels, roles, and IDs come from environment variables (see .env.example). To contribute, read docs/CONTRIBUTING.md.
+This bot targets a single Discord guild; channel/role/emoji IDs are configured with `.setup` (see docs/QUICKSTART.md and docs/CONFIGURATION.md). Secrets come from environment variables (see .env.example). To contribute, read docs/CONTRIBUTING.md.
 
 ## Docs index
 
@@ -170,7 +170,7 @@ Display the server coin leaderboard.
 
 #### `/econ tax <member> <amount> [reason]` (admin)
 
-Remove coins from a user balance. Requires `admin_user_ids`.
+Remove coins from a user balance. Requires Discord Administrator (or a bot-admin role from `.setup`).
 
 ### Gambling and betting
 
@@ -381,7 +381,7 @@ Users earn coins from voice activity, text activity, special events, and gamblin
 
 ### Permission levels
 
-- Commands marked **(admin)** require membership in `admin_user_ids` unless noted otherwise.
+- Commands marked **(admin)** require Discord Administrator (or a bot-admin role configured in `.setup`) unless noted otherwise.
 - `/admin_toggle` requires the Discord Administrator permission.
 - Economy commands require a sufficient coin balance where applicable.
 - `/event`, `/status`, and `/reminder` rely on Discord integration permissions.

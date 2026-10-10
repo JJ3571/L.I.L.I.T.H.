@@ -6,6 +6,7 @@ import pytz
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings
 from main_bot.server_configs.config import GUILD_ID
 
 _PU = "powerups"
@@ -558,12 +559,8 @@ class PowerupCog(commands.Cog, CogLogMixin):
             return  # No pending requests, no reminder needed
         
         # Get bot spam channel
-        try:
-            from main_bot.server_configs.config import bot_spam_id
-            bot_spam_channel = self.bot.get_channel(bot_spam_id)
-            if not bot_spam_channel:
-                return
-        except ImportError:
+        bot_spam_channel = self.bot.get_channel(get_settings().get_int("bot_spam_id"))
+        if not bot_spam_channel:
             return
         
         guild = self.bot.get_guild(GUILD_ID)
@@ -810,13 +807,9 @@ class PurchaseButton(nextcord.ui.Button):
                         embed.set_footer(text=f"💰 {total_cost} coins added to {target_user.display_name}'s trust fund")
                         
                         # Send to bot spam channel if available
-                        try:
-                            from main_bot.server_configs.config import bot_spam_id
-                            bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
-                            if bot_spam_channel:
-                                await bot_spam_channel.send(embed=embed)
-                        except ImportError:
-                            pass  # If bot_spam_id not available, skip public notification
+                        bot_spam_channel = interaction.guild.get_channel(get_settings().get_int("bot_spam_id"))
+                        if bot_spam_channel:
+                            await bot_spam_channel.send(embed=embed)
                         
                         await interaction.followup.send(f"Successfully purchased {powerup_info['name']}! {target_user.mention} has been notified and {total_cost} coins added to their trust fund.", ephemeral=True)
                     else:
@@ -1123,21 +1116,17 @@ class ArtRequestModal(nextcord.ui.Modal):
         await interaction.followup.send(embed=embed, ephemeral=True)
         
         # Send notification to bot spam channel
-        try:
-            from main_bot.server_configs.config import bot_spam_id
-            bot_spam_channel = interaction.guild.get_channel(bot_spam_id)
-            if bot_spam_channel:
-                artist_user = interaction.guild.get_member(self.powerup_info["target_user_id"])
-                public_embed = nextcord.Embed(
-                    title="🎨 New Art Request!",
-                    description=f"{interaction.user.mention} has commissioned art from {artist_user.mention if artist_user else 'TheGiftedNut'}!",
-                    color=nextcord.Color.purple()
-                )
-                public_embed.add_field(name="Request ID", value=f"#{request_id}", inline=True)
-                public_embed.add_field(name="Commission Value", value=f"{self.total_cost} 🪙", inline=True)
-                await bot_spam_channel.send(embed=public_embed)
-        except ImportError:
-            pass
+        bot_spam_channel = interaction.guild.get_channel(get_settings().get_int("bot_spam_id"))
+        if bot_spam_channel:
+            artist_user = interaction.guild.get_member(self.powerup_info["target_user_id"])
+            public_embed = nextcord.Embed(
+                title="🎨 New Art Request!",
+                description=f"{interaction.user.mention} has commissioned art from {artist_user.mention if artist_user else 'TheGiftedNut'}!",
+                color=nextcord.Color.purple()
+            )
+            public_embed.add_field(name="Request ID", value=f"#{request_id}", inline=True)
+            public_embed.add_field(name="Commission Value", value=f"{self.total_cost} 🪙", inline=True)
+            await bot_spam_channel.send(embed=public_embed)
 
 class ArtRequestManagementView(nextcord.ui.View):
     def __init__(self, powerup_cog_instance: PowerupCog, request_details: tuple):

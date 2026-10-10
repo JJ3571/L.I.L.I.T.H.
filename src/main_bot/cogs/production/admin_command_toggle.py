@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.utils.admin_command_manager import admin_command_manager
 
@@ -41,8 +42,8 @@ class AdminCommandToggle(commands.Cog, CogLogMixin):
     ):
         """Toggle admin command visibility"""
         # Check if user has admin permissions first (before any async operations)
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You need bot admin permissions to use this command.", ephemeral=True)
             return
         
         # Now defer for longer operations

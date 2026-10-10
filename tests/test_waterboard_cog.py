@@ -41,6 +41,7 @@ from nextcord.ext import commands
 
 import main_bot.cogs.production.waterboard_v3 as waterboard_mod
 from main_bot.cogs.production.waterboard_v3 import WaterboardCog3
+from main_bot.guild_settings import GuildSettings
 
 
 def _close_coro_fake_create_task(coro, *, name=None):  # noqa: ARG001
@@ -48,6 +49,24 @@ def _close_coro_fake_create_task(coro, *, name=None):  # noqa: ARG001
     if asyncio.iscoroutine(coro):
         coro.close()
     return MagicMock()
+
+
+def _patch_guild_settings(monkeypatch: pytest.MonkeyPatch, **values) -> GuildSettings:
+    """Point waterboard_v3.get_settings at an in-memory GuildSettings."""
+    gs = GuildSettings(guild_id=1, values=values)
+    monkeypatch.setattr(waterboard_mod, "get_settings", lambda: gs)
+    return gs
+
+
+def _patch_bot_admin(monkeypatch: pytest.MonkeyPatch, admin_ids: set[int] | list[int]) -> None:
+    """Patch is_bot_admin so listed user ids are treated as bot admins."""
+    allowed = set(admin_ids)
+
+    def _check(member, settings=None):  # noqa: ARG001
+        return getattr(member, "id", None) in allowed
+
+    monkeypatch.setattr(waterboard_mod, "is_bot_admin", _check)
+
 
 
 # ---------------------------------------------------------------------------
@@ -237,14 +256,14 @@ class TestWaterboardChannelHelpers:
         guild = MagicMock(spec=nextcord.Guild)
         guild.categories = [cat]
 
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 9001)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=9001)
         out = waterboard_cog_unit.get_waterboard_channels(guild, count=10)
         assert out == [ch_low, ch_high]
 
     def test_get_waterboard_channels_missing_category(
         self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 9001)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=9001)
         guild = MagicMock(spec=nextcord.Guild)
         guild.categories = []
         out = waterboard_cog_unit.get_waterboard_channels(guild, count=10)
@@ -260,7 +279,7 @@ class TestWaterboardChannelHelpers:
         guild = MagicMock()
         guild.default_role = MagicMock()
         guild.categories = [category]
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 42)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=42)
         ok = await waterboard_cog_unit.show_waterboard_category(guild)
         assert ok is True
         category.set_permissions.assert_awaited_once()
@@ -272,7 +291,7 @@ class TestWaterboardChannelHelpers:
         category = MagicMock()
         category.id = 42
         category.set_permissions = AsyncMock(side_effect=RuntimeError("api"))
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 42)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=42)
         guild = MagicMock()
         guild.categories = [category]
         ok = await waterboard_cog_unit.hide_waterboard_category(guild)
@@ -525,7 +544,7 @@ class TestWaterboardSlashHandlers:
     async def test_executivepardon_denies_non_admin(
         self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(waterboard_mod, "admin_user_ids", [999])
+        _patch_bot_admin(monkeypatch, [999])
         ix = _make_interaction(user_id=100)
         target = _make_member(200)
         cmd = waterboard_cog.executivepardon_slash_command
@@ -538,7 +557,7 @@ class TestWaterboardSlashHandlers:
         self, waterboard_cog: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         await waterboard_cog.create_tables()
-        monkeypatch.setattr(waterboard_mod, "admin_user_ids", [201])
+        _patch_bot_admin(monkeypatch, [201])
         ix = _make_interaction(user_id=201)
         target = _make_member(888)
         cmd = waterboard_cog.executivepardon_slash_command
@@ -579,7 +598,7 @@ class TestWaterboardSlashHandlers:
         econ.get_user_balance = AsyncMock(return_value=10_000)
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.return_value = econ
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 12345)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
 
         ix = _make_interaction()
         target = _make_member(301)
@@ -601,7 +620,7 @@ class TestWaterboardSlashHandlers:
         econ.get_user_balance = AsyncMock(return_value=10_000)
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.return_value = econ
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 0)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=0)
 
         ix = _make_interaction()
         target = _make_member(302)
@@ -646,7 +665,7 @@ class TestWaterboardSlashHandlers:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         await waterboard_cog.create_tables()
-        monkeypatch.setattr(waterboard_mod, "waterboard_category_id", 99)
+        _patch_guild_settings(monkeypatch, waterboard_category_id=99)
         econ = MagicMock()
         econ.get_user_balance = AsyncMock(return_value=50_000)
         econ.deduct_user_balance = AsyncMock()
@@ -711,9 +730,9 @@ class TestWaterboardPrefixCreateChannels:
     async def test_create_water_channels_denies_non_admin(
         self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(waterboard_mod, "admin_user_ids", [1])
+        _patch_bot_admin(monkeypatch, [1])
         ctx = MagicMock()
-        ctx.author.id = 2
+        ctx.author = _make_member(2, in_voice=False)
         ctx.send = AsyncMock()
         await waterboard_cog_unit.create_water_channels.callback(waterboard_cog_unit, ctx, None)
         ctx.send.assert_awaited_once()
@@ -722,10 +741,10 @@ class TestWaterboardPrefixCreateChannels:
     async def test_create_water_channels_wrong_guild(
         self, waterboard_cog_unit: WaterboardCog3, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(waterboard_mod, "admin_user_ids", [9])
+        _patch_bot_admin(monkeypatch, [9])
         monkeypatch.setattr(waterboard_mod, "GUILD_ID", 111)
         ctx = MagicMock()
-        ctx.author.id = 9
+        ctx.author = _make_member(9, in_voice=False)
         ctx.guild = MagicMock()
         ctx.guild.id = 222
         ctx.send = AsyncMock()

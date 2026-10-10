@@ -7,8 +7,8 @@ from datetime import datetime
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids
 
 _WG = "wager"
 
@@ -207,7 +207,7 @@ class FinalizeEventButton(Button):
             await interaction.send("Event not found.", ephemeral=True)
             return
 
-        is_admin = interaction.user.id in admin_user_ids
+        is_admin = isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)
         is_creator = interaction.user.id == event["creator_user_id"]
 
         if event["status"] == "open" and (is_admin or is_creator):
@@ -287,7 +287,7 @@ class TriggerFinalizationButton(Button):
     async def callback(self, interaction: Interaction):
         # This button is intended for admins from the list_pending_finalization view.
         # It will essentially replicate the admin part of FinalizeEventButton's callback
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.send("You do not have permission to do this.", ephemeral=True)
             return
 
@@ -595,7 +595,7 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
 
     @event_parent_cmd.subcommand(name="finalize", description="[Admin] List wagers needing finalization.")
     async def event_finalize(self, interaction: Interaction):
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.send("You do not have permission to use this command.", ephemeral=True)
             return
 
@@ -724,7 +724,7 @@ class BettingCog(commands.Cog, CogLogMixin, name="BettingEvents"):  # Renamed fo
         interaction: Interaction,
         event_id: int = SlashOption(description="The ID of the wager to delete.", required=True)
     ):
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.send("You do not have permission to use this command.", ephemeral=True)
             return
 

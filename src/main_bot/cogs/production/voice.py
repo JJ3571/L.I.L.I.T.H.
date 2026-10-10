@@ -6,8 +6,8 @@ import unicodedata
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import voice_channel_ids, create_fireteam_channel_id, seen_category_id, hidden_category_id, league_channel_id
 
 class VoiceCog(commands.Cog, CogLogMixin):
     def __init__(self, bot):
@@ -22,6 +22,14 @@ class VoiceCog(commands.Cog, CogLogMixin):
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
         if guild.id != GUILD_ID:
+            return
+
+        gs = get_settings()
+        voice_channel_ids = gs.get_int_list("voice_channel_ids")
+        create_fireteam_channel_id = gs.get_int("create_fireteam_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
+        if not seen_category_id or not hidden_category_id:
             return
 
         hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
@@ -68,6 +76,7 @@ class VoiceCog(commands.Cog, CogLogMixin):
 
     async def hide_channel(self, channel):
         guild = channel.guild
+        hidden_category_id = get_settings().get_int("hidden_category_id")
         hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
         if not hidden_category:
             self.cog_print(f"Hidden category not found in guild '{guild.name}'.")
@@ -94,6 +103,10 @@ class VoiceCog(commands.Cog, CogLogMixin):
             await interaction.followup.send("Command not applicable in this guild.", ephemeral=True)
             return
 
+        gs = get_settings()
+        voice_channel_ids = gs.get_int_list("voice_channel_ids")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
         seen_category = nextcord.utils.get(guild.categories, id=seen_category_id)
         if not hidden_category or not seen_category:
@@ -218,6 +231,7 @@ class VoiceCog(commands.Cog, CogLogMixin):
         if guild.id != GUILD_ID:
             return
 
+        voice_channel_ids = get_settings().get_int_list("voice_channel_ids")
         channel_id = interaction.channel_id
         channel = guild.get_channel(channel_id)
         if not channel or channel.id not in voice_channel_ids:
@@ -243,7 +257,7 @@ class VoiceCog(commands.Cog, CogLogMixin):
 
     async def move_channel_to_hidden(self, guild, channel, delay):
         await asyncio.sleep(delay)
-        hidden_category = guild.get_channel(hidden_category_id)
+        hidden_category = guild.get_channel(get_settings().get_int("hidden_category_id"))
         if hidden_category:
             await channel.edit(category=hidden_category)
             self.cog_print(f"Moved channel {channel.name} to hidden category after reservation time.")
@@ -260,6 +274,7 @@ class VoiceCog(commands.Cog, CogLogMixin):
         if guild.id != GUILD_ID:
             return
 
+        seen_category_id = get_settings().get_int("seen_category_id")
         seen_category = nextcord.utils.get(guild.categories, id=seen_category_id)
         if not seen_category:
             await interaction.followup.send("Seen category not found.", ephemeral=True)
@@ -287,6 +302,9 @@ class VoiceCog(commands.Cog, CogLogMixin):
         if guild.id != GUILD_ID:
             return
 
+        gs = get_settings()
+        league_channel_id = gs.get_int("league_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
         league_channel = guild.get_channel(league_channel_id)
         if not league_channel:
             await interaction.followup.send("League channel not found.", ephemeral=True)
@@ -312,6 +330,10 @@ class VoiceCog(commands.Cog, CogLogMixin):
         if guild.id != GUILD_ID:
             return
 
+        gs = get_settings()
+        voice_channel_ids = gs.get_int_list("voice_channel_ids")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         hidden_category = nextcord.utils.get(guild.categories, id=hidden_category_id)
         if not hidden_category:
             await interaction.followup.send("Hidden category not found.", ephemeral=True)

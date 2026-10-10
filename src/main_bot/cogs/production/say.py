@@ -20,11 +20,11 @@ from main_bot.utils.opencode_client import (
     chat_completion,
     format_opencode_user_error,
 )
-from main_bot.server_configs.config import webhook_url, character_avatars, ZERONI_REACTION_EMOJI, COMMUNITY_NOTES_REACTION_EMOJI
+from main_bot.guild_settings import get_settings
+from main_bot.server_configs.config import webhook_url, character_avatars
 
 
 COST_TO_SAY = 200
-COMMUNITY_NOTES_REACTION_EMOJI
 
 # OP.GG MCP Server endpoint
 OPGG_MCP_ENDPOINT = "https://mcp-api.op.gg/mcp"
@@ -2086,14 +2086,18 @@ class Say(commands.Cog, CogLogMixin):
         character_name = None
         response_prefix = None
 
-        if str(payload.emoji) == ZERONI_REACTION_EMOJI and message.content:
-            self.cog_print(f"'{ZERONI_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+        gs = get_settings()
+        zeroni_emoji = gs.get_str("zeroni_reaction_emoji")
+        notes_emoji = gs.get_str("community_notes_reaction_emoji")
+
+        if zeroni_emoji and str(payload.emoji) == zeroni_emoji and message.content:
+            self.cog_print(f"'{zeroni_emoji}' reaction detected from {user.name} on message in #{channel.name}")
             generator_function = generate_zeroni
             character_name = "Madame Zeroni"
             response_prefix = "Madame Zeroni (via raw reaction)"
 
-        elif str(payload.emoji) == COMMUNITY_NOTES_REACTION_EMOJI and message.content:
-            self.cog_print(f"'{COMMUNITY_NOTES_REACTION_EMOJI}' reaction detected from {user.name} on message in #{channel.name}")
+        elif notes_emoji and str(payload.emoji) == notes_emoji and message.content:
+            self.cog_print(f"'{notes_emoji}' reaction detected from {user.name} on message in #{channel.name}")
             generator_function = lambda text: generate_notes(text, True)  # Enable web search for reactions too
             character_name = "Community Note"
             response_prefix = "Community Note (via raw reaction)"

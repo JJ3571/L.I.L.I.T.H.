@@ -27,6 +27,7 @@ from wavelink.enums import AutoPlayMode, DiscordVoiceCloseType, TrackSource
 from wavelink.exceptions import InvalidNodeException, LavalinkLoadException, QueueEmpty
 
 from main_bot.cog_log_mixin import CogLogMixin, cog_console_line
+from main_bot.guild_settings import music_voice_denylist_ids
 from main_bot.paths import LOCAL_AUDIO_ROOT, LOCAL_MUSIC_ROOT
 from main_bot.server_configs.config import (
     GUILD_ID,
@@ -37,7 +38,6 @@ from main_bot.server_configs.config import (
     MUSIC_LOCAL_HTTP_BIND_HOST,
     MUSIC_LOCAL_HTTP_HOST,
     MUSIC_LOCAL_HTTP_PORT,
-    MUSIC_VOICE_CHANNEL_DENYLIST_IDS,
 )
 from main_bot.utils.discord_voice import human_members_in_voice_channel, is_discord_unknown_message_error
 from main_bot.utils.jazz_http_server import LocalMusicHttpServer
@@ -168,7 +168,7 @@ FOLDER_PLAYBACK_SETTINGS: dict[str, LocalFolderDefinition] = _build_folder_playb
 
 
 def _is_music_voice_channel_blocked(channel_id: int) -> bool:
-    return channel_id in MUSIC_VOICE_CHANNEL_DENYLIST_IDS
+    return channel_id in music_voice_denylist_ids()
 
 
 def _format_duration_ms(ms: int) -> str:

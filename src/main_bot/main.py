@@ -19,6 +19,7 @@ from main_bot.nextcord_voice_gateway_patch import apply_nextcord_voice_gateway_v
 from main_bot.db.ddl import init_all_schemas
 from main_bot.db.pool import close_pool, create_pool
 from main_bot.error_alerts import ensure_asyncio_exception_handler, install_error_alerts
+from main_bot.guild_settings import load_guild_settings
 from main_bot.paths import runtime_bot_log_path
 from main_bot.server_configs.config import APPLICATION_ID, DISCORD_BOT_TOKEN, GUILD_ID
 
@@ -46,7 +47,9 @@ class MainBot(commands.Bot):
         pool = await create_pool()
         self.pg_pool = pool
         await init_all_schemas(pool)
+        await load_guild_settings(pool, GUILD_ID)
         boot_print("PostgreSQL pool ready and schemas initialized.")
+        boot_print(f"Guild settings loaded for guild_id={GUILD_ID}.")
         await super().login(token)
 
     async def close(self) -> None:

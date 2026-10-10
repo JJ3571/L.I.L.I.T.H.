@@ -20,11 +20,8 @@ from wavelink.exceptions import InvalidNodeException, LavalinkLoadException
 from main_bot.cogs.production.music import MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC
 
 from main_bot.paths import LOCAL_AUDIO_ROOT, PROJECT_ROOT
-from main_bot.server_configs.config import (
-    GUILD_ID,
-    MUSIC_VOICE_CHANNEL_DENYLIST_IDS,
-    coin_emoji_id,
-)
+from main_bot.guild_settings import get_settings, music_voice_denylist_ids
+from main_bot.server_configs.config import GUILD_ID
 from main_bot.utils.discord_voice import human_members_in_voice_channel
 
 _LOG = logging.getLogger("nextcord.brainrot")
@@ -60,7 +57,8 @@ SMOKE_DETECTOR_FILE = "smoke_detector.mp3"
 
 
 def brainrot_purchase_button_emoji() -> Union[str, nextcord.PartialEmoji]:
-    """Guild ``coin`` emoji when ``COIN_EMOJI_ID`` is set; else Unicode coin."""
+    """Guild ``coin`` emoji when configured; else Unicode coin."""
+    coin_emoji_id = get_settings().get_int("coin_emoji_id")
     if coin_emoji_id:
         return nextcord.PartialEmoji(name="coin", id=coin_emoji_id)
     return "\U0001FA99"
@@ -128,7 +126,7 @@ def build_burst_paths(
 
 
 def _is_voice_channel_blocked(channel_id: int) -> bool:
-    return channel_id in MUSIC_VOICE_CHANNEL_DENYLIST_IDS
+    return channel_id in music_voice_denylist_ids()
 
 
 def _path_display(path: Path) -> str:

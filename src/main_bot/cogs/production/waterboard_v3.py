@@ -12,8 +12,8 @@ from asyncio import Semaphore
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.config import GUILD_ID, waterboard_category_id
-from main_bot.server_configs.config import bot_spam_id, admin_user_ids
+from main_bot.guild_settings import config_missing_message, get_settings, is_bot_admin
+from main_bot.server_configs.config import GUILD_ID
 from main_bot.cogs.production.economy import Economy
 
 _WB = "waterboard"
@@ -85,7 +85,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     def get_waterboard_channels(self, guild, count: int = 10):
         """Get voice channels from the waterboard category, sorted by position. Returns up to `count` channels."""
-        category = nextcord.utils.get(guild.categories, id=waterboard_category_id)
+        category = nextcord.utils.get(guild.categories, id=get_settings().get_int("waterboard_category_id"))
         if not category:
             return []
         voice_channels = [
@@ -98,7 +98,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     async def show_waterboard_category(self, guild):
         """Make the waterboard category visible to @everyone."""
-        category = nextcord.utils.get(guild.categories, id=waterboard_category_id)
+        category = nextcord.utils.get(guild.categories, id=get_settings().get_int("waterboard_category_id"))
         if not category:
             return False
         try:
@@ -115,7 +115,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     async def hide_waterboard_category(self, guild):
         """Hide the waterboard category from @everyone."""
-        category = nextcord.utils.get(guild.categories, id=waterboard_category_id)
+        category = nextcord.utils.get(guild.categories, id=get_settings().get_int("waterboard_category_id"))
         if not category:
             return False
         try:
@@ -208,7 +208,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         - No args: Creates a new "Waterboard" category and 10 channels in it. Returns the category ID for config.
         - With category_id: Creates 10 channels under the specified category.
         """
-        if ctx.author.id not in admin_user_ids:
+        if not isinstance(ctx.author, nextcord.Member) or not is_bot_admin(ctx.author):
             await ctx.send("You do not have permission to use this command.")
             return
 
@@ -298,7 +298,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             name="hours", description="Duration in hours", default=1, required=True
         ),
     ):
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             embed = nextcord.Embed(
                 title="Permission Denied",
                 description="You do not have permission to use this command.",
@@ -456,11 +456,14 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             )
             return
 
-        if not waterboard_category_id:
+        gs = get_settings()
+        if gs.is_group_skipped("waterboard") or not gs.get_int("waterboard_category_id"):
             await interaction.followup.send(
                 embed=nextcord.Embed(
                     title="Configuration Error",
-                    description="WATERBOARD_CATEGORY_ID is not set. Run `.create_water_channels` first.",
+                    description=config_missing_message(
+                        "waterboard", skipped=gs.is_group_skipped("waterboard")
+                    ),
                     color=nextcord.Color.red(),
                 ),
                 ephemeral=True,
@@ -503,11 +506,14 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             )
             return
 
-        if not waterboard_category_id:
+        gs = get_settings()
+        if gs.is_group_skipped("waterboard") or not gs.get_int("waterboard_category_id"):
             await interaction.followup.send(
                 embed=nextcord.Embed(
                     title="Configuration Error",
-                    description="WATERBOARD_CATEGORY_ID is not set. Run `.create_water_channels` first.",
+                    description=config_missing_message(
+                        "waterboard", skipped=gs.is_group_skipped("waterboard")
+                    ),
                     color=nextcord.Color.red(),
                 ),
                 ephemeral=True,
@@ -646,11 +652,14 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             ephemeral=True,
         )
 
-        if not waterboard_category_id:
+        gs = get_settings()
+        if gs.is_group_skipped("waterboard") or not gs.get_int("waterboard_category_id"):
             await interaction.followup.send(
                 embed=nextcord.Embed(
                     title="Configuration Error",
-                    description="WATERBOARD_CATEGORY_ID is not set. Run `.create_water_channels` first.",
+                    description=config_missing_message(
+                        "waterboard", skipped=gs.is_group_skipped("waterboard")
+                    ),
                     color=nextcord.Color.red(),
                 ),
                 ephemeral=True,
@@ -709,7 +718,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         self, interaction: nextcord.Interaction, user: nextcord.Member
     ):
         guild = interaction.guild
-        bot_spam = guild.get_channel(bot_spam_id)
+        bot_spam = guild.get_channel(get_settings().get_int("bot_spam_id"))
         original_channel_id = user.voice.channel.id if user.voice else None
         session_counted = False
 
@@ -777,7 +786,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
         self, interaction: nextcord.Interaction, user: nextcord.Member
     ):
         guild = interaction.guild
-        bot_spam = guild.get_channel(bot_spam_id)
+        bot_spam = guild.get_channel(get_settings().get_int("bot_spam_id"))
         original_channel = user.voice.channel if user.voice else None
         original_permissions = (
             original_channel.overwrites_for(user) if original_channel else None
@@ -882,7 +891,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
     ):
         """Waterboard party: first two water channels only — all targets together, then relay, then home."""
         guild = interaction.guild
-        bot_spam = guild.get_channel(bot_spam_id)
+        bot_spam = guild.get_channel(get_settings().get_int("bot_spam_id"))
         original_channel_id = original_channel.id
         session_counted = False
         party_ids = {u.id for u in target_users}

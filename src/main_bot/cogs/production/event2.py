@@ -7,8 +7,8 @@ import re
 import asyncio
 import asyncpg
 
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
 
@@ -1294,7 +1294,7 @@ class ReminderView(nextcord.ui.View):
         reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
         
         # Check if user has permission (creator or admin)
-        if interaction.user.id != creator_id and interaction.user.id not in admin_user_ids:
+        if interaction.user.id != creator_id and not (isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)):
             await interaction.response.send_message("❌ Only the reminder creator or server admins can manage this reminder!", ephemeral=True)
             return
         

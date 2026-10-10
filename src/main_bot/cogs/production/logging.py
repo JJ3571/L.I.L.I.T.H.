@@ -7,16 +7,16 @@ import re
 import shutil
 import textwrap
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import nextcord
 from nextcord.ext import commands
 
+from main_bot.guild_settings import is_bot_admin
 from main_bot.paths import runtime_bot_log_path
 from main_bot.server_configs.config import (
     BOT_LOG_JOURNAL_EXTRA_UNITS,
     BOT_LOG_JOURNAL_UNIT,
-    admin_user_ids,
 )
 
 LINES_PER_PAGE = 6
@@ -258,7 +258,6 @@ def _build_embed(
 class LoggingControlView(nextcord.ui.View):
     def __init__(
         self,
-        admin_ids: Set[int],
         user_command_message: Optional[nextcord.Message],
         sources: List[Tuple[str, str]],
         current_source: str,
@@ -267,7 +266,6 @@ class LoggingControlView(nextcord.ui.View):
         footers: Dict[str, str],
     ):
         super().__init__(timeout=600.0)
-        self._admin_ids = admin_ids
         self._user_command_message = user_command_message
         self._sources = sources
         self._current_source = current_source
@@ -276,8 +274,10 @@ class LoggingControlView(nextcord.ui.View):
         self._footers = footers
         self._build_items()
 
-    def _is_admin(self, user_id: int) -> bool:
-        return user_id in self._admin_ids
+    def _is_admin(self, member: nextcord.abc.User) -> bool:
+        if isinstance(member, nextcord.Member):
+            return is_bot_admin(member)
+        return False
 
     def _build_items(self) -> None:
         lines = self._cache.get(self._current_source, [])
@@ -286,13 +286,12 @@ class LoggingControlView(nextcord.ui.View):
         refresh = nextcord.ui.Button(label="Refresh", style=nextcord.ButtonStyle.primary, emoji="🔄")
 
         async def refresh_cb(interaction: nextcord.Interaction) -> None:
-            if not self._is_admin(interaction.user.id):
+            if not self._is_admin(interaction.user):
                 await interaction.response.send_message("You do not have permission.", ephemeral=True)
                 return
             await interaction.response.defer()
             cache, footers = await _fetch_all_sources(self._sources)
             nv = LoggingControlView(
-                self._admin_ids,
                 self._user_command_message,
                 self._sources,
                 self._current_source,
@@ -315,7 +314,7 @@ class LoggingControlView(nextcord.ui.View):
         delete_btn = nextcord.ui.Button(label="Delete", style=nextcord.ButtonStyle.danger, emoji="🗑️")
 
         async def delete_cb(interaction: nextcord.Interaction) -> None:
-            if not self._is_admin(interaction.user.id):
+            if not self._is_admin(interaction.user):
                 await interaction.response.send_message("You do not have permission.", ephemeral=True)
                 return
             await interaction.response.defer(ephemeral=True)
@@ -339,14 +338,13 @@ class LoggingControlView(nextcord.ui.View):
         next_b.disabled = self._page <= 0
 
         async def prev_cb(interaction: nextcord.Interaction) -> None:
-            if not self._is_admin(interaction.user.id):
+            if not self._is_admin(interaction.user):
                 await interaction.response.send_message("You do not have permission.", ephemeral=True)
                 return
             lines = self._cache.get(self._current_source, [])
             max_p = _max_page_index(lines)
             new_page = min(self._page + 1, max_p)
             nv = LoggingControlView(
-                self._admin_ids,
                 self._user_command_message,
                 self._sources,
                 self._current_source,
@@ -364,12 +362,11 @@ class LoggingControlView(nextcord.ui.View):
             await interaction.response.edit_message(embed=embed, view=nv)
 
         async def next_cb(interaction: nextcord.Interaction) -> None:
-            if not self._is_admin(interaction.user.id):
+            if not self._is_admin(interaction.user):
                 await interaction.response.send_message("You do not have permission.", ephemeral=True)
                 return
             new_page = max(self._page - 1, 0)
             nv = LoggingControlView(
-                self._admin_ids,
                 self._user_command_message,
                 self._sources,
                 self._current_source,
@@ -401,12 +398,11 @@ class LoggingControlView(nextcord.ui.View):
                 btn = nextcord.ui.Button(label=label, style=style)
 
                 async def svc_cb(interaction: nextcord.Interaction, sid: str = source_id) -> None:
-                    if not self._is_admin(interaction.user.id):
+                    if not self._is_admin(interaction.user):
                         await interaction.response.send_message("You do not have permission.", ephemeral=True)
                         return
                     lines = self._cache.get(sid, [])
                     nv = LoggingControlView(
-                        self._admin_ids,
                         self._user_command_message,
                         self._sources,
                         sid,
@@ -433,7 +429,7 @@ class LoggingCog(commands.Cog):
 
     @commands.command(name="logging")
     async def logging_cmd(self, ctx: commands.Context) -> None:
-        if ctx.author.id not in admin_user_ids:
+        if not isinstance(ctx.author, nextcord.Member) or not is_bot_admin(ctx.author):
             await ctx.send("You do not have permission to use this command.")
             return
 
@@ -441,7 +437,6 @@ class LoggingCog(commands.Cog):
         cache, footers = await _fetch_all_sources(sources)
         current = sources[0][0]
         view = LoggingControlView(
-            admin_ids=set(admin_user_ids),
             user_command_message=ctx.message,
             sources=sources,
             current_source=current,

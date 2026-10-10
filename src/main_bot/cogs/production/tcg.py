@@ -9,15 +9,8 @@ from nextcord.ext import commands
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.config import (
-    GUILD_ID,
-    MANA_SYMBOLS,
-    mtg_autolink_blocked_names,
-    mtg_autolink_channel_ids,
-    mtg_autolink_cooldown_channel_ids,
-    mtg_autolink_max_cards_per_message,
-    mtg_autolink_max_word_span,
-)
+from main_bot.guild_settings import get_settings, mtg_autolink_channel_ids
+from main_bot.server_configs.config import GUILD_ID, MANA_SYMBOLS
 from main_bot.utils.mtg_autolink import (
     distinct_span_phrases,
     greedy_resolve_cards,
@@ -61,7 +54,8 @@ class TCG(commands.Cog, CogLogMixin):
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message) -> None:
-        if not mtg_autolink_channel_ids:
+        channel_ids = mtg_autolink_channel_ids()
+        if not channel_ids:
             return
         if message.author.bot:
             return
@@ -71,13 +65,12 @@ class TCG(commands.Cog, CogLogMixin):
             return
 
         ch_id = message.channel.id
-        if ch_id not in mtg_autolink_channel_ids:
+        if ch_id not in channel_ids:
             return
 
-        cooldown_for_channel = (
-            bool(mtg_autolink_cooldown_channel_ids)
-            and ch_id in mtg_autolink_cooldown_channel_ids
-        )
+        gs = get_settings()
+        cooldown_ids = set(gs.get_int_list("mtg_autolink_cooldown_channel_ids"))
+        cooldown_for_channel = bool(cooldown_ids) and ch_id in cooldown_ids
         if cooldown_for_channel:
             now = time.monotonic()
             last_at = self._mtg_autolink_last_sent_at.get(ch_id)
@@ -94,8 +87,8 @@ class TCG(commands.Cog, CogLogMixin):
 
         phrases = distinct_span_phrases(
             tokens,
-            mtg_autolink_max_word_span,
-            mtg_autolink_blocked_names,
+            gs.get_int("mtg_autolink_max_word_span"),
+            frozenset(normalize_phrase(n) for n in gs.get_str_list("mtg_autolink_blocked_names")),
         )
         if not phrases:
             return
@@ -118,10 +111,12 @@ class TCG(commands.Cog, CogLogMixin):
 
             cards = greedy_resolve_cards(
                 tokens,
-                mtg_autolink_max_word_span,
+                gs.get_int("mtg_autolink_max_word_span"),
                 resolved,
-                blocked_normalized=mtg_autolink_blocked_names,
-                max_cards=mtg_autolink_max_cards_per_message,
+                blocked_normalized=frozenset(
+                    normalize_phrase(n) for n in gs.get_str_list("mtg_autolink_blocked_names")
+                ),
+                max_cards=gs.get_int("mtg_autolink_max_cards_per_message"),
             )
             if not cards:
                 return

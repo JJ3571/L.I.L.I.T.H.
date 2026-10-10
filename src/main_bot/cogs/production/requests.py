@@ -8,8 +8,8 @@ import pytz
 
 import asyncpg
 
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids
 
 _RQ = "request"
 
@@ -230,7 +230,7 @@ class RequestsCog(commands.Cog, name="Requests"):
         interaction: Interaction,
         request_id: int = SlashOption(description="The ID of the feature request to resolve.", required=True),
     ):
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You do not have permission to resolve requests.", ephemeral=True)
             return
 
@@ -298,7 +298,7 @@ class RequestsCog(commands.Cog, name="Requests"):
         interaction: Interaction,
         request_id: int = SlashOption(description="The ID of the bug report to resolve.", required=True),
     ):
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You do not have permission to resolve requests.", ephemeral=True)
             return
 

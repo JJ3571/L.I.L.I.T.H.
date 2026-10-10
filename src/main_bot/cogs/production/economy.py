@@ -6,8 +6,8 @@ import pytz
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings, is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import watch_party_channel_id, admin_user_ids, afk_channel_id, heads_emoji_id, tails_emoji_id, bot_spam_id
 
 
 _SCHEMA = "economy"
@@ -159,7 +159,7 @@ class Economy(commands.Cog, CogLogMixin):
         def is_rewardable_channel(channel: nextcord.VoiceChannel) -> bool:
             if channel is None:
                 return False
-            if channel.id == afk_channel_id:  # AFK channel is not rewardable
+            if channel.id == get_settings().get_int("afk_channel_id"):  # AFK channel is not rewardable
                 return False
             if "💧" in channel.name:  # Water channels are not rewardable
                 return False
@@ -263,7 +263,7 @@ class Economy(commands.Cog, CogLogMixin):
 
         sender_id = interaction.user.id
 
-        if sender_id in admin_user_ids:
+        if isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user):
             # Use AdminGiveView as defined below (assuming it's outside the Cog or defined later)
             # If AdminGiveView is defined inside the Cog, access it as Economy.AdminGiveView
             view = AdminGiveView(self, member, amount, reason)
@@ -297,7 +297,7 @@ class Economy(commands.Cog, CogLogMixin):
                           reason: str = nextcord.SlashOption(required=True, description='Reason for the tax.')):
         
         # Check if the command issuer is an admin
-        if interaction.user.id not in admin_user_ids:
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
             return
 
@@ -339,7 +339,7 @@ class Economy(commands.Cog, CogLogMixin):
         await interaction.response.send_message(embed=embed)
 
         # Send notification to bot_spam channel
-        bot_spam_channel = self.bot.get_channel(bot_spam_id)
+        bot_spam_channel = self.bot.get_channel(get_settings().get_int("bot_spam_id"))
         if bot_spam_channel:
             spam_embed = nextcord.Embed(
                 title="EXECUTIVE TARIFF!🧑‍⚖️",
@@ -373,7 +373,7 @@ class Economy(commands.Cog, CogLogMixin):
 
         # Create the view instance
         # Pass self.bot (the bot instance) and bot_spam_id
-        view = ReceiveRequestView(self, interaction.user, member, amount, reason, self.bot, bot_spam_id)
+        view = ReceiveRequestView(self, interaction.user, member, amount, reason, self.bot, get_settings().get_int("bot_spam_id"))
 
         # Create the initial request embed
         embed = nextcord.Embed(
@@ -398,7 +398,7 @@ class Economy(commands.Cog, CogLogMixin):
 
 
         # Send a notification to bot_spam_id channel
-        bot_spam_channel = self.bot.get_channel(bot_spam_id)
+        bot_spam_channel = self.bot.get_channel(get_settings().get_int("bot_spam_id"))
         if bot_spam_channel:
             spam_embed = nextcord.Embed(
                 title="Payment Request Initiated",

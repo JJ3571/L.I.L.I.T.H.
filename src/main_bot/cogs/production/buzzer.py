@@ -4,9 +4,8 @@ import time
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-# Ensure this import is correct and admin_user_ids is populated
-from main_bot.server_configs.config import admin_user_ids
 
 _BZ = "buzzer"
 
@@ -284,7 +283,7 @@ class Buzzer(commands.Cog, CogLogMixin):
         await self.update_buzzer_embed(interaction=interaction)
 
     async def handle_reset(self, interaction: nextcord.Interaction):
-        if not (interaction.user.id in admin_user_ids or interaction.user.guild_permissions.manage_guild):
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You don't have permission to reset the buzzer.", ephemeral=True)
             return
 
@@ -313,7 +312,7 @@ class Buzzer(commands.Cog, CogLogMixin):
 
 
     async def handle_lock_button(self, interaction: nextcord.Interaction):
-        if not (interaction.user.id in admin_user_ids or interaction.user.guild_permissions.manage_guild):
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You don't have permission to lock the buzzer.", ephemeral=True)
             return
 
@@ -334,7 +333,7 @@ class Buzzer(commands.Cog, CogLogMixin):
         await self.update_buzzer_embed(interaction=interaction)
 
     async def handle_unlock_button(self, interaction: nextcord.Interaction):
-        if not (interaction.user.id in admin_user_ids or interaction.user.guild_permissions.manage_guild):
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You don't have permission to unlock the buzzer.", ephemeral=True)
             return
 
@@ -572,7 +571,7 @@ class Buzzer(commands.Cog, CogLogMixin):
 
     async def handle_vote_lock(self, interaction: nextcord.Interaction):
         # permission check
-        if not (interaction.user.id in admin_user_ids or interaction.user.guild_permissions.manage_guild):
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You don't have permission to lock the vote.", ephemeral=True)
             return
 
@@ -604,7 +603,7 @@ class Buzzer(commands.Cog, CogLogMixin):
 
     async def handle_vote_reset(self, interaction: nextcord.Interaction):
         # permission check
-        if not (interaction.user.id in admin_user_ids or interaction.user.guild_permissions.manage_guild):
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
             await interaction.response.send_message("You don't have permission to reset votes.", ephemeral=True)
             return
 

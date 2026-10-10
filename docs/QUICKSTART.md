@@ -24,7 +24,7 @@ The recommended path for most people. No need to clone the repo.
 ### 1. Install files
 
 1. Navigate to where you want the discord-bot folder.
-2. Run the install script from that directory.
+2. Create a discord-bot folder and then run the install script from that directory.
 
 ```bash
 mkdir -p ~/discord-bot && cd ~/discord-bot
@@ -44,7 +44,7 @@ See [SECRETS_DOPPLER.md for info](SECRETS_DOPPLER.md)
 
 Unless you're bringing your own PostgreSQL database, leave `DATABASE_URL` empty and leave `COMPOSE_PROFILES=bundled-db` as is. There is a bundled PostgreSQL service by default.
 
-If you are using an external database, clear `COMPOSE_PROFILES` and set your `DATABASE_URL`. (See [DATABASE.md](DATABASE.md).)
+If you are using an external database, erase "bundled-db" from `COMPOSE_PROFILES` and set your `DATABASE_URL`. (See [DATABASE.md](DATABASE.md).)
 
 ### 3. Start the bot
 
@@ -55,9 +55,27 @@ If you are using an external database, clear `COMPOSE_PROFILES` and set your `DA
 ./scripts/bot.sh logs
 ```
 
-Normal Docker Compose commands still work, but a simple /bot.sh wrapper script is included.[b](http://bot.sh)
+Normal Docker Compose commands still work, but a simple /bot.sh wrapper script is included. Use whichever you prefer.
 
 See [SCRIPTS.md](SCRIPTS.md) for every `bot.sh` subcommand.
+
+### 4. Guild setup (prefix commands)
+
+After the bot is online in your Discord server (`GUILD_ID`), configure channel/role/emoji "knobs" in Discord.
+
+1. In a server channel, run `.setup`. This is not a /slash command. (It requires Discord **Administrator**, or a bot-admin role you configure later).
+2. During this process you can pick extra **bot-admin roles** (Skip if Discord Admin-only is enough).
+3. Configure only the feature groups you use; mark the rest **Skipped**.
+
+
+| Command                  | Who                                                   | Purpose                                                      |
+| ------------------------ | ----------------------------------------------------- | ------------------------------------------------------------ |
+| `.setup`                 | Discord Administrator (default); optional extra roles | Configure or skip guild knobs                                |
+| `.logging`               | same                                                  | View recent bot logs. Helps with contributer debugging.      |
+| `.create_water_channels` | same                                                  | Create waterboard category/channels for waterboard commands. |
+
+
+Secrets (token, API keys, DB, Lavalink, `CHARACTER_AVATARS`, `MANA_SYMBOLS`, webhook) stay in `.env` / Doppler — see [CONFIGURATION.md](CONFIGURATION.md).
 
 ---
 

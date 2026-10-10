@@ -15,7 +15,7 @@ import pytz
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
-from main_bot.server_configs.config import backup_channel_id
+from main_bot.guild_settings import get_settings
 
 
 class DatabaseBackupCog(commands.Cog, CogLogMixin):
@@ -50,6 +50,10 @@ class DatabaseBackupCog(commands.Cog, CogLogMixin):
         dsn = os.getenv("DATABASE_URL", "").strip()
         if not dsn:
             self.cog_print("DATABASE_BACKUP: DATABASE_URL not set; skipping.")
+            return
+        backup_channel_id = get_settings().get_int("backup_channel_id")
+        if not backup_channel_id:
+            self.cog_print("DATABASE_BACKUP: backup_channel_id not configured; skipping.")
             return
         channel = self.bot.get_channel(backup_channel_id)
         if not channel:

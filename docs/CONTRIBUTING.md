@@ -122,7 +122,7 @@ When you add or rename an environment variable, update all of these files:
 
 Lavalink and local audio details live in [MUSIC.md](MUSIC.md) and `lavalink/application.yml.example`.
 
-Optional Doppler notes live in [SECRETS_DOPPLER.md](SECRETS_DOPPLER.md).
+Optional Doppler notes live in [SECRETS_DOPPLER.md](SECRETS_DOPPLER.md). Guild channel/role knobs use `.setup` after the bot is online — see [QUICKSTART.md](QUICKSTART.md).
 
 ## What to verify before merge
 

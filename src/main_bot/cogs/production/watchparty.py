@@ -6,8 +6,8 @@ from asyncio import Semaphore
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import watch_party_channel_id, seen_category_id, hidden_category_id
 
 WATCH_PARTY_CHECK_INTERVAL = 5  # In minutes
 WATCH_PARTY_EVENT_TIME = datetime.time(hour=18, minute=15)  # 6:15 PM PST
@@ -37,6 +37,10 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
             self.cog_print(f"Guild with ID {GUILD_ID} not found.")
             return
 
+        gs = get_settings()
+        watch_party_channel_id = gs.get_int("watch_party_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         watch_party_channel = guild.get_channel(watch_party_channel_id)
         if not watch_party_channel:
             self.cog_print(f"Watch Party channel with ID {watch_party_channel_id} not found in guild '{guild.name}'.")
@@ -142,6 +146,10 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
     @watchparty.subcommand(name="show", description="Move the watch party channel to the seen category.")
     async def watchparty_show(self, interaction: nextcord.Interaction):
         guild = self.bot.get_guild(GUILD_ID)
+        gs = get_settings()
+        watch_party_channel_id = gs.get_int("watch_party_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         watch_party_channel = guild.get_channel(watch_party_channel_id)
         seen_category = guild.get_channel(seen_category_id)
 
@@ -161,6 +169,10 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
     @watchparty.subcommand(name="hide", description="Move the watch party channel to the hidden category.")
     async def watchparty_hide(self, interaction: nextcord.Interaction):
         guild = self.bot.get_guild(GUILD_ID)
+        gs = get_settings()
+        watch_party_channel_id = gs.get_int("watch_party_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         watch_party_channel = guild.get_channel(watch_party_channel_id)
         hidden_category = guild.get_channel(hidden_category_id)
 
@@ -313,6 +325,10 @@ class WatchPartyCog(commands.Cog, CogLogMixin):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        gs = get_settings()
+        watch_party_channel_id = gs.get_int("watch_party_channel_id")
+        seen_category_id = gs.get_int("seen_category_id")
+        hidden_category_id = gs.get_int("hidden_category_id")
         if before.channel and before.channel.id == watch_party_channel_id:
             if len(before.channel.members) == 0:
                 current_time = datetime.datetime.now(pytz.timezone('US/Pacific'))

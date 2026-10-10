@@ -1,7 +1,7 @@
 """Send ERROR-level logs and unhandled bot exceptions to Discord (ping + embed).
 
-Configure ``ERROR_ALERT_USER_ID`` and/or ``ERROR_ALERT_CHANNEL_ID`` in
-``server_configs/config`` (via env). If both are ``0``, alerting is disabled.
+Configure ``error_alert_user_id`` and/or ``error_alert_channel_id`` via
+``.setup`` (guild settings). If both are ``0``, alerting is disabled.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import nextcord
 from nextcord.errors import ApplicationCheckFailure, ApplicationInvokeError
 from nextcord.ext import commands
 
-from main_bot.server_configs.config import ERROR_ALERT_CHANNEL_ID, ERROR_ALERT_USER_ID
+from main_bot.guild_settings import get_settings
 
 _LOG = logging.getLogger(__name__)
 
@@ -217,7 +217,10 @@ async def _send_alert_from_asyncio_context(bot: commands.Bot, context: dict[str,
 
 
 async def _send_alert(bot: commands.Bot, *, summary: str, detail: str) -> None:
-    if not ERROR_ALERT_USER_ID and not ERROR_ALERT_CHANNEL_ID:
+    gs = get_settings()
+    alert_user_id = gs.get_int("error_alert_user_id")
+    alert_channel_id = gs.get_int("error_alert_channel_id")
+    if not alert_user_id and not alert_channel_id:
         return
     if not bot.is_ready():
         return
@@ -232,20 +235,20 @@ async def _send_alert(bot: commands.Bot, *, summary: str, detail: str) -> None:
 
     content: Optional[str] = None
     mentions = nextcord.AllowedMentions.none()
-    if ERROR_ALERT_USER_ID:
-        content = f"<@{ERROR_ALERT_USER_ID}>"
-        mentions = nextcord.AllowedMentions(users=[nextcord.Object(id=ERROR_ALERT_USER_ID)])
+    if alert_user_id:
+        content = f"<@{alert_user_id}>"
+        mentions = nextcord.AllowedMentions(users=[nextcord.Object(id=alert_user_id)])
 
     try:
-        if ERROR_ALERT_CHANNEL_ID:
-            channel = bot.get_channel(ERROR_ALERT_CHANNEL_ID)
+        if alert_channel_id:
+            channel = bot.get_channel(alert_channel_id)
             if channel is None:
-                channel = await bot.fetch_channel(ERROR_ALERT_CHANNEL_ID)
+                channel = await bot.fetch_channel(alert_channel_id)
             if isinstance(channel, nextcord.abc.Messageable):
                 await channel.send(content=content, embed=embed, allowed_mentions=mentions)
                 return
-        if ERROR_ALERT_USER_ID:
-            user = await bot.fetch_user(ERROR_ALERT_USER_ID)
+        if alert_user_id:
+            user = await bot.fetch_user(alert_user_id)
             await user.send(embed=embed)
     except nextcord.HTTPException as e:
         _LOG.warning("Could not deliver error alert to Discord: %s", e)

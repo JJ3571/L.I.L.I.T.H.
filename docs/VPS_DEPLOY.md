@@ -27,7 +27,7 @@ flowchart LR
 
 
 
-The deploy workflow SSHs into the host. It runs `docker compose down` and then `docker compose up -d --pull always` in `DEPLOY_COMPOSE_DIR`. Secrets stay in the host `.env` file.
+The deploy workflow SSHs into the host. It refreshes `.env` from Doppler (`doppler secrets download`) when the CLI is available, then runs `docker compose down` and `docker compose up -d --pull always` in `DEPLOY_COMPOSE_DIR`. Compose always reads the host `.env` file (not `doppler run` injection).
 
 ## Placeholders
 
@@ -72,10 +72,11 @@ sudo -u discord_bot bash -c 'mkdir -p /home/discord_bot && cd /home/discord_bot 
 
 You can also copy `docker-compose.yml`, `.env.example`, and `lavalink/application.yml.example` by hand.
 
-1. Edit `/home/discord_bot/.env`.
+1. Edit `/home/discord_bot/.env` (or refresh it with `doppler secrets download --format env --no-file > .env`).
 2. Set `DISCORD_BOT_TOKEN`, `APPLICATION_ID`, and `GUILD_ID`.
 3. Leave `DATABASE_URL` empty for the bundled Postgres default.
-4. Copy the Lavalink template if the install script did not create it.
+4. After the bot is online, run `.setup` in Discord to configure guild channels/roles (or `.setup import-env` once if migrating old channel IDs from Doppler). See [QUICKSTART.md](QUICKSTART.md).
+5. Copy the Lavalink template if the install script did not create it.
 
 ```bash
 cp /home/discord_bot/lavalink/application.yml.example /home/discord_bot/lavalink/application.yml

@@ -2,6 +2,8 @@ name: Deploy
 
 # Triggered manually (workflow_dispatch) or after Release completes (workflow_run).
 # Expects `docker-compose.yml` (or `compose.yaml`) under DEPLOY_COMPOSE_DIR on the VPS.
+# Secrets: Doppler remains the editor; runtime uses a host `.env` file.
+# The VPS must have the Doppler CLI configured (or a maintained `.env`).
 on:
   workflow_dispatch:
   workflow_run:
@@ -50,7 +52,15 @@ jobs:
               exit 1
             fi
 
+            if command -v doppler >/dev/null 2>&1; then
+              echo "Refreshing .env from Doppler…"
+              doppler secrets download --format env --no-file > .env
+            elif [ ! -f .env ]; then
+              echo "Doppler CLI not found and .env is missing in ${DEPLOY_DIR}."
+              exit 1
+            else
+              echo "Doppler CLI not found; using existing .env"
+            fi
+
             docker compose down
-            doppler run -- docker compose up -d --pull always
-#           The default Deploy behavior is using a local .env file. I prefer Doppler.
-#           docker compose up -d --pull always
+            docker compose up -d --pull always

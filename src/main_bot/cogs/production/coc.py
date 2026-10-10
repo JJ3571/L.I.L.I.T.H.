@@ -3,8 +3,8 @@ from nextcord.ext import commands
 import re
 
 from main_bot.boot_log import boot_print
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids
 
 _SC = "coc"
 
@@ -111,8 +111,8 @@ class COC(commands.Cog):
                 
                 if coc_records:
                     # User has coc records, display all of them ephemerally with edit option if allowed
-                    can_edit = interaction.user.id in admin_user_ids or interaction.user.id == user_id
-                    is_admin = interaction.user.id in admin_user_ids
+                    is_admin = isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)
+                    can_edit = is_admin or interaction.user.id == user_id
                     
                     embed = nextcord.Embed(
                         title=f"{member.display_name}'s Clash of Clans Accounts",
@@ -145,7 +145,7 @@ class COC(commands.Cog):
                 else:
                     # No coc record found
                     # Check if the user calling matches the discord mention OR is an admin
-                    can_add = interaction.user.id in admin_user_ids or interaction.user.id == user_id
+                    can_add = (isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)) or interaction.user.id == user_id
                     
                     if can_add:
                         view = AccountLabelSelectView(self, member.display_name, str(user_id))

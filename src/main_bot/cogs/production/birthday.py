@@ -7,8 +7,8 @@ import pytz
 
 from main_bot.boot_log import boot_print
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import get_settings, is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
-from main_bot.server_configs.config import admin_user_ids, birthday_announcement_channel_id, birthday_reaction_channel_id, birthday_role_id, birthday_emoji_id
 
 _BD = "birthday"
 
@@ -48,7 +48,7 @@ class Birthday(commands.Cog, CogLogMixin):
                     pacific_mm_dd_to_check,
                 )
 
-                channel = self.bot.get_channel(birthday_announcement_channel_id)
+                channel = self.bot.get_channel(get_settings().get_int("birthday_announcement_channel_id"))
                 if channel is None:
                     self.cog_print("[ERROR] Birthday channel not found.")
                     return
@@ -75,11 +75,11 @@ class Birthday(commands.Cog, CogLogMixin):
                             _dbg_print(self, f"[DEBUG] Embed created for user {user_id}")
                             view = BirthdayButtonView(self.bot, self, birthday_user_id=member.id)
                             message = await channel.send(embed=embed, view=view)
-                            role = channel.guild.get_role(birthday_role_id)
+                            role = channel.guild.get_role(get_settings().get_int("birthday_role_id"))
                             if role:
                                 await member.add_roles(role)
                             else:
-                                self.cog_print(f"[ERROR] Birthday role ID {birthday_role_id} not found.")
+                                self.cog_print(f"[ERROR] Birthday role ID {get_settings().get_int('birthday_role_id')} not found.")
                             
                             # Grant 20-hour executive pardon for birthday
                             await self.grant_birthday_executive_pardon(member.id)
@@ -106,8 +106,8 @@ class Birthday(commands.Cog, CogLogMixin):
                 self.cog_print("[ERROR] Guild not found for cleanup.")
                 return
 
-            channel = guild.get_channel(birthday_announcement_channel_id)
-            birthday_role = guild.get_role(birthday_role_id)
+            channel = guild.get_channel(get_settings().get_int("birthday_announcement_channel_id"))
+            birthday_role = guild.get_role(get_settings().get_int("birthday_role_id"))
 
             # Part 1: Message-driven cleanup (and associated role removal)
             if channel:
@@ -259,7 +259,7 @@ class Birthday(commands.Cog, CogLogMixin):
 
                 if result:
                     # Check if user can update (is admin or is themselves)
-                    can_update = interaction.user.id in admin_user_ids or interaction.user.id == user_id
+                    can_update = (isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)) or interaction.user.id == user_id
                     
                     display_name = member.mention
                     try:
@@ -273,7 +273,7 @@ class Birthday(commands.Cog, CogLogMixin):
                     else:
                         await interaction.response.send_message(f"{display_name}'s birthday is on {formatted_birthday}.", ephemeral=True)
                 else:
-                    if interaction.user.id in admin_user_ids or interaction.user.id == user_id:
+                    if (isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)) or interaction.user.id == user_id:
                         modal = AddBirthdayModal(self, member.display_name, str(user_id))
                         await interaction.response.send_modal(modal)
                     else:
@@ -434,9 +434,9 @@ class BirthdayButtonView(nextcord.ui.View):
         await economy_cog.deduct_user_balance(user_id, cost)
         await economy_cog.update_balance(self.birthday_user_id, cost)
 
-        reaction_channel = self.bot.get_channel(birthday_reaction_channel_id)
+        reaction_channel = self.bot.get_channel(get_settings().get_int("birthday_reaction_channel_id"))
         if reaction_channel:
-            emoji = self.bot.get_emoji(birthday_emoji_id)
+            emoji = self.bot.get_emoji(get_settings().get_int("birthday_emoji_id"))
             _dbg_print(self.birthday_cog, f"[DEBUG] Emoji: {emoji}")
             if reaction_type == "emoji":
                 embed = nextcord.Embed(description=f"{emoji}{emoji}{emoji}", color=0x574BCD)

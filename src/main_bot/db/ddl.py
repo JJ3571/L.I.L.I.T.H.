@@ -30,6 +30,7 @@ async def init_all_schemas(pool: asyncpg.Pool) -> None:
         await _ddl_tierlist(conn)
         await _ddl_trivia(conn)
         await _ddl_crafty_automation(conn)
+        await _ddl_guild_config(conn)
 
 
 async def _ddl_birthday(conn: asyncpg.Connection) -> None:
@@ -578,6 +579,28 @@ async def _ddl_trivia(conn: asyncpg.Connection) -> None:
             category TEXT,
             points_earned INTEGER,
             timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+
+async def _ddl_guild_config(conn: asyncpg.Connection) -> None:
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS "guild_config".settings (
+            guild_id BIGINT PRIMARY KEY,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_by BIGINT
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS "guild_config".setting_values (
+            guild_id BIGINT NOT NULL REFERENCES "guild_config".settings (guild_id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value JSONB NOT NULL,
+            PRIMARY KEY (guild_id, key)
         )
         """
     )

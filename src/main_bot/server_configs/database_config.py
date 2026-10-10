@@ -43,6 +43,7 @@ CRAFTY_AUTOMATION_SQLITE_PATH = get_db_path("crafty_automation.db")
 # PostgreSQL schema name per logical key (identical to dict keys; plus crafty_automation)
 DATABASE_SCHEMAS = {k: k for k in DATABASE_PATHS}
 DATABASE_SCHEMAS["crafty_automation"] = "crafty_automation"
+DATABASE_SCHEMAS["guild_config"] = "guild_config"
 
 # Ordered list of schemas the bot creates (excludes unused empty keys if any)
 SCHEMA_KEYS = [
@@ -61,4 +62,5 @@ SCHEMA_KEYS = [
     "tierlist",
     "trivia",
     "crafty_automation",
+    "guild_config",
 ]

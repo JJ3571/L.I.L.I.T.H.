@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import json
 
 from main_bot.cog_log_mixin import CogLogMixin
+from main_bot.guild_settings import is_bot_admin
 from main_bot.server_configs.config import CRAFTY_BASE_URL, CRAFTY_USERNAME, CRAFTY_PASSWORD, GUILD_ID, IS_DEVELOPMENT
 from main_bot.utils.crafty_api import CraftyAPI
 from main_bot.utils.crafty_automation import CraftyAutomationDB, ServerAutomationConfig
@@ -56,9 +57,9 @@ def conditional_slash_command(*args, **kwargs):
     return decorator
 
 def admin_only_check():
-    """Check if user has administrator permissions"""
+    """Check if user is a bot admin (Discord Administrator or configured admin roles)."""
     def predicate(interaction: nextcord.Interaction):
-        return interaction.user.guild_permissions.administrator
+        return isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)
     return predicate
 
 class RestartConfirmationView(nextcord.ui.View):
@@ -1042,8 +1043,8 @@ class CraftyController(commands.Cog, CogLogMixin):
     ):
         """Send a command to server console (Admin only)"""
         # Check admin permissions
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+        if not isinstance(interaction.user, nextcord.Member) or not is_bot_admin(interaction.user):
+            await interaction.response.send_message("❌ You need bot admin permissions to use this command.", ephemeral=True)
             return
         await self.send_command(interaction, server, cmd)
         

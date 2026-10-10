@@ -1,6 +1,6 @@
 # Database
 
-The bot uses one PostgreSQL database with multiple schemas. Schema names include `economy`, `birthday`, and `wager`. See `src/main_bot/server_configs/database_config.py`.
+The bot uses one PostgreSQL database with multiple schemas. Schema names include `economy`, `birthday`, `wager`, and `guild_config` (Discord guild knobs via `.setup`). See `src/main_bot/server_configs/database_config.py`.
 
 Tables are created at startup from `src/main_bot/db/ddl.py` with `CREATE TABLE IF NOT EXISTS`. (This project does NOT use Alembic migrations.)
 
