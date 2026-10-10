@@ -173,8 +173,29 @@ async def _ddl_event(conn: asyncpg.Connection) -> None:
             event_time TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
             max_attendees INTEGER,
-            status TEXT DEFAULT 'active'
+            status TEXT DEFAULT 'active',
+            channel_id BIGINT,
+            message_id BIGINT,
+            timezone TEXT
         )
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE "event".events
+        ADD COLUMN IF NOT EXISTS channel_id BIGINT
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE "event".events
+        ADD COLUMN IF NOT EXISTS message_id BIGINT
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE "event".events
+        ADD COLUMN IF NOT EXISTS timezone TEXT
         """
     )
     await conn.execute(
@@ -198,7 +219,8 @@ async def _ddl_event(conn: asyncpg.Connection) -> None:
             original_channel_id BIGINT NOT NULL,
             message_id BIGINT,
             created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'active'
+            status TEXT DEFAULT 'active',
+            timezone TEXT
         )
         """
     )
@@ -209,6 +231,31 @@ async def _ddl_event(conn: asyncpg.Connection) -> None:
             user_id BIGINT NOT NULL,
             subscribed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (reminder_id, user_id)
+        )
+        """
+    )
+    await conn.execute(
+        """
+        ALTER TABLE "event".reminders
+        ADD COLUMN IF NOT EXISTS timezone TEXT
+        """
+    )
+    await _resync_serial(conn, "event.events", "event_id")
+    await _resync_serial(conn, "event.reminders", "reminder_id")
+
+
+async def _resync_serial(conn: asyncpg.Connection, table: str, column: str) -> None:
+    """Point a BIGSERIAL sequence at MAX(column) so the next insert does not reuse an id.
+
+    ``is_called`` is true when rows exist, so the next ``nextval`` is ``max + 1``.
+    An empty table leaves the sequence ready to return 1.
+    """
+    await conn.execute(
+        f"""
+        SELECT setval(
+            pg_get_serial_sequence('{table}', '{column}'),
+            COALESCE((SELECT MAX({column}) FROM {table}), 1),
+            (SELECT MAX({column}) IS NOT NULL FROM {table})
         )
         """
     )

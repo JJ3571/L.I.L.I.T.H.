@@ -31,12 +31,87 @@ def _dbg_print(cog, message: str) -> None:
         cog.cog_print(message)
 
 
+# Past this age, a still-active event is closed quietly so a restart does not
+# ping people about events that started long ago.
+_EVENT_NOTIFY_GRACE = datetime.timedelta(hours=12)
+_EVENT_ID_FOOTER = re.compile(r"Event ID:\s*(\d+)")
+
+
+def event_due_action(event_time: datetime.datetime, now: datetime.datetime) -> str:
+    """Decide what to do once an event's start time can be compared to ``now``.
+
+    Returns ``pending`` while the start is still in the future, ``notify`` when
+    attendees should be pinged, or ``expire`` when the start is older than
+    ``_EVENT_NOTIFY_GRACE`` and should be closed without a ping.
+    """
+    if event_time.tzinfo is None:
+        event_time = event_time.replace(tzinfo=datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    if event_time > now:
+        return "pending"
+    if now - event_time > _EVENT_NOTIFY_GRACE:
+        return "expire"
+    return "notify"
+
+
+def event_id_from_message(message) -> int | None:
+    """Read the event id stored in an event embed footer."""
+    embeds = getattr(message, "embeds", None) or []
+    if not embeds:
+        return None
+    footer = getattr(embeds[0], "footer", None)
+    text = getattr(footer, "text", None) if footer else None
+    if not text:
+        return None
+    match = _EVENT_ID_FOOTER.search(text)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _can_manage_event(interaction: nextcord.Interaction, creator_id: int) -> bool:
+    if interaction.user.id == creator_id:
+        return True
+    user = interaction.user
+    return isinstance(user, nextcord.Member) and is_bot_admin(user)
+
+
+_TIMEZONE_NAMES = {
+    "PST": "US/Pacific", "PDT": "US/Pacific", "PT": "US/Pacific",
+    "EST": "US/Eastern", "EDT": "US/Eastern", "ET": "US/Eastern",
+    "CST": "US/Central", "CDT": "US/Central", "CT": "US/Central",
+    "MST": "US/Mountain", "MDT": "US/Mountain", "MT": "US/Mountain",
+    "UTC": "UTC", "GMT": "GMT",
+}
+
+
+def format_time_for_edit(when: datetime.datetime | str, tz_abbr: str | None) -> str:
+    """Wall-clock time in the timezone the user originally typed, for an edit form."""
+    dt = _to_timestamptz_arg(when)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    abbr = (tz_abbr or "UTC").strip().upper()
+    tz_name = _TIMEZONE_NAMES.get(abbr)
+    if tz_name is None:
+        abbr = "UTC"
+        tz_name = "UTC"
+    local = dt.astimezone(pytz.timezone(tz_name))
+    hour = local.hour % 12 or 12
+    ampm = "am" if local.hour < 12 else "pm"
+    return f"{local.month}/{local.day}/{local.year} {hour}:{local.minute:02d}{ampm} {abbr}"
+
+
 class Event(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
-        # Reminders are sent only to the original channel where the command was used
+        # Ids we already logged a failed notice for, so retries stay quiet.
+        self._event_notify_failures: set[int] = set()
+        self._reminder_notify_failures: set[int] = set()
+        # Reminders ping the original channel and DM each subscriber.
         self.bot.loop.create_task(self.create_tables())
         self.bot.loop.create_task(self.start_reminder_check_task())
+        self.bot.loop.create_task(self.start_event_check_task())
 
     async def create_tables(self):
         return
@@ -48,20 +123,26 @@ class Event(commands.Cog, CogLogMixin):
         event_description: str,
         event_time: datetime.datetime | str,
         max_attendees: int = None,
+        channel_id: int | None = None,
+        timezone: str | None = None,
     ):
         """Create a new event and return the event_id"""
         event_time = _to_timestamptz_arg(event_time)
         async with self.bot.pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 f'''
-                INSERT INTO "{_EV}".events (creator_id, event_name, event_description, event_time, max_attendees)
-                VALUES ($1, $2, $3, $4, $5) RETURNING event_id
+                INSERT INTO "{_EV}".events (
+                    creator_id, event_name, event_description, event_time, max_attendees, channel_id, timezone
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING event_id
                 ''',
                 creator_id,
                 event_name,
                 event_description,
                 event_time,
                 max_attendees,
+                channel_id,
+                timezone,
             )
             return row["event_id"]
 
@@ -71,7 +152,7 @@ class Event(commands.Cog, CogLogMixin):
             return await conn.fetchrow(
                 f'''
                 SELECT event_id, creator_id, event_name, event_description, event_time,
-                       created_at, max_attendees, status
+                       created_at, max_attendees, status, timezone
                 FROM "{_EV}".events WHERE event_id = $1
                 ''',
                 event_id,
@@ -223,22 +304,125 @@ class Event(commands.Cog, CogLogMixin):
                 limit,
             )
 
-    async def update_event(self, event_id: int, name: str, description: str, event_time: datetime.datetime | str):
-        """Update an existing event"""
+    async def update_event(
+        self,
+        event_id: int,
+        name: str,
+        description: str,
+        event_time: datetime.datetime | str,
+        max_attendees: int | None,
+        timezone: str | None = None,
+    ):
+        """Update an existing event and mark it active so a new start time can notify again."""
         event_time = _to_timestamptz_arg(event_time)
         async with self.bot.pg_pool.acquire() as conn:
             tag = await conn.execute(
                 f'''
                 UPDATE "{_EV}".events
-                SET event_name = $1, event_description = $2, event_time = $3
-                WHERE event_id = $4
+                SET event_name = $1, event_description = $2, event_time = $3,
+                    max_attendees = $4, status = 'active', timezone = $5
+                WHERE event_id = $6
                 ''',
                 name,
                 description,
                 event_time,
+                max_attendees,
+                timezone,
                 event_id,
             )
             return tag != "UPDATE 0"
+
+    async def get_event_post(self, event_id: int):
+        """Channel and message where the event embed was posted."""
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetchrow(
+                f'''
+                SELECT channel_id, message_id
+                FROM "{_EV}".events
+                WHERE event_id = $1
+                ''',
+                event_id,
+            )
+
+    async def build_event_embed(self, event_id: int) -> nextcord.Embed | None:
+        """Build the public event embed from the current database row."""
+        event = await self.get_event(event_id)
+        if not event:
+            return None
+        name = event["event_name"]
+        description = event["event_description"] or "No description provided"
+        event_time = event["event_time"]
+        if not isinstance(event_time, datetime.datetime):
+            event_time = _to_timestamptz_arg(event_time)
+        creator_id = event["creator_id"]
+        max_attendees = event["max_attendees"]
+        count = await self.get_attendee_count(event_id)
+
+        embed = nextcord.Embed(
+            title=f"🗓️ {name}",
+            description=description,
+            color=0x00FF00,
+            timestamp=event_time,
+        )
+        embed.add_field(
+            name="🕒 Event Time",
+            value=(
+                f"{nextcord.utils.format_dt(event_time, style='F')}\n"
+                f"{nextcord.utils.format_dt(event_time, style='R')}"
+            ),
+            inline=False,
+        )
+        embed.add_field(name="Created by", value=f"<@{creator_id}>", inline=True)
+        embed.add_field(name="Attendees", value=str(count), inline=True)
+        if max_attendees:
+            embed.add_field(name="Max Attendees", value=str(max_attendees), inline=True)
+    
+        embed.set_footer(text=f"Event ID: {event_id}")
+        return embed
+
+    async def refresh_event_message(self, event_id: int) -> bool:
+        """Rewrite the posted event embed so it matches the database."""
+        post = await self.get_event_post(event_id)
+        if not post or not post["channel_id"] or not post["message_id"]:
+            return False
+        embed = await self.build_event_embed(event_id)
+        if embed is None:
+            return False
+        channel = await self._resolve_channel(int(post["channel_id"]), f"event {event_id}")
+        if channel is None:
+            return False
+        try:
+            message = await channel.fetch_message(int(post["message_id"]))
+            await message.edit(embed=embed, view=EventView(self))
+            return True
+        except Exception as e:
+            self.cog_print(f"Could not refresh event {event_id} message: {e}")
+            return False
+
+    async def mark_event_message_deleted(
+        self,
+        event_id: int,
+        event_name: str,
+        channel_id: int | None,
+        message_id: int | None,
+    ) -> None:
+        """Replace the public event post after the row is deleted."""
+        if not channel_id or not message_id:
+            return
+        channel = await self._resolve_channel(int(channel_id), f"event {event_id}")
+        if channel is None:
+            return
+        embed = nextcord.Embed(
+            title="🗑️ Event deleted",
+            description=event_name,
+            color=nextcord.Color.red(),
+        )
+        embed.set_footer(text=f"Event ID: {event_id}")
+        try:
+            message = await channel.fetch_message(int(message_id))
+            await message.edit(embed=embed, view=None)
+        except Exception as e:
+            self.cog_print(f"Could not update deleted event {event_id} message: {e}")
 
     async def delete_event(self, event_id: int):
         """Delete an event by event_id"""
@@ -252,87 +436,17 @@ class Event(commands.Cog, CogLogMixin):
             )
             return tag != "DELETE 0"
 
-    @nextcord.slash_command(name="event", description="Create or manage events", guild_ids=[GUILD_ID])
+    @nextcord.slash_command(
+        name="event",
+        description="Create a new event, let people RSVP.",
+        guild_ids=[GUILD_ID],
+    )
     async def event_command(self, interaction: nextcord.Interaction):
-        pass  # This will be the parent command
-
-    @event_command.subcommand(name="create", description="Create a new event. (Opens as a Discord pop-up.)")
-    async def create_event_command(self, interaction: nextcord.Interaction):
-        """Create a new event using a modal"""
+        """Create a new event using a modal. Edit and delete live on the event post."""
         modal = EventCreationModal(cog=self)
         await interaction.response.send_modal(modal)
 
-    
-    @event_command.subcommand(name="delete", description="Delete an event")
-    async def delete_event_command(
-        self, interaction: nextcord.Interaction, event_id: int
-    ):
-        """Delete an event"""
-        await interaction.response.defer()
-
-        # Check if the event exists
-        event_data = await self.get_event(event_id)
-        if not event_data:
-            await interaction.followup.send("❌ This event does not exist!", ephemeral=True)
-            return
-
-        # Delete the event
-        success = await self.delete_event(event_id)
-        if success:
-            await interaction.followup.send("✅ Event deleted successfully!", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Failed to delete the event!", ephemeral=True)
-
-    @event_command.subcommand(name="edit", description="Edit an existing event")
-    async def edit_event_command(
-        self, interaction: nextcord.Interaction, event_id: int, name: str, description: str, event_time: str
-    ):
-        """Edit an existing event"""
-        await interaction.response.defer()
-
-        # Check if the event exists
-        event_data = await self.get_event(event_id)
-        if not event_data:
-            await interaction.followup.send("❌ This event does not exist!", ephemeral=True)
-            return
-
-        # Update the event
-        success = await self.update_event(event_id, name, description, event_time)
-        if success:
-            await interaction.followup.send("✅ Event updated successfully!", ephemeral=True)
-        else:
-            await interaction.followup.send("❌ Failed to update the event!", ephemeral=True)
-
-
-    @event_command.subcommand(name="list", description="List all upcoming events")
-    async def list_events_command(self, interaction: nextcord.Interaction):
-        """List all upcoming events with dropdown selection"""
-        await interaction.response.defer()
-
-        events = await self.get_upcoming_events(limit=25)  # Get more events for dropdown
-        if not events:
-            await interaction.followup.send("❌ No upcoming events found!", ephemeral=True)
-            return
-
-        # Create dropdown view
-        view = EventListView(events=events, cog=self)
-        
-        # Create initial embed
-        embed = nextcord.Embed(
-            title="📅 Upcoming Events",
-            description="Select an event from the dropdown below to interact with it.",
-            color=nextcord.Color.blurple()
-        )
-        embed.add_field(
-            name="📋 Instructions",
-            value="• Use the dropdown to select an event\n• Join, leave, or view attendees\n• Event details will be shown after selection",
-            inline=False
-        )
-        embed.set_footer(text=f"Found {len(events)} upcoming events")
-
-        await interaction.followup.send(embed=embed, view=view)
-
-    @nextcord.slash_command(name="reminder", description="Create a reminder for yourself and others. (Opens as a Discord pop-up.)", guild_ids=[GUILD_ID])
+    @nextcord.slash_command(name="reminder", description="Creates a reminder post in a channel.", guild_ids=[GUILD_ID])
     async def remind_command(self, interaction: nextcord.Interaction):
         """Create a reminder using a modal"""
         modal = ReminderCreationModal(cog=self)
@@ -349,22 +463,13 @@ class Event(commands.Cog, CogLogMixin):
         # Remove extra whitespace and normalize
         datetime_str = ' '.join(datetime_str.split())
         
-        # Timezone mapping (including shorthand versions)
-        timezone_map = {
-            'PST': 'US/Pacific', 'PDT': 'US/Pacific', 'PT': 'US/Pacific',
-            'EST': 'US/Eastern', 'EDT': 'US/Eastern', 'ET': 'US/Eastern',
-            'CST': 'US/Central', 'CDT': 'US/Central', 'CT': 'US/Central',
-            'MST': 'US/Mountain', 'MDT': 'US/Mountain', 'MT': 'US/Mountain',
-            'UTC': 'UTC', 'GMT': 'GMT'
-        }
-        
         # Extract timezone from end of string (including shorthand versions)
         timezone_pattern = r'\b(PST|PDT|PT|EST|EDT|ET|CST|CDT|CT|MST|MDT|MT|UTC|GMT)\b$'
         tz_match = re.search(timezone_pattern, datetime_str, re.IGNORECASE)
         
         if tz_match:
             tz_abbr = tz_match.group(1).upper()
-            tz_name = timezone_map[tz_abbr]
+            tz_name = _TIMEZONE_NAMES[tz_abbr]
             datetime_str = datetime_str[:tz_match.start()].strip()
         else:
             # Default to PST if no timezone is specified
@@ -501,20 +606,24 @@ class Event(commands.Cog, CogLogMixin):
         reminder_time: datetime.datetime | str,
         original_channel_id: int,
         message_id: int = None,
+        timezone: str | None = None,
     ):
         """Create a new reminder and return the reminder_id"""
         reminder_time = _to_timestamptz_arg(reminder_time)
         async with self.bot.pg_pool.acquire() as conn:
             row = await conn.fetchrow(
                 f'''
-                INSERT INTO "{_EV}".reminders (creator_id, reminder_text, reminder_time, original_channel_id, message_id)
-                VALUES ($1, $2, $3, $4, $5) RETURNING reminder_id
+                INSERT INTO "{_EV}".reminders (
+                    creator_id, reminder_text, reminder_time, original_channel_id, message_id, timezone
+                )
+                VALUES ($1, $2, $3, $4, $5, $6) RETURNING reminder_id
                 ''',
                 creator_id,
                 reminder_text,
                 reminder_time,
                 original_channel_id,
                 message_id,
+                timezone,
             )
             return row["reminder_id"]
 
@@ -523,7 +632,7 @@ class Event(commands.Cog, CogLogMixin):
         async with self.bot.pg_pool.acquire() as conn:
             return await conn.fetchrow(
                 f'''
-                SELECT reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status
+                SELECT reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status, timezone
                 FROM "{_EV}".reminders WHERE reminder_id = $1
                 ''',
                 reminder_id,
@@ -583,18 +692,25 @@ class Event(commands.Cog, CogLogMixin):
             )
             return row is not None
 
-    async def update_reminder(self, reminder_id: int, reminder_text: str, reminder_time: datetime.datetime | str):
+    async def update_reminder(
+        self,
+        reminder_id: int,
+        reminder_text: str,
+        reminder_time: datetime.datetime | str,
+        timezone: str | None = None,
+    ):
         """Update an existing reminder"""
         reminder_time = _to_timestamptz_arg(reminder_time)
         async with self.bot.pg_pool.acquire() as conn:
             tag = await conn.execute(
                 f'''
                 UPDATE "{_EV}".reminders
-                SET reminder_text = $1, reminder_time = $2
-                WHERE reminder_id = $3
+                SET reminder_text = $1, reminder_time = $2, timezone = $3
+                WHERE reminder_id = $4
                 ''',
                 reminder_text,
                 reminder_time,
+                timezone,
                 reminder_id,
             )
             return tag != "UPDATE 0"
@@ -722,6 +838,7 @@ class Event(commands.Cog, CogLogMixin):
                     _dbg_print(self, f"[DEBUG] Will mention user {user_id}")
                 
                 mentions_text = " ".join(mentions)
+                subscriber_ids = [user_id for user_id, _ in subscribers]
                 
                 _dbg_print(self, f"[DEBUG] Creating embed for reminder {reminder_id}")
                 
@@ -745,22 +862,21 @@ class Event(commands.Cog, CogLogMixin):
                     _dbg_print(self, f"[DEBUG] Creator user {creator_id} not found, using fallback name")
                 
                 embed.set_footer(text=f"Reminder ID: {reminder_id}")
-                
-                # Send to original channel only
-                original_channel = self.bot.get_channel(original_channel_id)
-                
-                _dbg_print(self, f"[DEBUG] Attempting to send reminder {reminder_id} to channel {original_channel_id}")
-                
-                if original_channel:
-                    try:
-                        await original_channel.send(content=mentions_text, embed=embed)
-                        _dbg_print(self, f"[DEBUG] ✅ Successfully sent reminder {reminder_id} to channel {original_channel_id}")
-                    except Exception as e:
-                        _dbg_print(self, f"[DEBUG] ❌ Failed to send reminder {reminder_id} to original channel {original_channel_id}: {e}")
-                else:
-                    _dbg_print(self, f"[DEBUG] ❌ Could not find original channel {original_channel_id} for reminder {reminder_id}")
-                
-                # Mark as completed regardless of send success
+
+                delivered = await self._deliver_notice(
+                    channel_id=original_channel_id,
+                    mentions=mentions_text,
+                    embed=embed,
+                    user_ids=subscriber_ids,
+                    label=f"reminder {reminder_id}",
+                )
+                if not delivered:
+                    if reminder_id not in self._reminder_notify_failures:
+                        self._reminder_notify_failures.add(reminder_id)
+                        self.cog_print(f"Reminder {reminder_id} was not delivered; will retry")
+                    continue
+
+                self._reminder_notify_failures.discard(reminder_id)
                 _dbg_print(self, f"[DEBUG] Marking reminder {reminder_id} as completed")
                 await self.mark_reminder_completed(reminder_id)
                 
@@ -769,372 +885,459 @@ class Event(commands.Cog, CogLogMixin):
                 # Mark as completed to prevent infinite retries
                 await self.mark_reminder_completed(reminder_id)
 
+    async def set_event_message(self, event_id: int, channel_id: int, message_id: int):
+        """Remember where the event embed was posted so the start ping can land there."""
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                UPDATE "{_EV}".events
+                SET channel_id = $1, message_id = $2
+                WHERE event_id = $3
+                ''',
+                channel_id,
+                message_id,
+                event_id,
+            )
+            return tag != "UPDATE 0"
 
-# Event UI View Class
+    async def get_due_events(self):
+        """Get active events whose start time has passed."""
+        async with self.bot.pg_pool.acquire() as conn:
+            return await conn.fetch(
+                f'''
+                SELECT event_id, creator_id, event_name, event_description, event_time,
+                       channel_id, message_id, status
+                FROM "{_EV}".events
+                WHERE status = 'active' AND event_time <= $1
+                ORDER BY event_time ASC
+                ''',
+                nextcord.utils.utcnow(),
+            )
+
+    async def mark_event_completed(self, event_id: int):
+        """Mark an event as completed so attendees are not pinged again."""
+        async with self.bot.pg_pool.acquire() as conn:
+            tag = await conn.execute(
+                f'''
+                UPDATE "{_EV}".events
+                SET status = 'completed'
+                WHERE event_id = $1 AND status = 'active'
+                ''',
+                event_id,
+            )
+            return tag != "UPDATE 0"
+
+    def register_persistent_views(self):
+        """Keep event buttons working across restarts.
+
+        Discord only delivers component clicks after a process restart when every
+        button has a stable ``custom_id``, ``timeout`` is ``None``, and the view
+        is registered here. The event id is read from the embed footer so one
+        view can serve every event post.
+        """
+        self._persistent_views = [
+            EventView(self),
+            EventManagementView(self),
+            EventDeleteConfirmView(self),
+        ]
+        for view in self._persistent_views:
+            self.bot.add_view(view)
+
+    def cog_unload(self):
+        for view in getattr(self, "_persistent_views", []):
+            self.bot.remove_view(view)
+
+    async def start_event_check_task(self):
+        """Start the background task that pings attendees when an event starts."""
+        await self.bot.wait_until_ready()
+        self.register_persistent_views()
+        self.cog_print("Event check task started - checking every 30 seconds for events that have started")
+        while not self.bot.is_closed():
+            try:
+                await self.check_and_notify_events()
+            except Exception as e:
+                self.cog_print(f"Error in event check task: {e}")
+            await asyncio.sleep(30)
+
+    async def check_and_notify_events(self):
+        """Ping attendees for events whose start time has elapsed."""
+        now = nextcord.utils.utcnow()
+        for event in await self.get_due_events():
+            event_id = event["event_id"]
+            action = event_due_action(event["event_time"], now)
+            if action == "expire":
+                self.cog_print(
+                    f"Event {event_id} started more than {_EVENT_NOTIFY_GRACE} ago; "
+                    "marking completed without notifying"
+                )
+                await self.mark_event_completed(event_id)
+                continue
+            if action != "notify":
+                continue
+            await self._notify_event_started(event)
+
+    async def _resolve_channel(self, channel_id: int, label: str):
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is not None:
+            return channel
+        try:
+            return await self.bot.fetch_channel(int(channel_id))
+        except Exception as e:
+            self.cog_print(f"Could not fetch channel {channel_id} for {label}: {e}")
+            return None
+
+    async def _dm_users(self, user_ids: list[int], embed: nextcord.Embed, label: str) -> int:
+        """DM each user the same embed. Returns how many sends succeeded."""
+        delivered = 0
+        for user_id in user_ids:
+            try:
+                user = self.bot.get_user(int(user_id))
+                if user is None:
+                    user = await self.bot.fetch_user(int(user_id))
+                await user.send(embed=embed)
+                delivered += 1
+            except Exception as e:
+                self.cog_print(f"Failed to DM user {user_id} for {label}: {e}")
+        if delivered:
+            self.cog_print(f"DM'd {delivered} user(s) for {label}")
+        return delivered
+
+    async def _deliver_notice(
+        self,
+        *,
+        channel_id: int | None,
+        mentions: str,
+        embed: nextcord.Embed,
+        user_ids: list[int],
+        label: str,
+    ) -> bool:
+        """Ping the channel and DM each user. True if either path reaches someone."""
+        channel_sent = False
+        if channel_id:
+            channel = await self._resolve_channel(int(channel_id), label)
+            if channel is not None:
+                try:
+                    await channel.send(
+                        content=mentions or None,
+                        embed=embed,
+                        allowed_mentions=nextcord.AllowedMentions(users=True),
+                    )
+                    channel_sent = True
+                    self.cog_print(f"Posted {label} in channel {channel_id}")
+                except Exception as e:
+                    self.cog_print(f"Failed to post {label} in channel {channel_id}: {e}")
+
+        dmed = await self._dm_users(user_ids, embed, label)
+        return channel_sent or dmed > 0
+
+    async def _notify_event_started(self, event):
+        """Ping the event channel and DM every attendee."""
+        event_id = event["event_id"]
+        event_name = event["event_name"]
+        description = event["event_description"] or "No description provided"
+        event_time = event["event_time"]
+        channel_id = event["channel_id"]
+
+        attendees = await self.get_event_attendees(event_id)
+        user_ids = [row["user_id"] for row in attendees]
+        mentions = " ".join(f"<@{user_id}>" for user_id in user_ids)
+
+        embed = nextcord.Embed(
+            title=f"🗓️ {event_name} is starting",
+            description=description,
+            color=0x00FF00,
+            timestamp=nextcord.utils.utcnow(),
+        )
+        if isinstance(event_time, datetime.datetime):
+            embed.add_field(
+                name="🕒 Event Time",
+                value=nextcord.utils.format_dt(event_time, style="F"),
+                inline=False,
+            )
+        embed.set_footer(text=f"Event ID: {event_id}")
+
+        if not user_ids and not channel_id:
+            self.cog_print(f"Event {event_id} started with no attendees and no channel; marking completed")
+            await self.mark_event_completed(event_id)
+            return
+
+        sent = await self._deliver_notice(
+            channel_id=channel_id,
+            mentions=mentions,
+            embed=embed,
+            user_ids=user_ids,
+            label=f"event {event_id}",
+        )
+        if sent:
+            self._event_notify_failures.discard(event_id)
+            await self.mark_event_completed(event_id)
+            return
+
+        if event_id not in self._event_notify_failures:
+            self._event_notify_failures.add(event_id)
+            self.cog_print(f"Event {event_id} start notice was not delivered; will retry")
+
+
+# Event buttons stay valid after a restart: timeout is None, custom_ids are
+# stable, and Event.register_persistent_views() registers one view for every post.
+# The event id lives in the embed footer, not on the view instance.
 class EventView(nextcord.ui.View):
-    def __init__(self, event_id: int, cog):
+    def __init__(self, cog):
         super().__init__(timeout=None)
-        self.event_id = event_id
         self.cog = cog
 
-    @nextcord.ui.button(label="✅ Join Event", style=nextcord.ButtonStyle.green)
+    async def _event_id(self, interaction: nextcord.Interaction) -> int | None:
+        event_id = event_id_from_message(interaction.message)
+        if event_id is None:
+            await interaction.response.send_message("❌ Couldn't tell which event this is.", ephemeral=True)
+        return event_id
+
+    @nextcord.ui.button(label="✅ Join Event", style=nextcord.ButtonStyle.green, custom_id="event_join")
     async def join_event(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         """Handle user joining the event"""
-        # Check if event exists and is active
-        event_data = await self.cog.get_event(self.event_id)
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
+
+        event_data = await self.cog.get_event(event_id)
         if not event_data:
             await interaction.response.send_message("❌ This event no longer exists!", ephemeral=True)
             return
-        
-        # Check if user is already attending
-        if await self.cog.is_user_attending(self.event_id, interaction.user.id):
+        if event_data["status"] != "active":
+            await interaction.response.send_message("❌ This event is no longer open.", ephemeral=True)
+            return
+
+        if await self.cog.is_user_attending(event_id, interaction.user.id):
             await interaction.response.send_message("❌ You're already signed up for this event!", ephemeral=True)
             return
-        
-        # Check if event is full
-        current_count = await self.cog.get_attendee_count(self.event_id)
-        max_attendees = event_data[6]  # max_attendees column
-        
+
+        current_count = await self.cog.get_attendee_count(event_id)
+        max_attendees = event_data["max_attendees"]
         if max_attendees and current_count >= max_attendees:
             await interaction.response.send_message("❌ This event is full!", ephemeral=True)
             return
-        
-        # Join the event
-        success = await self.cog.join_event(self.event_id, interaction.user.id)
+
+        success = await self.cog.join_event(event_id, interaction.user.id)
         if success:
-            # Update the embed with new attendee count
-            await self.update_embed(interaction)
-            await interaction.followup.send(f"✅ {interaction.user.mention} joined the event!", ephemeral=True)
+            await self.update_embed(interaction, event_id)
+            notice = f"✅ {interaction.user.mention} joined the event!"
+            if interaction.response.is_done():
+                await interaction.followup.send(notice, ephemeral=True)
+            else:
+                await interaction.response.send_message(notice, ephemeral=True)
         else:
             await interaction.response.send_message("❌ Failed to join the event!", ephemeral=True)
 
-    @nextcord.ui.button(label="❌ Leave Event", style=nextcord.ButtonStyle.red)
+    @nextcord.ui.button(label="❌ Leave Event", style=nextcord.ButtonStyle.red, custom_id="event_leave")
     async def leave_event(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         """Handle user leaving the event"""
-        # Check if user is attending
-        if not await self.cog.is_user_attending(self.event_id, interaction.user.id):
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
+
+        if not await self.cog.is_user_attending(event_id, interaction.user.id):
             await interaction.response.send_message("❌ You're not signed up for this event!", ephemeral=True)
             return
-        
-        # Leave the event
-        success = await self.cog.leave_event(self.event_id, interaction.user.id)
+
+        success = await self.cog.leave_event(event_id, interaction.user.id)
         if success:
-            # Update the embed with new attendee count
-            await self.update_embed(interaction)
-            await interaction.followup.send(f"✅ {interaction.user.mention} left the event!", ephemeral=True)
+            await self.update_embed(interaction, event_id)
+            notice = f"✅ {interaction.user.mention} left the event!"
+            if interaction.response.is_done():
+                await interaction.followup.send(notice, ephemeral=True)
+            else:
+                await interaction.response.send_message(notice, ephemeral=True)
         else:
             await interaction.response.send_message("❌ Failed to leave the event!", ephemeral=True)
 
-    @nextcord.ui.button(label="👥 View Attendees", style=nextcord.ButtonStyle.blurple)
+    @nextcord.ui.button(label="👥 View Attendees", style=nextcord.ButtonStyle.blurple, custom_id="event_attendees")
     async def view_attendees(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         """Show list of attendees"""
-        attendees = await self.cog.get_event_attendees(self.event_id)
-        
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
+
+        attendees = await self.cog.get_event_attendees(event_id)
         if not attendees:
             await interaction.response.send_message("📭 No one has signed up for this event yet!", ephemeral=True)
             return
-        
-        # Create attendees list
+
         attendee_list = []
-        for user_id, joined_at, status in attendees:
+        for row in attendees:
+            user_id = row["user_id"]
             user = self.cog.bot.get_user(user_id)
             name = user.display_name if user else f"User {user_id}"
             attendee_list.append(f"• {name}")
-        
+
         embed = nextcord.Embed(
             title=f"👥 Event Attendees ({len(attendees)})",
-            description="\n".join(attendee_list[:20]),  # Limit to first 20
-            color=0x0099ff
+            description="\n".join(attendee_list[:20]),
+            color=0x0099FF,
         )
-        
         if len(attendees) > 20:
             embed.set_footer(text=f"... and {len(attendees) - 20} more")
-        
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    async def update_embed(self, interaction: nextcord.Interaction):
-        """Update the event embed with current attendee count"""
+    @nextcord.ui.button(label="⚙️", style=nextcord.ButtonStyle.secondary, custom_id="event_settings")
+    async def manage_event(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        """Open edit and delete controls for the creator or a bot admin."""
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
+
+        event_data = await self.cog.get_event(event_id)
+        if not event_data:
+            await interaction.response.send_message("❌ This event no longer exists!", ephemeral=True)
+            return
+        if not _can_manage_event(interaction, event_data["creator_id"]):
+            await interaction.response.send_message(
+                "❌ Only the event creator or server admins can manage this event!",
+                ephemeral=True,
+            )
+            return
+
+        name = event_data["event_name"]
+        embed = nextcord.Embed(
+            title="⚙️ EDIT TIME!",
+            description=f"**Event:** {name[:100]}{'...' if len(name) > 100 else ''}",
+            color=nextcord.Color.orange(),
+        )
+        embed.add_field(name="✏️ Edit the event", value="Name, description, time, and max attendees", inline=False)
+        embed.add_field(name="🗑️ Delete the event", value="Removes the event and its attendee list", inline=False)
+        embed.set_footer(text=f"Event ID: {event_id}")
+        await interaction.response.send_message(embed=embed, view=EventManagementView(self.cog), ephemeral=True)
+
+    async def update_embed(self, interaction: nextcord.Interaction, event_id: int):
+        """Update the event embed with the current attendee count."""
         try:
-            # Get current attendee count
-            count = await self.cog.get_attendee_count(self.event_id)
-            
-            # Get the original embed and update attendee count
+            count = await self.cog.get_attendee_count(event_id)
             embed = interaction.message.embeds[0]
-            
-            # Find and update the attendees field
             for i, field in enumerate(embed.fields):
                 if field.name == "👥 Attendees":
                     embed.set_field_at(i, name="👥 Attendees", value=str(count), inline=True)
                     break
-            
             await interaction.response.edit_message(embed=embed, view=self)
         except Exception as e:
             self.cog.cog_print(f"Error updating embed: {e}")
 
 
-# Event List View with Dropdown
-class EventListView(nextcord.ui.View):
-    def __init__(self, events, cog):
-        super().__init__(timeout=300)
-        self.events = events
+class EventManagementView(nextcord.ui.View):
+    """Ephemeral edit/delete panel. Persistent so it does not expire while the bot is up."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
         self.cog = cog
-        self.selected_event_id = None
-        
-        # Add dropdown
-        self.add_item(EventDropdown(events=events, view=self))
-        
-        # Add interaction buttons (initially disabled)
-        self.join_button = nextcord.ui.Button(
-            label="✅ Join Event", 
-            style=nextcord.ButtonStyle.green, 
-            disabled=True
-        )
-        self.join_button.callback = self.join_event
-        self.add_item(self.join_button)
-        
-        self.join_alternate_button = nextcord.ui.Button(
-            label="? Join as Alternate", 
-            style=nextcord.ButtonStyle.secondary, 
-            disabled=True
-        )
-        self.join_alternate_button.callback = self.join_alternate
-        self.add_item(self.join_alternate_button)
-        
-        self.leave_button = nextcord.ui.Button(
-            label="❌ Leave Event", 
-            style=nextcord.ButtonStyle.red, 
-            disabled=True
-        )
-        self.leave_button.callback = self.leave_event
-        self.add_item(self.leave_button)
-        
-        # View attendees button (will be added conditionally)
-        self.attendees_button = nextcord.ui.Button(
-            label="👥 View Attendees", 
-            style=nextcord.ButtonStyle.blurple, 
-            disabled=True
-        )
-        self.attendees_button.callback = self.view_attendees
-    
-    async def update_for_selected_event(self, interaction: nextcord.Interaction, event_id: int):
-        """Update the embed and enable buttons when an event is selected"""
-        self.selected_event_id = event_id
-        
-        # Get event details
+
+    async def _event_id(self, interaction: nextcord.Interaction) -> int | None:
+        event_id = event_id_from_message(interaction.message)
+        if event_id is None:
+            await interaction.response.send_message("❌ Couldn't tell which event this is.", ephemeral=True)
+        return event_id
+
+    @nextcord.ui.button(label="✏️ Edit Event", style=nextcord.ButtonStyle.blurple, custom_id="event_manage_edit")
+    async def edit_event(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
         event_data = await self.cog.get_event(event_id)
         if not event_data:
-            await interaction.response.send_message("❌ Event not found!", ephemeral=True)
+            await interaction.response.send_message("❌ This event no longer exists!", ephemeral=True)
             return
-        
-        # Parse event data
-        event_id, creator_id, event_name, event_description, event_time, created_at, max_attendees, status = event_data
-        
-        # Parse the event time for display
-        event_datetime = datetime.datetime.fromisoformat(event_time.replace('Z', '+00:00'))
-        attendee_count = await self.cog.get_attendee_count(event_id)
-        attendees_text = await self.cog.get_attendees_display_text(event_id)
-        
-        # Create updated embed
+        if not _can_manage_event(interaction, event_data["creator_id"]):
+            await interaction.response.send_message(
+                "❌ Only the event creator or server admins can manage this event!",
+                ephemeral=True,
+            )
+            return
+        modal = EventEditModal(
+            cog=self.cog,
+            event_id=event_id,
+            current_name=event_data["event_name"],
+            current_description=event_data["event_description"] or "",
+            current_time=format_time_for_edit(event_data["event_time"], event_data["timezone"]),
+            current_max="" if event_data["max_attendees"] is None else str(event_data["max_attendees"]),
+        )
+        await interaction.response.send_modal(modal)
+
+    @nextcord.ui.button(label="🗑️ Delete Event", style=nextcord.ButtonStyle.red, custom_id="event_manage_delete")
+    async def delete_event(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
         embed = nextcord.Embed(
-            title=f"🎉 {event_name}",
-            description=event_description,
-            color=0x00ff00,
-            timestamp=event_datetime
+            title="⚠️ Confirm Deletion",
+            description="Are you sure you want to delete this event?\n\n**This action cannot be undone!**",
+            color=nextcord.Color.red(),
         )
-        
-        embed.add_field(
-            name="📅 Event Time", 
-            value=f"{nextcord.utils.format_dt(event_datetime, style='F')} ({nextcord.utils.format_dt(event_datetime, style='R')})", 
-            inline=False
-        )
-        
-        creator = self.cog.bot.get_user(creator_id)
-        creator_mention = creator.mention if creator else f"User {creator_id}"
-        
-        embed.add_field(name="👤 Created by", value=creator_mention, inline=True)
-        
-        # Show attendees with names or use button for large lists
-        if max_attendees and max_attendees > 20:
-            embed.add_field(name="👥 Attendees", value=f"{attendee_count} attending", inline=True)
-        else:
-            embed.add_field(name="👥 Attendees", value=attendees_text, inline=False)
-        
-        if max_attendees:
-            embed.add_field(name="📊 Max Attendees", value=str(max_attendees), inline=True)
-        
         embed.set_footer(text=f"Event ID: {event_id}")
-        
-        # Enable buttons
-        self.join_button.disabled = False
-        self.join_alternate_button.disabled = False
-        self.leave_button.disabled = False
-        
-        # Add view attendees button only for large events
-        if max_attendees and max_attendees > 20:
-            if self.attendees_button not in self.children:
-                self.add_item(self.attendees_button)
-            self.attendees_button.disabled = False
-        else:
-            # Remove button if it exists
-            if self.attendees_button in self.children:
-                self.remove_item(self.attendees_button)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
-    
-    async def join_event(self, interaction: nextcord.Interaction):
-        """Handle joining the selected event"""
-        if not self.selected_event_id:
-            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
-            return
-        
-        # Check if user is already attending
-        if await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
-            await interaction.response.send_message("❌ You're already signed up for this event!", ephemeral=True)
-            return
-        
-        # Check if event is full
-        event_data = await self.cog.get_event(self.selected_event_id)
-        current_count = await self.cog.get_attendee_count(self.selected_event_id)
-        max_attendees = event_data[6] if event_data else None
-        
-        if max_attendees and current_count >= max_attendees:
-            await interaction.response.send_message("❌ This event is full!", ephemeral=True)
-            return
-        
-        # Join the event
-        success = await self.cog.join_event(self.selected_event_id, interaction.user.id)
-        if success:
-            await self.refresh_event_display(interaction)
-            await interaction.followup.send(f"✅ {interaction.user.mention} joined the event!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Failed to join the event!", ephemeral=True)
-    
-    async def join_alternate(self, interaction: nextcord.Interaction):
-        """Handle joining the selected event as an alternate"""
-        if not self.selected_event_id:
-            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
-            return
-        
-        # Check if user is already attending
-        if await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
-            await interaction.response.send_message("❌ You're already signed up for this event!", ephemeral=True)
-            return
-        
-        # Join the event as alternate
-        success = await self.cog.join_event(self.selected_event_id, interaction.user.id, status='alternate')
-        if success:
-            await self.refresh_event_display(interaction)
-            await interaction.followup.send(f"? {interaction.user.mention} joined as an alternate!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Failed to join the event!", ephemeral=True)
-    
-    async def leave_event(self, interaction: nextcord.Interaction):
-        """Handle leaving the selected event"""
-        if not self.selected_event_id:
-            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
-            return
-        
-        # Check if user is attending
-        if not await self.cog.is_user_attending(self.selected_event_id, interaction.user.id):
-            await interaction.response.send_message("❌ You're not signed up for this event!", ephemeral=True)
-            return
-        
-        # Leave the event
-        success = await self.cog.leave_event(self.selected_event_id, interaction.user.id)
-        if success:
-            await self.refresh_event_display(interaction)
-            await interaction.followup.send(f"✅ {interaction.user.mention} left the event!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Failed to leave the event!", ephemeral=True)
-    
-    async def view_attendees(self, interaction: nextcord.Interaction):
-        """Show attendees for the selected event"""
-        if not self.selected_event_id:
-            await interaction.response.send_message("❌ No event selected!", ephemeral=True)
-            return
-        
-        attendees = await self.cog.get_event_attendees(self.selected_event_id)
-        
-        if not attendees:
-            await interaction.response.send_message("📭 No one has signed up for this event yet!", ephemeral=True)
-            return
-        
-        # Create attendees list with status
-        confirmed_list = []
-        alternate_list = []
-        
-        for user_id, joined_at, status in attendees:
-            user = self.cog.bot.get_user(user_id)
-            name = user.display_name if user else f"User {user_id}"
-            
-            if status == 'confirmed':
-                confirmed_list.append(f"• {name}")
-            elif status == 'alternate':
-                alternate_list.append(f"• {name}?")
-        
-        # Build description
-        description_parts = []
-        if confirmed_list:
-            description_parts.append("**Confirmed:**\n" + "\n".join(confirmed_list[:15]))
-        if alternate_list:
-            description_parts.append("**Alternates:**\n" + "\n".join(alternate_list[:10]))
-        
+        await interaction.response.edit_message(embed=embed, view=EventDeleteConfirmView(self.cog))
+
+
+class EventDeleteConfirmView(nextcord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _event_id(self, interaction: nextcord.Interaction) -> int | None:
+        event_id = event_id_from_message(interaction.message)
+        if event_id is None:
+            await interaction.response.send_message("❌ Couldn't tell which event this is.", ephemeral=True)
+        return event_id
+
+    @nextcord.ui.button(label="❌ Cancel", style=nextcord.ButtonStyle.secondary, custom_id="event_delete_cancel")
+    async def cancel_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         embed = nextcord.Embed(
-            title=f"👥 Event Attendees ({len(attendees)})",
-            description="\n\n".join(description_parts) if description_parts else "No attendees",
-            color=0x0099ff
+            title="✅ Deletion Cancelled",
+            description="The event was not deleted.",
+            color=nextcord.Color.green(),
         )
-        
-        total_shown = len(confirmed_list[:15]) + len(alternate_list[:10])
-        if len(attendees) > total_shown:
-            embed.set_footer(text=f"... and {len(attendees) - total_shown} more")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    async def refresh_event_display(self, interaction: nextcord.Interaction):
-        """Refresh the event display after a change"""
-        if self.selected_event_id:
-            await self.update_for_selected_event(interaction, self.selected_event_id)
+        await interaction.response.edit_message(embed=embed, view=None)
 
-
-class EventDropdown(nextcord.ui.Select):
-    def __init__(self, events, view):
-        self.view_parent = view
-        
-        # Create options from events
-        options = []
-        for event in events[:25]:  # Discord limit of 25 options
-            event_id, creator_id, event_name, event_description, event_time, created_at, max_attendees, status = event
-            
-            # Parse event time for display
-            try:
-                event_datetime = datetime.datetime.fromisoformat(event_time.replace('Z', '+00:00'))
-                # Use simple MM/DD HH:MM format for dropdown (Discord doesn't render timestamp formatting)
-                time_str = event_datetime.strftime("%m/%d")
-            except:
-                time_str = "Unknown time"
-            
-            # Truncate name and description if too long
-            display_name = event_name[:100] if len(event_name) <= 100 else event_name[:97] + "..."
-            description = f"{time_str}" if len(time_str) <= 100 else time_str[:97] + "..."
-            
-            options.append(nextcord.SelectOption(
-                label=display_name,
-                description=description,
-                value=str(event_id),
-                emoji="🎉"
-            ))
-        
-        super().__init__(
-            placeholder="Choose an event to interact with...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-    
-    async def callback(self, interaction: nextcord.Interaction):
-        event_id = int(self.values[0])
-        await self.view_parent.update_for_selected_event(interaction, event_id)
+    @nextcord.ui.button(label="🗑️ Confirm Delete", style=nextcord.ButtonStyle.red, custom_id="event_delete_confirm")
+    async def confirm_delete(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        event_id = await self._event_id(interaction)
+        if event_id is None:
+            return
+        event_data = await self.cog.get_event(event_id)
+        if not event_data:
+            await interaction.response.edit_message(
+                embed=nextcord.Embed(
+                    title="❌ Deletion Failed",
+                    description="This event no longer exists.",
+                    color=nextcord.Color.red(),
+                ),
+                view=None,
+            )
+            return
+        if not _can_manage_event(interaction, event_data["creator_id"]):
+            await interaction.response.send_message(
+                "❌ Only the event creator or server admins can manage this event!",
+                ephemeral=True,
+            )
+            return
+        post = await self.cog.get_event_post(event_id)
+        success = await self.cog.delete_event(event_id)
+        if success:
+            channel_id = post["channel_id"] if post else None
+            message_id = post["message_id"] if post else None
+            await self.cog.mark_event_message_deleted(
+                event_id,
+                event_data["event_name"],
+                channel_id,
+                message_id,
+            )
+            embed = nextcord.Embed(
+                title="✅ Event Deleted",
+                description="The event has been deleted.",
+                color=nextcord.Color.green(),
+            )
+        else:
+            embed = nextcord.Embed(
+                title="❌ Deletion Failed",
+                description="Failed to delete the event.",
+                color=nextcord.Color.red(),
+            )
+        await interaction.response.edit_message(embed=embed, view=None)
 
 
 # Event Creation Modal
@@ -1204,41 +1407,154 @@ class EventCreationModal(nextcord.ui.Modal):
                 event_name=self.event_name.value,
                 event_description=self.event_description.value or "No description provided",
                 event_time=event_datetime_utc,
-                max_attendees=max_attendees_val
+                max_attendees=max_attendees_val,
+                channel_id=interaction.channel_id,
+                timezone=tz_abbr,
             )
             
-            # Create embed for the event
-            embed = nextcord.Embed(
-                title=f"🎉 {self.event_name.value}",
-                description=self.event_description.value or "No description provided",
-                color=0x00ff00,
-                timestamp=event_datetime_utc
-            )
-            
-            # Use nextcord's format_dt for better time display
-            embed.add_field(
-                name="📅 Event Time", 
-                value=f"{nextcord.utils.format_dt(event_datetime_utc, style='F')}\n{nextcord.utils.format_dt(event_datetime_utc, style='R')}", 
-                inline=False
-            )
-            embed.add_field(name="🌍 Timezone", value=tz_abbr, inline=True)
-            embed.add_field(name="👤 Created by", value=interaction.user.mention, inline=True)
-            embed.add_field(name="👥 Attendees", value="0", inline=True)
-            
-            if max_attendees_val:
-                embed.add_field(name="📊 Max Attendees", value=str(max_attendees_val), inline=True)
-            
-            embed.set_footer(text=f"Event ID: {event_id}")
-            
-            # Create view with buttons
-            view = EventView(event_id=event_id, cog=self.cog)
+            embed = await self.cog.build_event_embed(event_id)
+            if embed is None:
+                await interaction.response.send_message("❌ Failed to load the new event.", ephemeral=True)
+                return
+
+            view = EventView(self.cog)
             
             await interaction.response.send_message(embed=embed, view=view)
+            if interaction.channel_id:
+                try:
+                    posted = await interaction.original_message()
+                    await self.cog.set_event_message(event_id, interaction.channel_id, posted.id)
+                except Exception as e:
+                    self.cog.cog_print(f"Saved event {event_id} without its message id: {e}")
             
         except ValueError as e:
             await interaction.response.send_message(f"❌ Invalid date/time format: {str(e)}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ An error occurred: {str(e)}", ephemeral=True)
+
+
+class EventEditModal(nextcord.ui.Modal):
+    def __init__(
+        self,
+        cog,
+        event_id: int,
+        current_name: str,
+        current_description: str,
+        current_time: str,
+        current_max: str,
+    ):
+        super().__init__(title="Edit Event", timeout=300)
+        self.cog = cog
+        self.event_id = event_id
+
+        self.event_name = nextcord.ui.TextInput(
+            label="Event Name",
+            placeholder="Enter the name of your event...",
+            required=True,
+            max_length=100,
+            default_value=current_name,
+        )
+        self.add_item(self.event_name)
+
+        self.event_datetime = nextcord.ui.TextInput(
+            label="Date & Time",
+            placeholder="(6/29 11:00am PST  |  12/25 14:30 EST  |  2025/06/29 23:45 UTC)",
+            required=True,
+            max_length=50,
+            default_value=current_time,
+        )
+        self.add_item(self.event_datetime)
+
+        self.event_description = nextcord.ui.TextInput(
+            label="Description",
+            placeholder="Describe your event... (optional)",
+            required=False,
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=1000,
+            default_value=current_description,
+        )
+        self.add_item(self.event_description)
+
+        self.max_attendees = nextcord.ui.TextInput(
+            label="Max Attendees",
+            placeholder="Leave blank for unlimited",
+            required=False,
+            max_length=10,
+            default_value=current_max,
+        )
+        self.add_item(self.max_attendees)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        try:
+            event_datetime_utc, tz_abbr, _tz_name = self.cog.parse_datetime_string(self.event_datetime.value)
+            if event_datetime_utc <= nextcord.utils.utcnow():
+                await interaction.response.send_message("❌ Event time must be in the future!", ephemeral=True)
+                return
+
+            max_attendees_val = None
+            if self.max_attendees.value.strip():
+                try:
+                    max_attendees_val = int(self.max_attendees.value.strip())
+                    if max_attendees_val <= 0:
+                        await interaction.response.send_message(
+                            "❌ Max attendees must be a positive number!",
+                            ephemeral=True,
+                        )
+                        return
+                except ValueError:
+                    await interaction.response.send_message(
+                        "❌ Max attendees must be a valid number!",
+                        ephemeral=True,
+                    )
+                    return
+
+            success = await self.cog.update_event(
+                self.event_id,
+                self.event_name.value,
+                self.event_description.value or "No description provided",
+                event_datetime_utc,
+                max_attendees_val,
+                tz_abbr,
+            )
+            if not success:
+                await interaction.response.send_message("❌ Failed to update the event.", ephemeral=True)
+                return
+
+            refreshed = await self.cog.refresh_event_message(self.event_id)
+            description = "The event has been updated."
+            if not refreshed:
+                description += " The original post could not be refreshed."
+            embed = nextcord.Embed(
+                title="✅ Event Updated",
+                description=description,
+                color=nextcord.Color.green(),
+            )
+            embed.add_field(name="📝 Name", value=self.event_name.value, inline=False)
+            embed.add_field(
+                name="📅 Time",
+                value=(
+                    f"{nextcord.utils.format_dt(event_datetime_utc, style='F')}\n"
+                    f"{nextcord.utils.format_dt(event_datetime_utc, style='R')}"
+                ),
+                inline=False,
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        except ValueError as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"❌ Invalid date/time format: {e}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"❌ Invalid date/time format: {e}\n\nExamples: `6/29 11:00am PST`, `12/25 14:30 EST`, `2025/06/29 23:45 UTC`",
+                    ephemeral=True,
+                )
+        except Exception as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ An error occurred: {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
 
 # ============== REMINDER UI COMPONENTS ==============
@@ -1258,14 +1574,16 @@ class ReminderView(nextcord.ui.View):
             await interaction.response.send_message("❌ This reminder no longer exists!", ephemeral=True)
             return
         
-        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
+        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status, _tz = reminder_data
         
         if status != 'active':
             await interaction.response.send_message("❌ This reminder is no longer active!", ephemeral=True)
             return
         
-        # Check if reminder time has passed
-        reminder_datetime = datetime.datetime.fromisoformat(reminder_time.replace('Z', '+00:00'))
+        # asyncpg returns timestamptz as a datetime, not an ISO string.
+        reminder_datetime = _to_timestamptz_arg(reminder_time)
+        if reminder_datetime.tzinfo is None:
+            reminder_datetime = reminder_datetime.replace(tzinfo=datetime.timezone.utc)
         if reminder_datetime <= nextcord.utils.utcnow():
             await interaction.response.send_message("❌ This reminder time has already passed!", ephemeral=True)
             return
@@ -1291,7 +1609,7 @@ class ReminderView(nextcord.ui.View):
             await interaction.response.send_message("❌ This reminder no longer exists!", ephemeral=True)
             return
         
-        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = reminder_data
+        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status, _tz = reminder_data
         
         # Check if user has permission (creator or admin)
         if interaction.user.id != creator_id and not (isinstance(interaction.user, nextcord.Member) and is_bot_admin(interaction.user)):
@@ -1302,12 +1620,10 @@ class ReminderView(nextcord.ui.View):
         view = ReminderManagementView(reminder_id=self.reminder_id, cog=self.cog, reminder_data=reminder_data)
         
         embed = nextcord.Embed(
-            title="⚙️ Reminder Management",
+            title="⚙️ EDIT TIME!",
             description=f"**Reminder:** {reminder_text[:100]}{'...' if len(reminder_text) > 100 else ''}",
             color=nextcord.Color.orange()
         )
-        embed.add_field(name="✏️ Edit the reminder", value="", inline=False)
-        embed.add_field(name="🗑️ Delete the reminder", value="", inline=False)
 
         embed.set_footer(text=f"Reminder ID: {reminder_id}")
         
@@ -1324,13 +1640,15 @@ class ReminderManagementView(nextcord.ui.View):
     @nextcord.ui.button(label="✏️ Edit Reminder", style=nextcord.ButtonStyle.blurple)
     async def edit_reminder(self, button: nextcord.ui.Button, interaction: nextcord.Interaction):
         """Edit the reminder"""
-        reminder_id, creator_id, reminder_text, reminder_time, original_channel_id, message_id, created_at, status = self.reminder_data
-        
+        reminder_text = self.reminder_data["reminder_text"]
         modal = ReminderEditModal(
             cog=self.cog,
             reminder_id=self.reminder_id,
             current_text=reminder_text,
-            current_time=reminder_time
+            current_time=format_time_for_edit(
+                self.reminder_data["reminder_time"],
+                self.reminder_data["timezone"],
+            ),
         )
         await interaction.response.send_modal(modal)
 
@@ -1423,12 +1741,13 @@ class ReminderCreationModal(nextcord.ui.Modal):
                 creator_id=interaction.user.id,
                 reminder_text=self.reminder_text.value,
                 reminder_time=reminder_datetime_utc,
-                original_channel_id=interaction.channel.id
+                original_channel_id=interaction.channel.id,
+                timezone=tz_abbr,
             )
             
             # Create embed for the reminder
             embed = nextcord.Embed(
-                title="⏰ Reminder Created",
+                title="⏰ Reminding this channel about...",
                 description=self.reminder_text.value,
                 color=nextcord.Color.blue(),
                 timestamp=reminder_datetime_utc
@@ -1441,14 +1760,8 @@ class ReminderCreationModal(nextcord.ui.Modal):
             
             # Use nextcord's format_dt for better time display
             embed.add_field(
-                name="📅 Reminder Time", 
+                name="📅 When:", 
                 value=f"{nextcord.utils.format_dt(reminder_datetime_utc, style='F')}\n{nextcord.utils.format_dt(reminder_datetime_utc, style='R')}", 
-                inline=False
-            )
-            embed.add_field(name="🌍 Timezone", value=tz_abbr, inline=True)
-            embed.add_field(
-                name="� Instructions", 
-                value="• Click **⏰ Remind me too** to get notified\n• Use **⚙️** to edit or delete (creator/admin only)",
                 inline=False
             )
 
@@ -1498,23 +1811,16 @@ class ReminderEditModal(nextcord.ui.Modal):
             required=True,
             style=nextcord.TextInputStyle.paragraph,
             max_length=1000,
-            default=current_text
+            default_value=current_text,
         )
         self.add_item(self.reminder_text)
-        
-        # Convert ISO time back to readable format for editing
-        try:
-            current_dt = datetime.datetime.fromisoformat(current_time.replace('Z', '+00:00'))
-            current_formatted = current_dt.strftime("%m/%d/%Y %H:%M UTC")
-        except:
-            current_formatted = current_time
-        
+
         self.reminder_datetime = nextcord.ui.TextInput(
             label="Reminder Date & Time",
             placeholder="(6/29 11:00am PST  |  12/25 14:30 EST  |  2025/06/29 23:45 UTC)",
             required=True,
             max_length=50,
-            default=current_formatted
+            default_value=current_time,
         )
         self.add_item(self.reminder_datetime)
     
@@ -1532,7 +1838,8 @@ class ReminderEditModal(nextcord.ui.Modal):
             success = await self.cog.update_reminder(
                 reminder_id=self.reminder_id,
                 reminder_text=self.reminder_text.value,
-                reminder_time=reminder_datetime_utc
+                reminder_time=reminder_datetime_utc,
+                timezone=tz_abbr,
             )
             
             if success:

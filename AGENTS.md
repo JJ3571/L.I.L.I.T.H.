@@ -12,6 +12,17 @@ This is L.I.L.I.T.H., a single-guild Discord bot. Humans and coding agents (loca
 - Schema is stable. Do not change PostgreSQL DDL without an issue, a migration path, and maintainer agreement.
 - Guild snowflakes (channels, roles, emojis, MTG lists, etc.) are stored in Postgres `guild_config` and edited with `.setup`. Do not re-add them to `.env.example` / Compose.
 
+## Discord buttons and views
+
+Message components that people can click later — after time passes, or after the bot restarts — should stay live the way event posts do (`EventView` in `src/main_bot/cogs/production/event2.py`). Prefer that over a view that only exists in memory for the message that just got sent.
+
+1. **Fixed `custom_id`.** Every button (and select) uses a stable id, the same on every post. Do not generate a new id per message.
+2. **`timeout=None`.** The view does not expire on its own.
+3. **Register on startup.** After the bot is ready, `bot.add_view(...)` the same view classes again (see `Event.register_persistent_views`). Remove them in `cog_unload`. Discord only routes a click after a restart when the id is stable, the timeout is unset, and a view is registered.
+4. **Read the row from the message.** One registered view covers every post. Do not store the event, reminder, or other id only on the view instance — that instance is shared. Put the id somewhere the click handler can read, such as the embed footer (`Event ID: N`), then look the row up in the database.
+
+Ephemeral follow-ups are different. Nextcord caps an ephemeral view at 15 minutes even when `timeout` is `None`, because the interaction token expires. Use the persistent pattern for public posts. Posts sent before their buttons had stable ids stay dead; only messages created after the change keep working.
+
 ## Before changing code
 
 1. There should already be a GitHub issue. Link it in the PR body as `Fixes #N`.

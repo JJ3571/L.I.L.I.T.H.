@@ -314,9 +314,9 @@ Pokemon team and dex helpers (`team-create`, `team-list`, `search`, `info`, and 
 
 Set or cycle the bot custom status.
 
-#### `/event create` / `/event list` / `/event edit` / `/event delete`
+#### `/event`
 
-Manage server events.
+Create an event. Join, leave, edit, and delete from the buttons on the event post.
 
 #### `/reminder`
 
