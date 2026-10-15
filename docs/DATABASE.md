@@ -138,21 +138,6 @@ Swap the URLs in the same script. The hosted target must allow TLS.
 4. Clear `COMPOSE_PROFILES` so the bundled service does not run.
 5. Verify with `admin_tools/verify_databases.py`.
 
-
-
-### Legacy SQLite to PostgreSQL
-
-Runtime today is PostgreSQL only. Legacy `databases/*.db` files are not used by the running bot.
-
-1. Provision Postgres and set `DATABASE_URL`.
-2. Start the bot once so `init_all_schemas` creates tables.
-3. Run the one-time migration script.
-
-```bash
-uv run python scripts/migrate_sqlite_files_to_postgres_once.py --dry-run
-uv run python scripts/migrate_sqlite_files_to_postgres_once.py
-```
-
 Use a staging database first. Do not paste production URLs into public channels.
 
 ## Troubleshooting hosted dumps

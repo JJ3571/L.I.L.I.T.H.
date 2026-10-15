@@ -44,9 +44,18 @@ Cloud hosts often need TLS. Append `?sslmode=require` to the database URL. Hostn
 
 See [DATABASE.md](DATABASE.md) for profiles and migration.
 
-## Docker Compose substitution only
+## Docker Compose
 
-These keys are used by `docker compose` for variable interpolation. They are not read by Python unless also listed under `services.bot.environment` in `docker-compose.yml`.
+The bot service loads the whole `.env` file with `env_file`. A new key is available in the container as soon as it is in that file. Add a line under `services.bot.environment` only when the container value must differ from the host file:
+
+- `DATABASE_URL` — an empty value becomes the bundled URL with host `postgres`
+- `LAVALINK_URI` — `http://lavalink:2333`, unless `LAVALINK_DOCKER_URI` is set. The host file's `LAVALINK_URI` is for laptop Python and is not copied in
+- `MUSIC_LOCAL_HTTP_HOST` — `bot`
+- `MUSIC_LOCAL_HTTP_BIND_HOST` — `0.0.0.0`
+
+Lavalink, Postgres, and pgAdmin do not use `env_file`. Their `environment` blocks are how those containers get variables.
+
+These keys are for Compose itself. Python does not read them:
 
 - `COMPOSE_PROFILES`
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `POSTGRES_HOST_PORT`
@@ -62,7 +71,7 @@ These keys are used by `docker compose` for variable interpolation. They are not
 | `FULL_DEBUG_IN_TERMINAL`  | When true, selected cogs emit verbose debug lines. Default false.                                                                   |
 | `NEXTCORD_FILE_LOG_LEVEL` | Nextcord logger level in the combined file. Values: DEBUG, INFO, WARNING, ERROR, CRITICAL. Default INFO.                            |
 | `APP_LOG_LEVEL`           | Verbosity for `main_bot.*` in the same file. Default INFO.                                                                          |
-| `APP_LOG_STDOUT_MIRROR`   | When true, boot and cog lines also echo to stdout. Compose default true.                                                            |
+| `APP_LOG_STDOUT_MIRROR`   | When true, boot and cog lines also echo to stdout. Default true.                                                                     |
 | `ENVIRONMENT`             | `development` or `production`.                                                                                                       |
 
 
@@ -77,8 +86,8 @@ True can be: `1`, `true`, `yes`, `on` -- False can be: `0`, `false`, `no`, `off`
 | `LAVALINK_PASSWORD`                  | Must match `lavalink.server.password` in `application.yml`. Default `youshallnotpass`.                                                                                 |
 | `YOUTUBE_OAUTH_ENABLED`              | `true` or `false`. Passed to the Lavalink container. Default false.                                                                                                    |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN`        | Refresh token after the OAuth device flow.                                                                                                                             |
-| `MUSIC_LOCAL_HTTP_HOST`              | Hostname in HTTP URLs that the bot gives Lavalink. Default `127.0.0.1`. In Compose, use the bot service hostname (often `bot`).                                        |
-| `MUSIC_LOCAL_HTTP_BIND_HOST`         | Address for aiohttp to listen on. Use `0.0.0.0` in containers.                                                                                                         |
+| `MUSIC_LOCAL_HTTP_HOST`              | Hostname in HTTP URLs that the bot gives Lavalink. Default `127.0.0.1` for host Python. Compose sets `bot` and does not copy this value in.                            |
+| `MUSIC_LOCAL_HTTP_BIND_HOST`         | Address for aiohttp to listen on. Compose sets `0.0.0.0`.                                                                                                              |
 | `MUSIC_LOCAL_HTTP_PORT`              | Port for the local music HTTP server. Default `8765`.                                                                                                                  |
 | `MUSIC_FOLDER_1` … `MUSIC_FOLDER_25` | Flat folder names under `local_audio/music/`. Each registers a slash command. Reserved: `gaming`, `brainrot`.                                                          |
 | `MUSIC_n_SHUFFLE_START`              | When true, seek to a random position in each track for folder `n`.                                                                                                     |
@@ -86,7 +95,7 @@ True can be: `1`, `true`, `yes`, `on` -- False can be: `0`, `false`, `no`, `off`
 
 Music voice denylist channels are configured via `.setup` (Postgres), not env.
 
-Docker Compose only forwards keys listed under `services.bot.environment`. The bundled file forwards slots 1–3. Copy that same pattern for slots 4–25.
+`MUSIC_FOLDER_n` and `MUSIC_n_SHUFFLE_START` are read from `.env`. Slots 1–25 need no Compose edit.
 
 See [MUSIC.md](MUSIC.md).
 
@@ -97,7 +106,7 @@ See [MUSIC.md](MUSIC.md).
 | ----------------------------- | -------------------------------------------------------------------------------- |
 | `BOT_LOG_JOURNAL_UNIT`        | systemd unit name for journal tails. Empty means use the log file.               |
 | `BOT_LOG_JOURNAL_EXTRA_UNITS` | Comma-separated extra units.                                                     |
-| `BOT_LOG_FILE`                | Path for the combined rotating log. Compose default `/app/logs/discord_bot.log`. |
+| `BOT_LOG_FILE`                | Path for the combined rotating log. Unset writes `<project>/logs/discord_bot.log`. Compose mounts `./logs` at `/app/logs`. |
 | `BOT_LOG_MAX_BYTES`           | Rotation size. Default `10485760`.                                               |
 | `BOT_LOG_BACKUP_COUNT`        | Rotation count. Default `5`.                                                     |
 

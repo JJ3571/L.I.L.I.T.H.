@@ -32,11 +32,12 @@ Ephemeral follow-ups are different. Nextcord caps an ephemeral view at 15 minute
 
 ## What to edit together
 
-If you add or rename an environment variable, update all three:
+If you add or rename an environment variable, update both:
 
 1. `.env.example`
 2. [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
-3. The `environment:` block in `docker-compose.yml`
+
+The bot service loads the whole `.env` through `env_file`. Add a line under `services.bot.environment` in `docker-compose.yml` only when the container value must differ from the host file (`DATABASE_URL`, `LAVALINK_URI`, `MUSIC_LOCAL_HTTP_HOST`, `MUSIC_LOCAL_HTTP_BIND_HOST`). Lavalink, Postgres, and pgAdmin do not use `env_file`; their `environment` blocks are how those containers get variables.
 
 Guild channel/role/emoji knobs are **not** env vars — they live in Postgres and are edited with `.setup`. Secrets belong in Doppler (local) or Cursor Secrets (cloud), delivered via a host `.env` file. Never commit `.env`, Doppler tokens, Discord tokens, or guild IDs.
 

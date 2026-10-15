@@ -1,36 +1,26 @@
 # Docker Compose
 #
-# `environment` uses ${VAR} so Compose substitutes from the repo-root `.env`
-# file (gitignored). Compose loads `.env` automatically for substitution.
-#
 # Default Postgres is bundled via the Compose profile `bundled-db`
 # (see `.env.example` `COMPOSE_PROFILES`):
 #   • bundled-db  → postgres:17-alpine on discord_bot_net. The bot default
 #                   DATABASE_URL targets host `postgres`.
 #   • admin-ui    → pgAdmin on http://127.0.0.1:${PGADMIN_HOST_PORT:-5050}
 #                   (requires bundled-db for DB host `postgres`).
-# Clear COMPOSE_PROFILES (or omit bundled-db) when you use an external
+# Clear COMPOSE_PROFILES (remove bundled-db) when you use an external
 # Postgres URL. Set DATABASE_URL in `.env` for that case.
 #
-# Operator entry point (recommended):
+# Entry point (recommended):
 #   ./scripts/bot.sh up
 #
-# Cloned-repo local image build (developers):
+# Cloned-repo local image build (for developing):
 #   ./scripts/docker_compose_up.sh     # prepare staging if missing; --env default
 #   ./scripts/local_docker_deploy.sh   # compose down then docker_compose_up
 #
 # Optional Doppler: pass --doppler to the scripts above. See docs/SECRETS_DOPPLER.md.
 #
-# Optional music folder slash commands (`MUSIC_FOLDER_1` … `25`, `music.py`):
-# Compose only forwards env keys listed under services.bot.environment.
-# This file wires the first three slots. Duplicate the pattern for slots 4–25.
-#
 services:
   bot:
     image: ghcr.io/jj3571/discord-bot:latest
-    # Lavalink starts first; bot does not wait for Lavalink.health (curl/JVM quirks can strand the bot as "waiting").
-    # Use MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC in music cog for websocket readiness instead.
-    # Postgres is optional (profile bundled-db); required: false avoids blocking when using external DATABASE_URL only.
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,76 +30,25 @@ services:
     networks:
       - discord_bot_net
     volumes:
-      # Local audio assets (music, brainrot sfx) — bind mount so changes
-      # are reflected without rebuilding.
+      # Local audio assets (music, brainrot sfx)
       - ./local_audio:/app/local_audio:ro
-      # Persisted data (tierlist images, etc.). These survive image rebuilds.
+      # Persisted data (tierlist images, etc.. These survive image rebuilds.)
       - tierlist_data:/app/data
-      # Legacy SQLite files only — Postgres data lives in the `pg_data` volume on the postgres service, not here.
-      - db_data:/app/databases
-      # Combined runtime log (``main_bot`` + Nextcord); inspect on host under ``./logs``.
+      # Combined runtime log
       - ./logs:/app/logs
     restart: unless-stopped
-    # Load the full host `.env` into the container (needed for `.setup import-env`
-    # while migrating guild knobs out of Doppler). Explicit `environment:` below wins
-    # for Docker-specific overrides (LAVALINK_URI, DATABASE_URL default, etc.).
+    # The whole host `.env` is the bot process environment. Lines below replace
+    # values that are wrong inside the container (host Python keeps the .env values).
     env_file:
       - .env
     environment:
-      APPLICATION_ID: ${APPLICATION_ID}
-      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
-      APP_LOG_STDOUT_MIRROR: ${APP_LOG_STDOUT_MIRROR:-true}
-      BOT_LOG_BACKUP_COUNT: ${BOT_LOG_BACKUP_COUNT:-5}
-      BOT_LOG_FILE: ${BOT_LOG_FILE:-/app/logs/discord_bot.log}
-      BOT_LOG_MAX_BYTES: ${BOT_LOG_MAX_BYTES:-10485760}
-      BOT_LOG_JOURNAL_EXTRA_UNITS: ${BOT_LOG_JOURNAL_EXTRA_UNITS}
-      BOT_LOG_JOURNAL_UNIT: ${BOT_LOG_JOURNAL_UNIT}
-      BRAVE_IMAGE_SEARCH_MIN_INTERVAL: ${BRAVE_IMAGE_SEARCH_MIN_INTERVAL}
-      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY}
-      BRAVE_TIERLIST_IMAGE_MIN_HEIGHT: ${BRAVE_TIERLIST_IMAGE_MIN_HEIGHT}
-      BRAVE_TIERLIST_IMAGE_MIN_WIDTH: ${BRAVE_TIERLIST_IMAGE_MIN_WIDTH}
-      SERPENT_API_KEY: ${SERPENT_API_KEY}
-      SERPENT_IMAGE_SEARCH_MIN_INTERVAL: ${SERPENT_IMAGE_SEARCH_MIN_INTERVAL}
-      SERPENT_IMAGE_ENGINE: ${SERPENT_IMAGE_ENGINE}
-      TIERLIST_IMAGE_ENGINE: ${TIERLIST_IMAGE_ENGINE}
-      CHARACTER_AVATARS: ${CHARACTER_AVATARS}
-      CRAFTY_BASE_URL: ${CRAFTY_BASE_URL}
-      CRAFTY_PASSWORD: ${CRAFTY_PASSWORD}
-      CRAFTY_USERNAME: ${CRAFTY_USERNAME}
-      # Default targets bundled Postgres (`bundled-db` profile). Override for an external host.
+      # Empty DATABASE_URL means bundled Postgres on the Compose network.
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-bot}:${POSTGRES_PASSWORD:-bot}@postgres:5432/${POSTGRES_DB:-discord_bot}?sslmode=disable}
-      ENVIRONMENT: ${ENVIRONMENT}
-      OPENCODE_API_KEY: ${OPENCODE_API_KEY}
-      OPENCODE_MODEL: ${OPENCODE_MODEL:-glm-5.3-flash}
-      GUILD_ID: ${GUILD_ID}
-      LAVALINK_PASSWORD: ${LAVALINK_PASSWORD}
-      # Lavalink WS/HTTP as seen FROM THE BOT CONTAINER. Do NOT use localhost/127.0.0.1 here:
-      # that points at the bot container itself when running in Docker, so Wavelink never connects.
-      # Default is Compose DNS hostname `lavalink` on the shared Docker network below.
-      # Host LAVALINK_URI (often localhost for laptop dev) is intentionally NOT plumbed here
-      # unless you pass LAVALINK_DOCKER_URI to override — e.g. external Lavalink: http://other:2333
+      # Host `.env` often has http://127.0.0.1:2333. That address is the bot
+      # container itself. Set LAVALINK_DOCKER_URI only for Lavalink outside Compose.
       LAVALINK_URI: ${LAVALINK_DOCKER_URI:-http://lavalink:2333}
-      LOAD_DEVELOPMENT_COGS: ${LOAD_DEVELOPMENT_COGS}
-      FULL_DEBUG_IN_TERMINAL: ${FULL_DEBUG_IN_TERMINAL}
-      NEXTCORD_FILE_LOG_LEVEL: ${NEXTCORD_FILE_LOG_LEVEL:-INFO}
-      MANA_SYMBOLS: ${MANA_SYMBOLS}
-      MUSIC_LOCAL_HTTP_HOST: ${MUSIC_LOCAL_HTTP_HOST:-bot}
-      MUSIC_LOCAL_HTTP_BIND_HOST: ${MUSIC_LOCAL_HTTP_BIND_HOST:-0.0.0.0}
-      MUSIC_LOCAL_HTTP_PORT: ${MUSIC_LOCAL_HTTP_PORT:-8765}
-      # ------------------------ Music slash commands /<folder> → local_audio/music/<folder>/
-      # (slots 4–25: copy these two lines for each additional folder, bump n):
-      #   MUSIC_FOLDER_4: ${MUSIC_FOLDER_4:-}
-      #   MUSIC_4_SHUFFLE_START: ${MUSIC_4_SHUFFLE_START:-}
-      MUSIC_FOLDER_1: ${MUSIC_FOLDER_1:-}
-      MUSIC_FOLDER_2: ${MUSIC_FOLDER_2:-}
-      MUSIC_FOLDER_3: ${MUSIC_FOLDER_3:-}
-      MUSIC_1_SHUFFLE_START: ${MUSIC_1_SHUFFLE_START:-}
-      MUSIC_2_SHUFFLE_START: ${MUSIC_2_SHUFFLE_START:-}
-      MUSIC_3_SHUFFLE_START: ${MUSIC_3_SHUFFLE_START:-}
-      # ------------------------
-      OMDB_API_KEY: ${OMDB_API_KEY}
-      OMDB_API_URL: ${OMDB_API_URL}
-      WEBHOOK_URL: ${WEBHOOK_URL}
+      MUSIC_LOCAL_HTTP_HOST: bot
+      MUSIC_LOCAL_HTTP_BIND_HOST: "0.0.0.0"
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
@@ -118,28 +57,21 @@ services:
       start_period: 10s
 
   lavalink:
-    # Pre-built official image. Mount your application.yml to override defaults
-    # (password, plugins, YouTube OAuth, etc.).
+    # Pre-built official image. Mount application.yml to override defaults
     image: ghcr.io/lavalink-devs/lavalink:latest
     networks:
       - discord_bot_net
     environment:
       - LAVALINK_PASSWORD=${LAVALINK_PASSWORD}
-      # youtube-source OAuth (see lavalink/application.yml placeholders; Lavalink docs env override: PLUGINS_YOUTUBE_OAUTH_*).
       - YOUTUBE_OAUTH_ENABLED=${YOUTUBE_OAUTH_ENABLED:-false}
       - YOUTUBE_OAUTH_REFRESH_TOKEN=${YOUTUBE_OAUTH_REFRESH_TOKEN:-}
     volumes:
       # Official image reads config here — https://lavalink.dev/getting-started/docker
-      # (mounting elsewhere ignores your YAML; bot then probes wrong port → lavalink_http_probe_failed).
       - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
-      # application.yml sets ``logging.file.name`` to ``./logs/lavalink.log`` → under ``/opt/Lavalink/logs`` in the image.
-      # Same host ``./logs`` as the bot so ``discord_bot.log`` and ``lavalink.log`` sit together (gitignored). Without this
-      # mount, use ``docker compose logs lavalink``.
       - ./logs:/opt/Lavalink/logs
     ports:
       - "127.0.0.1:2333:2333"
     restart: unless-stopped
-    # Include Authorization so healthchecks do not spam ``Authorization missing for 127.0.0.1 on GET /``.
     healthcheck:
       test: ["CMD-SHELL", "curl -sf -H \"Authorization: $$LAVALINK_PASSWORD\" http://localhost:2333/"]
       interval: 30s
@@ -193,7 +125,6 @@ services:
 volumes:
   # Named volumes survive container rebuilds — only image changes, data persists.
   tierlist_data:
-  db_data:
   pg_data:
   pgadmin_data:
 

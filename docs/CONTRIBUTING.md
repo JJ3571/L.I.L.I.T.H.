@@ -114,11 +114,12 @@ Admin command toggle docs:
 
 ## Config and secrets
 
-When you add or rename an environment variable, update all of these files:
+When you add or rename an environment variable, update both of these files:
 
 1. `[.env.example](../.env.example)`
 2. [CONFIGURATION.md](CONFIGURATION.md)
-3. The `environment:` block in `[docker-compose.yml](../docker-compose.yml)`
+
+The bot service loads the whole `.env` through `env_file`. Add a line under `services.bot.environment` in `[docker-compose.yml](../docker-compose.yml)` only when the container value must differ from the host file. Lavalink, Postgres, and pgAdmin do not use `env_file`; their `environment` blocks are how those containers get variables.
 
 Lavalink and local audio details live in [MUSIC.md](MUSIC.md) and `lavalink/application.yml.example`.
 

@@ -1,5 +1,5 @@
 """
-PostgreSQL DDL: one database, one schema per former SQLite file.
+PostgreSQL DDL: one database, one schema per feature area.
 Run after pool creation (e.g. from bot setup_hook).
 """
 

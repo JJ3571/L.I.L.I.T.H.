@@ -82,7 +82,6 @@ Staging lives in `.docker-local-build/` (gitignored). Default secrets mode is `-
 | -------------------------------------------------- | ------------------------------------------- |
 | `scripts/postgres_dump_and_restore_helpers.py`     | Low-level `pg_dump` / `pg_restore`          |
 | `scripts/postgres_migrate_hosted_to_local.sh`      | Copy data between two `DATABASE_URL` values |
-| `scripts/migrate_sqlite_files_to_postgres_once.py` | One-time SQLite to Postgres migration       |
 
 
 See [DATABASE.md](DATABASE.md).

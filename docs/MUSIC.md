@@ -28,12 +28,9 @@ Reserved folder names for `MUSIC_FOLDER_*`: `gaming` and `brainrot`.
 ### Register a music folder command
 
 1. Place audio files under `local_audio/music/<name>/`.
-2. Set `MUSIC_FOLDER_1=<name>` (or another free slot) in `.env`.
+2. Set `MUSIC_FOLDER_1=<name>` (or another free slot, through `MUSIC_FOLDER_25`) in `.env`.
 3. Optional: set `MUSIC_1_SHUFFLE_START=true` for random seek. (E.g. for large single audio files containing multiple tracks.)
-4. Confirm the key appears under `services.bot.environment` in `docker-compose.yml`.
-5. Recreate the bot container.
-
-The bundled compose file forwards slots 1–3. Copy the pattern for slots 4–25.
+4. Recreate the bot container so it reloads `.env`.
 
 Folder names come only from these environment variables. Dropping files into a folder does not create a slash command until you set `MUSIC_FOLDER_n`.
 
