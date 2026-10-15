@@ -53,7 +53,7 @@ Default port: `8765`. Keep `sources.http: true` in `application.yml`.
 
 ## YouTube OAuth
 
-YouTube playback uses the youtube-plugin in `application.yml`.
+YouTube playback uses the youtube-plugin in `application.yml`. The example pins a snapshot newer than 1.18.2 so the signed-in TV client is not rejected with "The page needs to be reloaded."
 
 1. Set `YOUTUBE_OAUTH_ENABLED=true` in `.env`.
 2. Restart Lavalink.

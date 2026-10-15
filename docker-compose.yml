@@ -73,7 +73,7 @@ services:
       - "127.0.0.1:2333:2333"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -H \"Authorization: $$LAVALINK_PASSWORD\" http://localhost:2333/"]
+      test: ["CMD-SHELL", "curl -sf -H \"Authorization: $$LAVALINK_PASSWORD\" http://localhost:2333/v4/info"]
       interval: 30s
       timeout: 5s
       retries: 3

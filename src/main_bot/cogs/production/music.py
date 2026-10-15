@@ -68,6 +68,8 @@ MUSIC_LAVALINK_POOL_CONNECTED_TIMEOUT_SEC = 30.0
 MUSIC_DISCONNECT_LAVA_CLEANUP_TIMEOUT_SEC = 8.0
 # Periodic sweep: if the bot is alone in the music VC (no non-bot listeners), force teardown.
 MUSIC_ALONE_VOICE_SWEEP_INTERVAL_SEC = 30.0
+# YouTube stream loadFailed in a row before we stop, instead of skipping the rest of the queue.
+STREAM_CONSECUTIVE_LOAD_FAILURES = 2
 
 
 def _presence_stream_line(track: wavelink.Playable) -> str:
@@ -204,7 +206,7 @@ def _normalize_lavalink_youtube_url(query: str) -> str:
     if host not in youtube_hosts:
         return q
     pairs = urllib.parse.parse_qsl(p.query, keep_blank_values=True)
-    filtered = [(k, v) for k, v in pairs if k.lower() not in ("si", "feature", "pp")]
+    filtered = [(k, v) for k, v in pairs if k.lower() not in ("si", "feature", "pp", "drli")]
     new_query = urllib.parse.urlencode(filtered)
     if host == "youtu.be":
         vid = p.path.strip("/").split("/")[0]
@@ -296,6 +298,7 @@ class GuildMusicState:
     gaming_enabled_slugs: set[str] = field(default_factory=set)
     gaming_paths_master: list[Path] = field(default_factory=list)
     gaming_slug_order: list[str] = field(default_factory=list)
+    stream_load_failures: int = 0
 
 
 def _embed_source_kind(state: GuildMusicState) -> str:
@@ -379,131 +382,158 @@ def build_music_embed_and_files(
     return embed, files
 
 
+# Same ids on every controller post. A new id per message is what makes Discord
+# drop the buttons after a restart (see EventView).
+MUSIC_CTRL_BACK = "music_ctrl_back"
+MUSIC_CTRL_TOGGLE = "music_ctrl_toggle"
+MUSIC_CTRL_NEXT = "music_ctrl_next"
+MUSIC_CTRL_SHUFFLE = "music_ctrl_shuffle"
+MUSIC_CTRL_STOP = "music_ctrl_stop"
+MUSIC_CTRL_QUEUE = "music_ctrl_queue"
+MUSIC_GAMING_TOGGLE_PREFIX = "music_gaming:"
+GAMING_MIX_EMBED_DESCRIPTION = "Games toggled on/green will be played. Press ⏯️ to start."
+
+
+def _interaction_guild_id(interaction: nextcord.Interaction) -> int | None:
+    guild = interaction.guild
+    return guild.id if guild is not None else None
+
+
+async def _music_voice_control_check(interaction: nextcord.Interaction) -> bool:
+    """Same voice-channel gate for every music button. The guild comes from the click."""
+    if interaction.guild is None:
+        return False
+    vc = interaction.guild.voice_client
+    if not isinstance(vc, wavelink.Player) or not vc.connected:
+        await interaction.response.send_message("Nothing is connected.", ephemeral=True)
+        return False
+    vc_ch = vc.channel
+    if vc_ch is None:
+        await interaction.response.send_message("Voice channel unavailable.", ephemeral=True)
+        return False
+    if _is_music_voice_channel_blocked(vc_ch.id):
+        await interaction.response.send_message(
+            "Music controls aren't available in this voice channel.",
+            ephemeral=True,
+        )
+        return False
+    member = interaction.user
+    if member.bot:
+        return False
+    g = interaction.guild
+    resolved = g.get_member(member.id) if g is not None else None
+    if resolved is None:
+        resolved = member
+    if resolved.voice is None or resolved.voice.channel is None:
+        await interaction.response.send_message("Join the bot's voice channel to use controls.", ephemeral=True)
+        return False
+    if resolved.voice.channel.id != vc_ch.id:
+        await interaction.response.send_message("Use controls from the same voice channel.", ephemeral=True)
+        return False
+    return True
+
+
+# Controller buttons stay valid after a restart: timeout is None, custom_ids are
+# stable, and MusicCog.register_persistent_views() registers one view for every post.
+# The guild id comes from the interaction, not the view instance.
 class MusicControlView(nextcord.ui.View):
     """Voice controller; shuffle button style reflects ``GuildMusicState.shuffle_highlight``."""
 
-    def __init__(self, cog: MusicCog, guild_id: int, *, shuffle_highlight: bool = False):
+    def __init__(self, cog: MusicCog, *, shuffle_highlight: bool = False):
         super().__init__(timeout=None)
         self.cog = cog
-        self.guild_id = guild_id
-
-        shuffle_style = (
+        self.shuffle.style = (
             nextcord.ButtonStyle.success if shuffle_highlight else nextcord.ButtonStyle.secondary
         )
 
-        async def back_cb(interaction: nextcord.Interaction) -> None:
-            await cog.handle_control_back(guild_id, interaction)
-
-        async def toggle_cb(interaction: nextcord.Interaction) -> None:
-            await cog.handle_control_toggle_pause(guild_id, interaction)
-
-        async def next_cb(interaction: nextcord.Interaction) -> None:
-            await cog.handle_control_next(guild_id, interaction)
-
-        async def shuffle_cb(interaction: nextcord.Interaction) -> None:
-            await cog.handle_control_shuffle(guild_id, interaction)
-
-        async def stop_cb(interaction: nextcord.Interaction) -> None:
-            await cog.handle_control_stop(guild_id, interaction)
-
-        async def queue_cb(interaction: nextcord.Interaction) -> None:
-            vc = cast(Optional[wavelink.Player], interaction.guild.voice_client if interaction.guild else None)
-            state = cog.guild_states.get(guild_id)
-            if not isinstance(vc, wavelink.Player) or vc.current is None:
-                await interaction.response.send_message("Nothing playing.", ephemeral=True)
-                return
-            if state and state.session == "local_folder" and state.local_remaining:
-                lines = [f"{i + 1}. {p.stem}" for i, p in enumerate(state.local_remaining[:15])]
-                extra = ""
-                if len(state.local_remaining) > 15:
-                    extra = f"\n… and {len(state.local_remaining) - 15} more"
-                await interaction.response.send_message(
-                    "**Up Next**\n" + "\n".join(lines) + extra,
-                    ephemeral=True,
-                )
-            elif vc.queue:
-                lines = []
-                for i, t in enumerate(list(vc.queue)[:15]):
-                    lines.append(f"{i + 1}. {t.title}")
-                extra = ""
-                if len(vc.queue) > 15:
-                    extra = f"\n… and {len(vc.queue) - 15} more"
-                await interaction.response.send_message(
-                    "**Up Next**\n" + "\n".join(lines) + extra,
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    f"Now playing: **{vc.current.title}**\n(No tracks queued.)",
-                    ephemeral=True,
-                )
-
-        b_back = nextcord.ui.Button(emoji="⏮️", style=nextcord.ButtonStyle.secondary, row=0)
-        b_back.callback = back_cb
-        b_toggle = nextcord.ui.Button(emoji="⏯️", style=nextcord.ButtonStyle.primary, row=0)
-        b_toggle.callback = toggle_cb
-        b_next = nextcord.ui.Button(emoji="⏭️", style=nextcord.ButtonStyle.secondary, row=0)
-        b_next.callback = next_cb
-        b_shuffle = nextcord.ui.Button(emoji="🔀", style=shuffle_style, row=0)
-        b_shuffle.callback = shuffle_cb
-        b_stop = nextcord.ui.Button(emoji="⏹️", style=nextcord.ButtonStyle.primary, row=0)
-        b_stop.callback = stop_cb
-        b_queue = nextcord.ui.Button(label="Up Next", style=nextcord.ButtonStyle.secondary, row=1)
-        b_queue.callback = queue_cb
-
-        self.add_item(b_back)
-        self.add_item(b_toggle)
-        self.add_item(b_next)
-        self.add_item(b_shuffle)
-        self.add_item(b_stop)
-        self.add_item(b_queue)
-
     async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
-        if interaction.guild is None or interaction.guild.id != self.guild_id:
-            return False
-        vc = interaction.guild.voice_client
-        if not isinstance(vc, wavelink.Player) or not vc.connected:
-            await interaction.response.send_message("Nothing is connected.", ephemeral=True)
-            return False
-        vc_ch = vc.channel
-        if vc_ch is None:
-            await interaction.response.send_message("Voice channel unavailable.", ephemeral=True)
-            return False
-        if _is_music_voice_channel_blocked(vc_ch.id):
+        return await _music_voice_control_check(interaction)
+
+    @nextcord.ui.button(emoji="⏮️", style=nextcord.ButtonStyle.secondary, custom_id=MUSIC_CTRL_BACK, row=0)
+    async def back(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+        await self.cog.handle_control_back(guild_id, interaction)
+
+    @nextcord.ui.button(emoji="⏯️", style=nextcord.ButtonStyle.primary, custom_id=MUSIC_CTRL_TOGGLE, row=0)
+    async def toggle(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+        await self.cog.handle_control_toggle_pause(guild_id, interaction)
+
+    @nextcord.ui.button(emoji="⏭️", style=nextcord.ButtonStyle.secondary, custom_id=MUSIC_CTRL_NEXT, row=0)
+    async def next(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+        await self.cog.handle_control_next(guild_id, interaction)
+
+    @nextcord.ui.button(emoji="🔀", style=nextcord.ButtonStyle.secondary, custom_id=MUSIC_CTRL_SHUFFLE, row=0)
+    async def shuffle(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+        await self.cog.handle_control_shuffle(guild_id, interaction)
+
+    @nextcord.ui.button(emoji="⏹️", style=nextcord.ButtonStyle.primary, custom_id=MUSIC_CTRL_STOP, row=0)
+    async def stop(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+        await self.cog.handle_control_stop(guild_id, interaction)
+
+    @nextcord.ui.button(label="Up Next", style=nextcord.ButtonStyle.secondary, custom_id=MUSIC_CTRL_QUEUE, row=1)
+    async def queue(self, button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        vc = cast(Optional[wavelink.Player], interaction.guild.voice_client if interaction.guild else None)
+        state = self.cog.guild_states.get(guild_id) if guild_id is not None else None
+        if not isinstance(vc, wavelink.Player) or vc.current is None:
+            await interaction.response.send_message("Nothing playing.", ephemeral=True)
+            return
+        if state and state.session == "local_folder" and state.local_remaining:
+            lines = [f"{i + 1}. {p.stem}" for i, p in enumerate(state.local_remaining[:15])]
+            extra = ""
+            if len(state.local_remaining) > 15:
+                extra = f"\n… and {len(state.local_remaining) - 15} more"
             await interaction.response.send_message(
-                "Music controls aren't available in this voice channel.",
+                "**Up Next**\n" + "\n".join(lines) + extra,
                 ephemeral=True,
             )
-            return False
-        member = interaction.user
-        if member.bot:
-            return False
-        g = interaction.guild
-        resolved = g.get_member(member.id) if g is not None else None
-        if resolved is None:
-            resolved = member
-        if resolved.voice is None or resolved.voice.channel is None:
-            await interaction.response.send_message("Join the bot's voice channel to use controls.", ephemeral=True)
-            return False
-        if resolved.voice.channel.id != vc_ch.id:
-            await interaction.response.send_message("Use controls from the same voice channel.", ephemeral=True)
-            return False
-        return True
+        elif vc.queue:
+            lines = []
+            for i, t in enumerate(list(vc.queue)[:15]):
+                lines.append(f"{i + 1}. {t.title}")
+            extra = ""
+            if len(vc.queue) > 15:
+                extra = f"\n… and {len(vc.queue) - 15} more"
+            await interaction.response.send_message(
+                "**Up Next**\n" + "\n".join(lines) + extra,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"Now playing: **{vc.current.title}**\n(No tracks queued.)",
+                ephemeral=True,
+            )
 
 
 class GamingMixToggleView(nextcord.ui.View):
-    """Toggle ``music/gaming/<slug>`` folders in the live shuffle pool (``/gaming``)."""
+    """Toggle ``music/gaming/<slug>`` folders in the live shuffle pool (``/gaming``).
+
+    Button ids are ``music_gaming:<slug>`` on every post. The click reads the slug
+    from that id so one registered view can serve every mix message.
+    """
 
     def __init__(
         self,
         cog: MusicCog,
-        guild_id: int,
         slugs_ordered: list[str],
         enabled_slugs: set[str],
     ) -> None:
         super().__init__(timeout=None)
         self.cog = cog
-        self.guild_id = guild_id
         for i, slug in enumerate(slugs_ordered):
             row = min(i // 5, 4)
             label = format_music_folder_button_label(slug)[:80] or slug[:80]
@@ -512,49 +542,28 @@ class GamingMixToggleView(nextcord.ui.View):
                 if slug in enabled_slugs
                 else nextcord.ButtonStyle.secondary
             )
-            btn = nextcord.ui.Button(label=label, style=style, row=row)
-
-            async def toggle_cb(
-                interaction: nextcord.Interaction,
-                *,
-                _slug: str = slug,
-            ) -> None:
-                await cog.handle_gaming_mix_toggle(guild_id, interaction, _slug)
-
-            btn.callback = toggle_cb
+            btn = nextcord.ui.Button(
+                label=label,
+                style=style,
+                row=row,
+                custom_id=f"{MUSIC_GAMING_TOGGLE_PREFIX}{slug}",
+            )
+            btn.callback = self._toggle
             self.add_item(btn)
 
     async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
-        if interaction.guild is None or interaction.guild.id != self.guild_id:
-            return False
-        vc = interaction.guild.voice_client
-        if not isinstance(vc, wavelink.Player) or not vc.connected:
-            await interaction.response.send_message("Nothing is connected.", ephemeral=True)
-            return False
-        vc_ch = vc.channel
-        if vc_ch is None:
-            await interaction.response.send_message("Voice channel unavailable.", ephemeral=True)
-            return False
-        if _is_music_voice_channel_blocked(vc_ch.id):
-            await interaction.response.send_message(
-                "Music controls aren't available in this voice channel.",
-                ephemeral=True,
-            )
-            return False
-        member = interaction.user
-        if member.bot:
-            return False
-        g = interaction.guild
-        resolved = g.get_member(member.id) if g is not None else None
-        if resolved is None:
-            resolved = member
-        if resolved.voice is None or resolved.voice.channel is None:
-            await interaction.response.send_message("Join the bot's voice channel to use controls.", ephemeral=True)
-            return False
-        if resolved.voice.channel.id != vc_ch.id:
-            await interaction.response.send_message("Use controls from the same voice channel.", ephemeral=True)
-            return False
-        return True
+        return await _music_voice_control_check(interaction)
+
+    async def _toggle(self, interaction: nextcord.Interaction) -> None:
+        guild_id = _interaction_guild_id(interaction)
+        raw = ""
+        if interaction.data:
+            raw = str(interaction.data.get("custom_id") or "")
+        if guild_id is None or not raw.startswith(MUSIC_GAMING_TOGGLE_PREFIX):
+            await interaction.response.send_message("Couldn't tell which folder this is.", ephemeral=True)
+            return
+        slug = raw[len(MUSIC_GAMING_TOGGLE_PREFIX) :]
+        await self.cog.handle_gaming_mix_toggle(guild_id, interaction, slug)
 
 
 class MusicCog(commands.Cog, CogLogMixin):
@@ -574,7 +583,41 @@ class MusicCog(commands.Cog, CogLogMixin):
             bind_host=_bind,
             port=MUSIC_LOCAL_HTTP_PORT,
         )
+        self._persistent_views: list[nextcord.ui.View] = []
+        self._persistent_views_stopped = False
         self.cog_print("MusicCog initialized")
+
+    def register_persistent_views(self) -> None:
+        """Keep music buttons working across restarts.
+
+        Discord only delivers a click after a process restart when every button
+        has a stable ``custom_id``, ``timeout`` is ``None``, and the view is
+        registered here. One view serves every post; the guild id is read from
+        the interaction.
+        """
+        if self._persistent_views_stopped:
+            return
+        self._remove_persistent_views()
+        views: list[nextcord.ui.View] = [MusicControlView(self)]
+        slugs = list_gaming_audio_subfolders(LOCAL_MUSIC_ROOT / "gaming")
+        if slugs and len(slugs) <= GAMING_AUDIO_SUBFOLDER_LIMIT:
+            views.append(GamingMixToggleView(self, slugs, set()))
+        self._persistent_views = views
+        for view in views:
+            self.bot.add_view(view)
+
+    def _remove_persistent_views(self) -> None:
+        for view in self._persistent_views:
+            self.bot.remove_view(view)
+        self._persistent_views = []
+
+    def cog_unload(self) -> None:
+        self._persistent_views_stopped = True
+        self._remove_persistent_views()
+
+    async def _register_views_when_ready(self) -> None:
+        await self.bot.wait_until_ready()
+        self.register_persistent_views()
 
     async def _start_music_background_services(self) -> None:
         """Nextcord does not run ``cog_load``; call this from :func:`setup` after :meth:`Bot.add_cog`."""
@@ -603,9 +646,15 @@ class MusicCog(commands.Cog, CogLogMixin):
                 self._alone_voice_sweep_task = loop.create_task(self._alone_in_voice_sweep_loop())
             except RuntimeError:
                 pass
+        try:
+            loop.create_task(self._register_views_when_ready())
+        except RuntimeError:
+            pass
 
     def _stop_music_background_services(self) -> None:
         """Call from extension :func:`teardown` — Nextcord does not run ``cog_unload``."""
+        self._persistent_views_stopped = True
+        self._remove_persistent_views()
         for gid in list(self._empty_disconnect_tasks.keys()):
             self._cancel_empty_disconnect(gid)
         t = self._alone_voice_sweep_task
@@ -1304,10 +1353,48 @@ class MusicCog(commands.Cog, CogLogMixin):
 
     async def handle_control_toggle_pause(self, guild_id: int, interaction: nextcord.Interaction) -> None:
         vc = cast(Optional[wavelink.Player], interaction.guild.voice_client if interaction.guild else None)
-        if not isinstance(vc, wavelink.Player) or vc.current is None:
+        if not isinstance(vc, wavelink.Player):
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        state = self.guild_states.get(guild_id)
+        if vc.current is None:
+            if state is not None and state.session == "local_folder" and state.local_folder == "gaming":
+                await self._begin_gaming_playback(guild_id, interaction, vc, state)
+                return
             await interaction.response.send_message("Nothing is playing.", ephemeral=True)
             return
         await vc.pause(not vc.paused)
+        await self._edit_control_message(interaction, guild_id)
+
+    async def _begin_gaming_playback(
+        self,
+        guild_id: int,
+        interaction: nextcord.Interaction,
+        vc: wavelink.Player,
+        state: GuildMusicState,
+    ) -> None:
+        """Start the gaming mix after the user has chosen folders. ``/gaming`` itself does not play."""
+        if state.gaming_enabled_slugs and not state.local_remaining:
+            gaming_root = LOCAL_MUSIC_ROOT / "gaming"
+            state.local_remaining = [
+                p
+                for p in state.gaming_paths_master
+                if gaming_track_subslug(p, gaming_root) in state.gaming_enabled_slugs
+            ]
+            random.shuffle(state.local_remaining)
+        if not state.gaming_enabled_slugs or not state.local_remaining:
+            await interaction.response.send_message(
+                "Select at least one game folder, then press play.",
+                ephemeral=True,
+            )
+            return
+        ok = await self._advance_local_manual(vc, state)
+        if not ok:
+            if guild_id not in self.guild_states:
+                await interaction.response.send_message("Playback finished.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Could not load the next track.", ephemeral=True)
+            return
         await self._edit_control_message(interaction, guild_id)
 
     async def handle_control_stop(self, guild_id: int, interaction: nextcord.Interaction) -> None:
@@ -1616,6 +1703,37 @@ class MusicCog(commands.Cog, CogLogMixin):
         )
         await self.full_disconnect_guild(guild.id)
 
+    async def _stop_stream_after_load_failures(self, player: wavelink.Player, state: GuildMusicState) -> None:
+        """Stop a stream queue when YouTube fails to load track after track.
+
+        Wavelink autoplay otherwise starts the next queued song on ``loadFailed``.
+        """
+        player.autoplay = AutoPlayMode.disabled
+        try:
+            player.queue.reset()
+        except Exception as e:
+            _MUSIC_LOG.warning("stream load-failure queue reset failed: %s", e)
+        try:
+            if player.current is not None:
+                await player.stop(force=True)
+        except Exception as e:
+            _MUSIC_LOG.warning("stream load-failure stop failed: %s", e)
+
+        channel = None
+        if state.controller_message is not None:
+            channel = state.controller_message.channel
+        elif player.channel is not None:
+            channel = player.channel
+        if channel is not None:
+            try:
+                await channel.send(
+                    "YouTube couldn't stream these tracks, so playback stopped instead of skipping the rest of the queue."
+                )
+            except Exception as e:
+                _MUSIC_LOG.warning("stream load-failure notice failed: %s", e)
+        if player.guild is not None:
+            await self.refresh_controller_embed(player.guild.id)
+
     @commands.Cog.listener()
     async def on_wavelink_track_end(self, payload: TrackEndEventPayload) -> None:
         player = payload.player
@@ -1631,6 +1749,19 @@ class MusicCog(commands.Cog, CogLogMixin):
         reason_lc = reason_raw.lower()
         state = self.guild_states.get(guild_id)
 
+        if reason_lc == "loadfailed" and state is not None and state.session == "stream":
+            state.stream_load_failures += 1
+            _MUSIC_LOG.warning(
+                "on_wavelink_track_end guild=%s reason=%r stream_load_failures=%s %s",
+                guild_id,
+                reason_raw,
+                state.stream_load_failures,
+                snap,
+            )
+            if state.stream_load_failures >= STREAM_CONSECUTIVE_LOAD_FAILURES:
+                await self._stop_stream_after_load_failures(player, state)
+            return
+
         if reason_lc != "finished":
             _MUSIC_LOG.warning(
                 "on_wavelink_track_end guild=%s reason=%r paused=%s guild_state_present=%s %s",
@@ -1641,6 +1772,9 @@ class MusicCog(commands.Cog, CogLogMixin):
                 snap,
             )
             return
+
+        if state is not None:
+            state.stream_load_failures = 0
 
         if state is None:
             _MUSIC_LOG.warning(
@@ -1831,6 +1965,7 @@ class MusicCog(commands.Cog, CogLogMixin):
         state.local_remaining.clear()
         state.local_history_paths.clear()
         state.shuffle_highlight = False
+        state.stream_load_failures = 0
         vc.queue.reset()
 
         is_url_query = _looks_like_http_url(query.strip())
@@ -2171,91 +2306,32 @@ class MusicCog(commands.Cog, CogLogMixin):
             await self._slash_reply(interaction, "Could not connect to voice.")
             return
 
-        definition = FOLDER_PLAYBACK_SETTINGS["gaming"]
         state = self._get_state(guild.id)
-        paths = list(paths_master)
-        if definition.shuffle_files_on_start:
-            random.shuffle(paths)
-        first = paths[0]
-        remaining = paths[1:]
+        if vc.current is not None:
+            try:
+                await vc.stop(force=True)
+            except Exception as e:
+                _MUSIC_LOG.warning(
+                    "gaming_mix_stop_current guild=%s err=%s %s",
+                    guild.id,
+                    e,
+                    self._music_voice_snapshot(guild, vc),
+                )
+        vc.queue.reset()
 
         state.session = "local_folder"
         state.local_folder = "gaming"
-        state.local_remaining = remaining
+        state.local_remaining = []
         state.local_history_paths.clear()
         state.shuffle_highlight = False
         state.gaming_paths_master = list(paths_master)
         state.gaming_slug_order = list(slugs)
-        state.gaming_enabled_slugs = set(slugs)
-        vc.queue.reset()
-
-        try:
-            url = await self._local_http_track_url("gaming", first)
-            tracks = await wavelink.Pool.fetch_tracks(url)
-        except OSError as e:
-            state.session = "idle"
-            state.local_folder = None
-            state.local_remaining.clear()
-            state.gaming_enabled_slugs.clear()
-            state.gaming_paths_master.clear()
-            state.gaming_slug_order.clear()
-            await self._slash_reply(
-                interaction,
-                f"Could not start loopback HTTP for `{MUSIC_LOCAL_HTTP_HOST}:{MUSIC_LOCAL_HTTP_PORT}`: {e}",
-            )
-            return
-        except LavalinkLoadException as e:
-            state.session = "idle"
-            state.local_folder = None
-            state.local_remaining.clear()
-            state.gaming_enabled_slugs.clear()
-            state.gaming_paths_master.clear()
-            state.gaming_slug_order.clear()
-            await self._slash_reply(
-                interaction,
-                "Lavalink could not load local tracks over HTTP. Ensure ``sources.http: true`` in Lavalink "
-                f"`application.yml`.\nDetail: {e}",
-            )
-            return
-
-        if not tracks:
-            state.session = "idle"
-            state.local_folder = None
-            state.local_remaining.clear()
-            state.gaming_enabled_slugs.clear()
-            state.gaming_paths_master.clear()
-            state.gaming_slug_order.clear()
-            await self._slash_reply(
-                interaction,
-                "Could not decode tracks (empty Lavalink response). Confirm `sources.http: true` and try another format.",
-            )
-            return
+        state.gaming_enabled_slugs = set()
 
         await self._dispose_controller_message(state)
 
-        state.local_history_paths.append(first)
-        try:
-            await vc.play(tracks[0], start=0)
-        except Exception as e:
-            if state.local_history_paths and state.local_history_paths[-1] == first:
-                state.local_history_paths.pop()
-            state.session = "idle"
-            state.local_folder = None
-            state.local_remaining.clear()
-            state.gaming_enabled_slugs.clear()
-            state.gaming_paths_master.clear()
-            state.gaming_slug_order.clear()
-            await self._slash_reply(interaction, f"Playback failed: {e}")
-            _MUSIC_LOG.warning(
-                "gaming_mix_play_failed guild=%s err=%s %s",
-                guild.id,
-                e,
-                self._music_voice_snapshot(guild, vc),
-            )
-            return
-
         _MUSIC_LOG.info(
-            "gaming_mix_started guild=%s tracks=%s games=%s %s",
+            "gaming_mix_ready guild=%s tracks=%s games=%s %s",
             guild.id,
             len(paths_master),
             len(slugs),
@@ -2270,8 +2346,8 @@ class MusicCog(commands.Cog, CogLogMixin):
         await self._sync_music_presence(guild.id)
         await self._slash_reply(
             interaction,
-            f"**/gaming** started in {voice_channel.mention} ({len(paths_master)} tracks, {len(slugs)} folders). "
-            f"Use the controller and mix toggles in that channel.{extra}",
+            f"Playing music from **/gaming** in {voice_channel.mention}.({len(slugs)} albums, nothing playing). "
+            f"Select the games you want, then press play.{extra}",
         )
 
     async def _post_gaming_mix_selector(
@@ -2283,12 +2359,11 @@ class MusicCog(commands.Cog, CogLogMixin):
         await self._dispose_gaming_selector_message(state)
         embed = nextcord.Embed(
             title="Gaming mix",
-            description="Toggle game folders to include or exclude them from the shuffle.",
+            description=GAMING_MIX_EMBED_DESCRIPTION,
             color=nextcord.Color.dark_teal(),
         )
         view = GamingMixToggleView(
             self,
-            voice_channel.guild.id,
             slugs_ordered,
             set(state.gaming_enabled_slugs),
         )
@@ -2304,12 +2379,11 @@ class MusicCog(commands.Cog, CogLogMixin):
             return
         embed = nextcord.Embed(
             title="Gaming mix",
-            description="Toggle game folders to include or exclude them from the shuffle.",
+            description=GAMING_MIX_EMBED_DESCRIPTION,
             color=nextcord.Color.dark_teal(),
         )
         view = GamingMixToggleView(
             self,
-            guild_id,
             state.gaming_slug_order,
             set(state.gaming_enabled_slugs),
         )
@@ -2327,7 +2401,7 @@ class MusicCog(commands.Cog, CogLogMixin):
         interaction: nextcord.Interaction,
         slug: str,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         guild = self.bot.get_guild(guild_id)
         state = self.guild_states.get(guild_id)
         vc = guild.voice_client if guild else None
@@ -2365,11 +2439,10 @@ class MusicCog(commands.Cog, CogLogMixin):
             random.shuffle(state.local_remaining)
         await self._refresh_gaming_selector(guild_id)
         await self.refresh_controller_embed(guild_id)
-        await interaction.followup.send("Mix updated.", ephemeral=True)
 
     @nextcord.slash_command(
         name="gaming",
-        description="Shuffle tracks from local_audio/music/gaming subfolders (see mix toggles message)",
+        description="Join voice with gaming folders off — pick some, then press play",
         guild_ids=[GUILD_ID],
     )
     async def gaming_slash(self, interaction: nextcord.Interaction) -> None:
@@ -2483,7 +2556,7 @@ _register_dynamic_music_folder_slash_commands()
 def build_music_control_view(cog: MusicCog, guild_id: int) -> MusicControlView:
     state = cog.guild_states.get(guild_id)
     hl = state.shuffle_highlight if state else False
-    return MusicControlView(cog, guild_id, shuffle_highlight=hl)
+    return MusicControlView(cog, shuffle_highlight=hl)
 
 
 def _music_background_startup_done(task: asyncio.Task) -> None:
