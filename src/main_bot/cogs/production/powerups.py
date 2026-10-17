@@ -11,14 +11,31 @@ from main_bot.server_configs.config import GUILD_ID
 
 _PU = "powerups"
 
+# Stored charges. One of a single-active powerup can be running; the rest wait in inventory.
+MAX_INVENTORY_POWERUPS = 3
+
+# Executive Pardon. One charge, no stacking.
+EXECUTIVE_PARDON_DURATION_HOURS = 1
+
+# Repel Water. One charge, no stacking.
+REPEL_WATER_PRICE = 750
+REPEL_WATER_DURATION_SECONDS = 15 * 60
+REPEL_WATER_CHALLENGE_DURATION_SECONDS = 8
+REPEL_WATER_TYPE = "repel_water"
+
+_REPEL_MINUTES = REPEL_WATER_DURATION_SECONDS // 60
+_PARDON_HOURS = EXECUTIVE_PARDON_DURATION_HOURS
+_PARDON_HOUR_WORD = "hour" if _PARDON_HOURS == 1 else "hours"
+
 # Define Powerups
 POWERUP_TYPES = {
     "executive_pardon": {
         "name": "Executive Pardon",
-        "description": "Grants immunity from the waterboard for 3 hour.",
+        "description": f"Grants immunity from the waterboard for {_PARDON_HOURS} {_PARDON_HOUR_WORD}.",
         "price": 2000,
-        "duration_hours": 3,
+        "duration_hours": EXECUTIVE_PARDON_DURATION_HOURS,
         "effect_type": "pardon",
+        "single_active": True,
         "storable": True
     },
     "name_color_red": {
@@ -56,7 +73,19 @@ POWERUP_TYPES = {
         "effect_type": "art_request",
         "target_user_id": 220656152994643969,  # Nut's user ID
         "storable": False  # This powerup is purchased and used immediately
-    }
+    },
+    REPEL_WATER_TYPE: {
+        "name": "Repel Water",
+        "description": (
+            f"{_REPEL_MINUTES} min. Attackers must beat a challenge or get waterboarded."
+        ),
+        "price": REPEL_WATER_PRICE,
+        "duration_hours": 0,
+        "duration_seconds": REPEL_WATER_DURATION_SECONDS,
+        "effect_type": "repel",
+        "single_active": True,
+        "storable": True,
+    },
     # More powerups tbd
 }
 
@@ -232,6 +261,52 @@ class PowerupCog(commands.Cog, CogLogMixin):
             )
             return tuple(row) if row else None
 
+    async def get_powerup_end_time(self, user_id: int, powerup_type: str) -> int | None:
+        async with self.bot.pg_pool.acquire() as db:
+            end_time = await db.fetchval(
+                f'''
+                SELECT end_time FROM "{_PU}".active_powerups
+                WHERE user_id = $1 AND powerup_type = $2
+                ''',
+                user_id,
+                powerup_type,
+            )
+        return int(end_time) if end_time is not None else None
+
+    async def is_repel_active(self, user_id: int) -> bool:
+        """True when Repel Water still has time left. Does not report how much."""
+        end_time = await self.get_powerup_end_time(user_id, REPEL_WATER_TYPE)
+        return end_time is not None and end_time > int(time.time())
+
+    async def is_powerup_active(self, user_id: int, powerup_type: str) -> bool:
+        """True when this powerup is still running. A live pardon exemption counts too."""
+        end_time = await self.get_powerup_end_time(user_id, powerup_type)
+        if end_time is not None and end_time > int(time.time()):
+            return True
+        info = POWERUP_TYPES.get(powerup_type) or {}
+        if info.get("effect_type") != "pardon":
+            return False
+        cog = self.bot.get_cog("WaterboardCog3")
+        if cog is None or getattr(type(cog), "get_active_exemption", None) is None:
+            return False
+        return await cog.get_active_exemption(user_id) is not None
+
+    def already_active_message(self, powerup_type: str) -> str:
+        name = POWERUP_TYPES[powerup_type]["name"]
+        return (
+            f"{name} is already active. This one was returned to your inventory. "
+            "Use `/powerups inventory` again after it ends."
+        )
+
+    async def repel_activation_message(self, user_id: int) -> str:
+        info = POWERUP_TYPES[REPEL_WATER_TYPE]
+        end_time = await self.get_powerup_end_time(user_id, REPEL_WATER_TYPE)
+        if end_time is None:
+            return f"Used {info['name']}."
+        remaining = max(0, end_time - int(time.time()))
+        minutes, seconds = divmod(remaining, 60)
+        return f"Used {info['name']}. Coverage ends in {minutes}m {seconds}s."
+
     async def get_active_powerups_for_user(self, user_id: int):
         async with self.bot.pg_pool.acquire() as db:
             rows = await db.fetch(
@@ -256,8 +331,17 @@ class PowerupCog(commands.Cog, CogLogMixin):
             return True
 
     async def activate_powerup(self, user_id: int, powerup_type: str, duration_hours: int):
+        powerup_info = POWERUP_TYPES.get(powerup_type)
+        if not powerup_info:
+            return False
+        if powerup_info.get("single_active") and await self.is_powerup_active(user_id, powerup_type):
+            return False
+
         start_time = int(time.time())
-        end_time = start_time + (duration_hours * 3600)
+        duration_seconds = powerup_info.get("duration_seconds")
+        if duration_seconds is None:
+            duration_seconds = int(duration_hours) * 3600
+        end_time = start_time + int(duration_seconds)
         async with self.bot.pg_pool.acquire() as db:
             await db.execute(
                 f'''
@@ -272,11 +356,22 @@ class PowerupCog(commands.Cog, CogLogMixin):
                 start_time,
                 end_time,
             )
-        return await self.apply_powerup_effect(user_id, powerup_type)
+        applied = await self.apply_powerup_effect(user_id, powerup_type)
+        if not applied:
+            async with self.bot.pg_pool.acquire() as db:
+                await db.execute(
+                    f'DELETE FROM "{_PU}".active_powerups WHERE user_id = $1 AND powerup_type = $2',
+                    user_id,
+                    powerup_type,
+                )
+        return applied
 
     async def apply_powerup_effect(self, user_id: int, powerup_type: str):
         powerup_info = POWERUP_TYPES.get(powerup_type)
         if not powerup_info: return False
+
+        if powerup_info.get("effect_type") == "repel":
+            return True
 
         guild = self.bot.get_guild(GUILD_ID)
         if not guild:
@@ -321,6 +416,15 @@ class PowerupCog(commands.Cog, CogLogMixin):
         powerup_info = POWERUP_TYPES.get(powerup_type)
         if not powerup_info: return
 
+        if powerup_info.get("effect_type") == "pardon":
+            cog = self.bot.get_cog("WaterboardCog3")
+            if cog is not None and getattr(type(cog), "clear_executive_pardon", None) is not None:
+                try:
+                    await cog.clear_executive_pardon(user_id)
+                except Exception as e:
+                    self.cog_print(f"Error clearing executive pardon: {e}")
+            return
+
         guild = self.bot.get_guild(GUILD_ID)
         if not guild: return
         member = guild.get_member(user_id)
@@ -337,8 +441,6 @@ class PowerupCog(commands.Cog, CogLogMixin):
                     self.cog_print(f"Error: Bot lacks permissions to remove role '{role_name}'.")
                 except nextcord.HTTPException as e:
                     self.cog_print(f"Error: Failed to remove role '{role_name}': {e}")
-        # Pardon duration is managed by WaterboardCog3
-
     # --- Slash Commands ---
     @nextcord.slash_command(name="powerups", description="Manage your powerups", guild_ids=[GUILD_ID])
     async def powerups_group(self, interaction: nextcord.Interaction):
@@ -695,7 +797,10 @@ class PowerupSelect(nextcord.ui.Select):
 
 class QuantitySelect(nextcord.ui.Select):
     def __init__(self):
-        options = [nextcord.SelectOption(label=str(i), value=str(i)) for i in range(1, 4)]  # 1, 2, 3 (max inventory is 3)
+        options = [
+            nextcord.SelectOption(label=str(i), value=str(i))
+            for i in range(1, MAX_INVENTORY_POWERUPS + 1)
+        ]
         super().__init__(placeholder="Select quantity (default 1)...", min_values=1, max_values=1, options=options, custom_id="quantity_select")
     
     async def callback(self, interaction: nextcord.Interaction):
@@ -837,14 +942,20 @@ class PurchaseButton(nextcord.ui.Button):
                 await interaction.followup.send("This powerup type is not yet implemented.", ephemeral=True)
             return
 
-        # Check inventory limit (max 3 powerups total) - only for storable powerups
+        # Check inventory limit - only for storable powerups
         current_inventory_count = await self.powerup_cog_instance.get_user_total_inventory_count(interaction.user.id)
-        if current_inventory_count + selected_quantity > 3:
-            remaining_slots = max(0, 3 - current_inventory_count)
+        if current_inventory_count + selected_quantity > MAX_INVENTORY_POWERUPS:
+            remaining_slots = max(0, MAX_INVENTORY_POWERUPS - current_inventory_count)
             if remaining_slots == 0:
-                await interaction.followup.send("Your inventory is full! You can only hold 3 powerups at a time. Use some powerups first.", ephemeral=True)
+                await interaction.followup.send(
+                    f"Your inventory is full! You can only hold {MAX_INVENTORY_POWERUPS} powerups at a time. Use some powerups first.",
+                    ephemeral=True,
+                )
             else:
-                await interaction.followup.send(f"You can only purchase {remaining_slots} more powerup(s). Your inventory limit is 3 total.", ephemeral=True)
+                await interaction.followup.send(
+                    f"You can only purchase {remaining_slots} more powerup(s). Your inventory limit is {MAX_INVENTORY_POWERUPS} total.",
+                    ephemeral=True,
+                )
             return
 
         success = await economy_cog.deduct_user_balance(interaction.user.id, total_cost)
@@ -853,9 +964,16 @@ class PurchaseButton(nextcord.ui.Button):
             for _ in range(selected_quantity):
                 await self.powerup_cog_instance.add_powerup_to_inventory(interaction.user.id, selected_powerup_type)
             # Create success message with optional activate button
+            purchase_description = (
+                f"Purchased {selected_quantity}x **{powerup_info['name']}** for {total_cost} coins!"
+            )
+            if powerup_info.get("single_active"):
+                purchase_description += (
+                    "\n\nOnly one can be active at a time. When it ends, use `/powerups inventory` to start the next one."
+                )
             success_embed = nextcord.Embed(
                 title="✅ Purchase Successful!",
-                description=f"Purchased {selected_quantity}x **{powerup_info['name']}** for {total_cost} coins!",
+                description=purchase_description,
                 color=nextcord.Color.green()
             )
             
@@ -911,11 +1029,20 @@ class ActivateNowButton(nextcord.ui.Button):
             await interaction.followup.send("Unable to remove powerup from inventory.", ephemeral=True)
             return
 
-        # Apply the powerup effect
-        success = await self.cog.apply_powerup_effect(interaction.user.id, self.powerup_type)
+        # Apply the powerup effect. Single-active charges go through activate_powerup
+        # so a second one cannot start while the first is still running.
+        powerup_info = POWERUP_TYPES[self.powerup_type]
+        if powerup_info.get("single_active"):
+            success = await self.cog.activate_powerup(
+                interaction.user.id, self.powerup_type, powerup_info["duration_hours"]
+            )
+        else:
+            success = await self.cog.apply_powerup_effect(interaction.user.id, self.powerup_type)
         if success:
-            powerup_info = POWERUP_TYPES[self.powerup_type]
-            if powerup_info.get("duration"):
+            if powerup_info.get("effect_type") == "repel":
+                message = await self.cog.repel_activation_message(interaction.user.id)
+                await interaction.followup.send(f"✅ {message}", ephemeral=True)
+            elif powerup_info.get("duration"):
                 await interaction.followup.send(f"✅ Successfully activated {powerup_info['name']}! Duration: {powerup_info['duration']}", ephemeral=True)
             else:
                 await interaction.followup.send(f"✅ Successfully activated {powerup_info['name']}!", ephemeral=True)
@@ -931,7 +1058,14 @@ class ActivateNowButton(nextcord.ui.Button):
         else:
             # If activation failed, add the powerup back to inventory
             await self.cog.add_powerup_to_inventory(interaction.user.id, self.powerup_type)
-            await interaction.followup.send("Failed to activate powerup. It has been returned to your inventory.", ephemeral=True)
+            if powerup_info.get("single_active") and await self.cog.is_powerup_active(
+                interaction.user.id, self.powerup_type
+            ):
+                await interaction.followup.send(
+                    self.cog.already_active_message(self.powerup_type), ephemeral=True
+                )
+            else:
+                await interaction.followup.send("Failed to activate powerup. It has been returned to your inventory.", ephemeral=True)
 
 class UsePowerupButton(nextcord.ui.Button):
     def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):
@@ -958,7 +1092,11 @@ class UsePowerupButton(nextcord.ui.Button):
         activated = await self.cog.activate_powerup(interaction.user.id, self.powerup_type, powerup_info["duration_hours"])
 
         if activated:
-            await interaction.followup.send(f"Used {powerup_info['name']}! Lasts {powerup_info['duration_hours']} hour(s).", ephemeral=True)
+            if powerup_info.get("effect_type") == "repel":
+                message = await self.cog.repel_activation_message(interaction.user.id)
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.followup.send(f"Used {powerup_info['name']}! Lasts {powerup_info['duration_hours']} hour(s).", ephemeral=True)
             
             # Refresh the inventory message by re-generating it
             new_inventory_items = await self.cog.get_user_inventory(interaction.user.id)
@@ -981,7 +1119,14 @@ class UsePowerupButton(nextcord.ui.Button):
                     await interaction.edit_original_message(embed=new_embed, view=new_view)
         else:
             await self.cog.add_powerup_to_inventory(interaction.user.id, self.powerup_type)
-            await interaction.followup.send(f"Failed to activate {powerup_info['name']}. Returned to inventory. (Check bot console for errors like missing roles/permissions).", ephemeral=True)
+            if powerup_info.get("single_active") and await self.cog.is_powerup_active(
+                interaction.user.id, self.powerup_type
+            ):
+                await interaction.followup.send(
+                    self.cog.already_active_message(self.powerup_type), ephemeral=True
+                )
+            else:
+                await interaction.followup.send(f"Failed to activate {powerup_info['name']}. Returned to inventory. (Check bot console for errors like missing roles/permissions).", ephemeral=True)
 
 class ActivePowerupsView(nextcord.ui.View):
     def __init__(self, bot: commands.Bot, user_id: int, cog: PowerupCog, active_powerups: list, timeout=180):

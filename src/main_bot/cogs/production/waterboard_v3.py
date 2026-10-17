@@ -7,6 +7,7 @@ What changed with v3: Rate-limit-friendly implementation using a prepopulated Wa
 import nextcord
 from nextcord.ext import commands, tasks
 import asyncio
+import random
 import time
 from asyncio import Semaphore
 
@@ -15,6 +16,7 @@ from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.guild_settings import config_missing_message, get_settings, is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.cogs.production.economy import Economy
+from main_bot.cogs.production.powerups import REPEL_WATER_CHALLENGE_DURATION_SECONDS
 
 _WB = "waterboard"
 
@@ -38,6 +40,157 @@ ENHANCED_WATERBOARD_GRACE_SECONDS = 10
 # Delay between major phases to avoid rate limits and allow "graceful" operation
 PHASE_DELAY_SECONDS = 1.0
 
+# Seconds after a paid /waterboard returns the victim to their channel.
+RETALIATE_WINDOW_SECONDS = 60
+
+# How long the /retaliate quicktime stays open.
+# Repel Water uses REPEL_WATER_CHALLENGE_DURATION_SECONDS in powerups.py.
+CHALLENGE_TIMEOUT_SECONDS = 8
+
+# Inclusive range for the two-step math challenge operands.
+CHALLENGE_TERM_MIN = 2
+CHALLENGE_TERM_MAX = 12
+
+
+def generate_water_challenge(
+    rng: random.Random | None = None,
+) -> tuple[str, int, list[int]]:
+    """Return ``(prompt, correct, four shuffled choices)`` for the quicktime."""
+    rng = rng or random.Random()
+    low = min(CHALLENGE_TERM_MIN, CHALLENGE_TERM_MAX)
+    high = max(CHALLENGE_TERM_MIN, CHALLENGE_TERM_MAX)
+    a = rng.randint(low, high)
+    b = rng.randint(low, high)
+    c = rng.randint(low, high)
+    kind = rng.choice(("add_mul", "mul_add", "sub_mul", "mul_sub", "div_add"))
+
+    if kind == "add_mul":
+        correct = (a + b) * c
+        prompt = f"({a} + {b}) × {c}"
+        wrongs = [a + b * c, (a + b) + c, a * b + c]
+    elif kind == "mul_add":
+        correct = a * b + c
+        prompt = f"{a} × {b} + {c}"
+        wrongs = [a * (b + c), (a + b) * c, a * b * c]
+    elif kind == "sub_mul":
+        if a < b:
+            a, b = b, a
+        elif a == b:
+            a = b + 1
+        correct = (a - b) * c
+        prompt = f"({a} - {b}) × {c}"
+        wrongs = [a - b * c, (a - b) + c, a * c - b]
+    elif kind == "mul_sub":
+        if c >= a * b:
+            c = 1
+        correct = a * b - c
+        prompt = f"{a} × {b} - {c}"
+        wrongs = [(a - b) * c, a * b + c, a * (b - c) if b > c else a * b - c - 2]
+    else:
+        divisor = rng.randint(low, high)
+        quotient = rng.randint(low, high)
+        dividend = divisor * quotient
+        correct = quotient + c
+        prompt = f"{dividend} ÷ {divisor} + {c}"
+        wrongs = [quotient * c, quotient - c, (dividend + c) // divisor]
+
+    unique_wrongs: list[int] = []
+    for candidate in list(wrongs) + [correct + 1, correct - 1, correct + 2, correct - 2, correct + 10]:
+        if candidate == correct or candidate in unique_wrongs:
+            continue
+        unique_wrongs.append(candidate)
+        if len(unique_wrongs) == 3:
+            break
+    options = unique_wrongs[:3] + [correct]
+    rng.shuffle(options)
+    return prompt, correct, options
+
+
+class WaterQuicktimeButton(nextcord.ui.Button):
+    def __init__(self, answer: int, index: int):
+        super().__init__(
+            label=str(answer),
+            style=nextcord.ButtonStyle.primary,
+            custom_id=f"water_quicktime_{index}",
+        )
+        self.answer = answer
+
+    async def callback(self, interaction: nextcord.Interaction):
+        view = self.view
+        if interaction.user.id != view.challenger_id:
+            await interaction.response.send_message("This challenge is not yours.", ephemeral=True)
+            return
+        if view.resolved or time.monotonic() > view.expires_at:
+            if not view.resolved:
+                view.resolve(False)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Too late.", ephemeral=True)
+            return
+
+        success = self.answer == view.correct
+        view.resolve(success)
+        title = "Correct" if success else "Wrong"
+        color = nextcord.Color.green() if success else nextcord.Color.red()
+        embed = nextcord.Embed(
+            title=title,
+            description=f"**{view.prompt}** = {view.correct}",
+            color=color,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class WaterQuicktimeView(nextcord.ui.View):
+    def __init__(
+        self,
+        *,
+        challenger_id: int,
+        prompt: str,
+        correct: int,
+        options: list[int],
+        future: asyncio.Future,
+        interaction: nextcord.Interaction,
+        timeout_seconds: float = CHALLENGE_TIMEOUT_SECONDS,
+    ):
+        super().__init__(timeout=timeout_seconds)
+        self.challenger_id = challenger_id
+        self.prompt = prompt
+        self.correct = correct
+        self.future = future
+        self.interaction = interaction
+        self.challenge_message = None
+        self.timeout_seconds = timeout_seconds
+        self.expires_at = time.monotonic() + timeout_seconds
+        self.resolved = False
+        for index, answer in enumerate(options):
+            self.add_item(WaterQuicktimeButton(answer, index))
+
+    def resolve(self, success: bool) -> None:
+        if self.resolved:
+            return
+        self.resolved = True
+        for child in self.children:
+            child.disabled = True
+        self.stop()
+        if not self.future.done():
+            self.future.set_result(success)
+
+    async def on_timeout(self):
+        if self.resolved:
+            return
+        self.resolve(False)
+        embed = nextcord.Embed(
+            title="Too slow",
+            description=f"**{self.prompt}** = {self.correct}",
+            color=nextcord.Color.red(),
+        )
+        try:
+            if self.challenge_message is not None:
+                await self.challenge_message.edit(embed=embed, view=self)
+            else:
+                await self.interaction.edit_original_response(embed=embed, view=self)
+        except Exception:
+            pass
+
 
 class WaterboardCog3(commands.Cog, CogLogMixin):
     def __init__(self, bot):
@@ -50,6 +203,14 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
         self.active_waterboard_sessions = 0
         self.waterboard_sessions_lock = asyncio.Lock()
+
+        # victim_id -> {"attacker_id": int, "expires_at": float}
+        # In memory: the window is RETALIATE_WINDOW_SECONDS, so a restart only drops a token about to expire.
+        self.retaliate_tokens: dict[int, dict] = {}
+        # victim_id -> attacker_id while a paid waterboard is still moving them.
+        self.retaliate_pending: dict[int, int] = {}
+        # victim_id -> /retaliate interaction typed before they landed back home.
+        self.queued_retaliates: dict[int, nextcord.Interaction] = {}
 
         self._tables_created = False
 
@@ -82,6 +243,248 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                 user_to_pardon_id,
                 exempt_until,
             )
+
+    async def clear_executive_pardon(self, user_id: int) -> None:
+        """Remove a pardon exemption before its timer ends."""
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'DELETE FROM "{_WB}".exempt_users WHERE user_id = $1',
+                user_id,
+            )
+
+    async def get_active_exemption(self, user_id: int) -> float | None:
+        """Return the exemption timestamp when the user is currently pardoned."""
+        async with self.bot.pg_pool.acquire() as conn:
+            exempt_until = await conn.fetchval(
+                f'SELECT exempt_until FROM "{_WB}".exempt_users WHERE user_id = $1',
+                user_id,
+            )
+        if exempt_until is not None and time.time() < exempt_until:
+            return float(exempt_until)
+        return None
+
+    def _exemption_embed(self, user: nextcord.Member, exempt_until: float) -> nextcord.Embed:
+        return nextcord.Embed(
+            title="Exempt User",
+            description=f"{user.mention} is exempt from waterboarding until <t:{int(exempt_until)}:F>.",
+            color=nextcord.Color.red(),
+        )
+
+    def _waterboard_config_embed(self) -> nextcord.Embed | None:
+        gs = get_settings()
+        if gs.is_group_skipped("waterboard") or not gs.get_int("waterboard_category_id"):
+            return nextcord.Embed(
+                title="Configuration Error",
+                description=config_missing_message(
+                    "waterboard", skipped=gs.is_group_skipped("waterboard")
+                ),
+                color=nextcord.Color.red(),
+            )
+        return None
+
+    async def target_has_active_repel(self, user_id: int) -> bool:
+        """True when Repel Water is running. Callers must not reveal the timer."""
+        cog = self.bot.get_cog("PowerupCog")
+        if cog is None:
+            return False
+        checker = getattr(cog, "is_repel_active", None)
+        if not asyncio.iscoroutinefunction(checker):
+            return False
+        return bool(await checker(user_id))
+
+    def grant_retaliate_token(self, victim_id: int, attacker_id: int) -> None:
+        if victim_id == attacker_id:
+            return
+        self.retaliate_tokens[victim_id] = {
+            "attacker_id": attacker_id,
+            "expires_at": time.time() + RETALIATE_WINDOW_SECONDS,
+        }
+        self.cog_print(
+            f"Retaliate token granted to {victim_id} against {attacker_id} "
+            f"for {RETALIATE_WINDOW_SECONDS}s."
+        )
+
+    def retaliate_token_status(self, victim_id: int) -> str:
+        """``ready``, ``expired``, or ``missing``. Expired tokens are dropped."""
+        token = self.retaliate_tokens.get(victim_id)
+        if token is None:
+            return "missing"
+        if time.time() >= token["expires_at"]:
+            self.retaliate_tokens.pop(victim_id, None)
+            return "expired"
+        return "ready"
+
+    def finish_retaliate_window(
+        self, victim_id: int, attacker_id: int, *, landed: bool
+    ) -> tuple[nextcord.Interaction | None, bool]:
+        """Clear the in-progress mark. Returns ``(queued interaction, should_run)``."""
+        self.retaliate_pending.pop(victim_id, None)
+        queued = self.queued_retaliates.pop(victim_id, None)
+        if landed:
+            self.grant_retaliate_token(victim_id, attacker_id)
+            return queued, True
+        return queued, False
+
+    def consume_retaliate_token(self, victim_id: int) -> int | None:
+        token = self.retaliate_tokens.pop(victim_id, None)
+        if token is None or time.time() >= token["expires_at"]:
+            return None
+        return int(token["attacker_id"])
+
+    async def record_free_waterboard(self, user_id: int) -> None:
+        """Count a free dunk on the leaderboard without moving the paid price ladder."""
+        async with self.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO "{_WB}".waterboarded_users '
+                f'(user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent) '
+                f'VALUES ($1, 0, 0, 1, 0) '
+                f'ON CONFLICT (user_id) DO UPDATE SET '
+                f'total_waterboarded = "{_WB}".waterboarded_users.total_waterboarded + 1',
+                user_id,
+            )
+
+    async def present_quicktime(
+        self,
+        interaction: nextcord.Interaction,
+        challenger: nextcord.Member,
+        *,
+        title: str,
+        intro: str,
+        already_responded: bool = False,
+        timeout_seconds: float = CHALLENGE_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Ephemeral four-button math challenge. True when they answer correctly in time."""
+        prompt, correct, options = generate_water_challenge()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        view = WaterQuicktimeView(
+            challenger_id=challenger.id,
+            prompt=prompt,
+            correct=correct,
+            options=options,
+            future=future,
+            interaction=interaction,
+            timeout_seconds=timeout_seconds,
+        )
+        embed = nextcord.Embed(
+            title=title,
+            description=(
+                f"{intro}\n\n**{prompt}**\n\nYou have {timeout_seconds} seconds."
+            ),
+            color=nextcord.Color.blue(),
+        )
+        if already_responded:
+            view.challenge_message = await interaction.followup.send(
+                embed=embed, view=view, ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        view.expires_at = time.monotonic() + timeout_seconds
+        try:
+            return bool(await asyncio.wait_for(future, timeout=timeout_seconds + 2))
+        except asyncio.TimeoutError:
+            return False
+
+    async def _begin_paid_waterboard(
+        self,
+        interaction: nextcord.Interaction,
+        user: nextcord.Member,
+        *,
+        already_responded: bool,
+    ) -> None:
+        cost, next_cost, err = await self._common_waterboard_purchase_flow(interaction, user)
+        send = interaction.followup.send if already_responded else interaction.response.send_message
+        if err:
+            await send(embed=err, ephemeral=True)
+            return
+
+        embed_purchased = nextcord.Embed(
+            title="Waterboard Purchased",
+            description=(
+                f"You have successfully waterboarded {user.mention} for {cost} coins. "
+                f"Next usage: {next_cost} coins."
+            ),
+            color=nextcord.Color.green(),
+        )
+        await send(embed=embed_purchased, ephemeral=True)
+
+        if not user.voice or not user.voice.channel:
+            await interaction.followup.send(
+                embed=nextcord.Embed(
+                    title="Waterboard Cancelled",
+                    description=f"{user.mention} is not in a voice channel. You were still charged.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        config_embed = self._waterboard_config_embed()
+        if config_embed is not None:
+            await interaction.followup.send(embed=config_embed, ephemeral=True)
+            return
+
+        asyncio.create_task(
+            self.waterboard_user(interaction, user, grant_retaliate=True)
+        )
+
+    async def _repel_then_waterboard(
+        self, interaction: nextcord.Interaction, user: nextcord.Member
+    ) -> None:
+        """Attacker hit an active Repel Water. Challenge them before any coins move."""
+        config_embed = self._waterboard_config_embed()
+        if config_embed is not None:
+            await interaction.response.send_message(embed=config_embed, ephemeral=True)
+            return
+
+        self.cog_print(
+            f"Repel Water challenged {interaction.user.id} while targeting {user.id}."
+        )
+        success = await self.present_quicktime(
+            interaction,
+            interaction.user,
+            title="The water pushes back",
+            intro="Solve this, or you go in instead.",
+            timeout_seconds=REPEL_WATER_CHALLENGE_DURATION_SECONDS,
+        )
+        if success:
+            await interaction.followup.send(
+                embed=nextcord.Embed(
+                    description="The water gives way.",
+                    color=nextcord.Color.green(),
+                ),
+                ephemeral=True,
+            )
+            await self._begin_paid_waterboard(interaction, user, already_responded=True)
+            return
+
+        attacker = interaction.user
+        if not attacker.voice or not attacker.voice.channel:
+            await interaction.followup.send(
+                embed=nextcord.Embed(
+                    title="The water finds no one",
+                    description=(
+                        "You missed, and you are not in a voice channel. "
+                        "Nobody goes in, and you were not charged."
+                    ),
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await self.record_free_waterboard(attacker.id)
+        public = f"The water turns around! {attacker.mention} is swept away."
+        asyncio.create_task(
+            self.waterboard_user(
+                interaction,
+                attacker,
+                caused_by=user,
+                grant_retaliate=False,
+                public_description=public,
+                ephemeral_description="The water turns around. You're going in.",
+            )
+        )
 
     def get_waterboard_channels(self, guild, count: int = 10):
         """Get voice channels from the waterboard category, sorted by position. Returns up to `count` channels."""
@@ -427,54 +830,214 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                 return (cost, next_cost, None)
 
     @nextcord.slash_command(
-        name="waterboard", description="Waterboard a user (v3 - premade channels)", guild_ids=[GUILD_ID]
+        name="waterboard", description="Waterboard a user", guild_ids=[GUILD_ID]
     )
     async def waterboard(self, interaction: nextcord.Interaction, user: nextcord.Member):
         self.cog_print(f"User {interaction.user.id} used waterboard on {user.name}.")
-        cost, next_cost, err = await self._common_waterboard_purchase_flow(
-            interaction, user
-        )
-        if err:
-            await interaction.response.send_message(embed=err, ephemeral=True)
+        exempt_until = await self.get_active_exemption(user.id)
+        if exempt_until is not None:
+            await interaction.response.send_message(
+                embed=self._exemption_embed(user, exempt_until), ephemeral=True
+            )
             return
 
-        embed_purchased = nextcord.Embed(
-            title="Waterboard Purchased",
-            description=f"You have successfully waterboarded {user.mention} for {cost} coins. Next usage: {next_cost} coins.",
-            color=nextcord.Color.green(),
-        )
-        await interaction.response.send_message(embed=embed_purchased, ephemeral=True)
+        if (
+            user.voice
+            and user.voice.channel
+            and await self.target_has_active_repel(user.id)
+        ):
+            await self._repel_then_waterboard(interaction, user)
+            return
 
-        if not user.voice or not user.voice.channel:
-            await interaction.followup.send(
+        await self._begin_paid_waterboard(interaction, user, already_responded=False)
+
+    @nextcord.slash_command(
+        name="retaliate",
+        description="After a waterboard, solve a quicktime event and submerge your attacker for free!",
+        guild_ids=[GUILD_ID],
+    )
+    async def retaliate(self, interaction: nextcord.Interaction):
+        self.cog_print(f"User {interaction.user.id} used retaliate.")
+        status = self.retaliate_token_status(interaction.user.id)
+        if status == "missing":
+            if interaction.user.id in self.retaliate_pending:
+                await self._queue_retaliate(interaction)
+                return
+            await interaction.response.send_message(
                 embed=nextcord.Embed(
-                    title="Waterboard Cancelled",
-                    description=f"{user.mention} is not in a voice channel. You were still charged.",
+                    title="Nothing to retaliate against...",
+                    description="You have not been waterboarded recently.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+        if status == "expired":
+            await interaction.response.send_message(
+                embed=nextcord.Embed(
+                    title="Too slow",
+                    description="The moment to retaliate has passed.",
                     color=nextcord.Color.orange(),
                 ),
                 ephemeral=True,
             )
             return
 
-        gs = get_settings()
-        if gs.is_group_skipped("waterboard") or not gs.get_int("waterboard_category_id"):
+        await self._continue_retaliate(interaction, already_responded=False)
+
+    async def _queue_retaliate(self, interaction: nextcord.Interaction) -> None:
+        """Hold /retaliate until the paid waterboard returns them home."""
+        if interaction.user.id in self.queued_retaliates:
+            await interaction.response.send_message(
+                embed=nextcord.Embed(
+                    title="Already queued",
+                    description="Your retaliate is already waiting until you're back in your voice channel.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+        self.queued_retaliates[interaction.user.id] = interaction
+        await interaction.response.send_message(
+            embed=nextcord.Embed(
+                title="Still in the water",
+                description=(
+                    "You're still going through the water. "
+                    f"The {RETALIATE_WINDOW_SECONDS}-second retaliation clock starts once you're "
+                    "back in your voice channel. This retaliate is queued and will begin then."
+                ),
+                color=nextcord.Color.blue(),
+            ),
+            ephemeral=True,
+        )
+
+    async def _drop_queued_retaliate(self, interaction: nextcord.Interaction) -> None:
+        try:
             await interaction.followup.send(
                 embed=nextcord.Embed(
-                    title="Configuration Error",
-                    description=config_missing_message(
-                        "waterboard", skipped=gs.is_group_skipped("waterboard")
-                    ),
-                    color=nextcord.Color.red(),
+                    title="Retaliate cancelled",
+                    description="The waterboard ended before you got back, so the retaliate did not start.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+        except Exception as e:
+            self.cog_print(f"Could not cancel a queued retaliate: {self.s_print_static(str(e))}")
+
+    async def _run_queued_retaliate(self, interaction: nextcord.Interaction) -> None:
+        try:
+            await self._continue_retaliate(interaction, already_responded=True)
+        except Exception as e:
+            self.cog_print(f"Queued retaliate failed: {self.s_print_static(str(e))}")
+
+    async def _continue_retaliate(
+        self, interaction: nextcord.Interaction, *, already_responded: bool
+    ) -> None:
+        send = interaction.followup.send if already_responded else interaction.response.send_message
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await send(
+                embed=nextcord.Embed(
+                    title="Not in Voice Channel",
+                    description="You need to be in a voice channel to retaliate.",
+                    color=nextcord.Color.orange(),
                 ),
                 ephemeral=True,
             )
             return
 
-        asyncio.create_task(self.waterboard_user(interaction, user))
+        config_embed = self._waterboard_config_embed()
+        if config_embed is not None:
+            await send(embed=config_embed, ephemeral=True)
+            return
+
+        attacker_id = self.consume_retaliate_token(interaction.user.id)
+        if attacker_id is None:
+            await send(
+                embed=nextcord.Embed(
+                    title="Nothing to retaliate against",
+                    description="You have not been waterboarded recently.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        attacker = interaction.guild.get_member(attacker_id) if interaction.guild else None
+        if attacker is None:
+            await send(
+                embed=nextcord.Embed(
+                    title="They're gone",
+                    description="The person who waterboarded you is no longer in the server.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        exempt_until = await self.get_active_exemption(attacker.id)
+        if exempt_until is not None:
+            await send(embed=self._exemption_embed(attacker, exempt_until), ephemeral=True)
+            return
+
+        success = await self.present_quicktime(
+            interaction,
+            interaction.user,
+            title="Retaliate",
+            intro=f"Solve this to send {attacker.mention} in instead. Miss, and you go back in.",
+            already_responded=already_responded,
+        )
+        if success:
+            if not attacker.voice or not attacker.voice.channel:
+                await interaction.followup.send(
+                    embed=nextcord.Embed(
+                        title="They got away",
+                        description=f"{attacker.mention} is not in a voice channel.",
+                        color=nextcord.Color.orange(),
+                    ),
+                    ephemeral=True,
+                )
+                return
+            await self.record_free_waterboard(attacker.id)
+            public = f"{interaction.user.mention} retaliates. {attacker.mention} is swept away."
+            asyncio.create_task(
+                self.waterboard_user(
+                    interaction,
+                    attacker,
+                    caused_by=interaction.user,
+                    grant_retaliate=False,
+                    public_description=public,
+                    ephemeral_description=public,
+                )
+            )
+            return
+
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.followup.send(
+                embed=nextcord.Embed(
+                    title="The water finds no one",
+                    description="You missed, and you are not in a voice channel.",
+                    color=nextcord.Color.orange(),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await self.record_free_waterboard(interaction.user.id)
+        public = f"{interaction.user.mention} fumbles the retaliation and goes back under."
+        asyncio.create_task(
+            self.waterboard_user(
+                interaction,
+                interaction.user,
+                caused_by=interaction.user,
+                grant_retaliate=False,
+                public_description=public,
+                ephemeral_description="You missed. Back in you go.",
+            )
+        )
 
     @nextcord.slash_command(
         name="enhanced-waterboard",
-        description="Enhanced waterboard that hides the original voice channel (v3)",
+        description="Enhanced waterboard that hides the original voice channel... for a price.",
         guild_ids=[GUILD_ID],
     )
     async def enhanced_waterboard(
@@ -524,7 +1087,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     @nextcord.slash_command(
         name="waterboard-party",
-        description="Waterboard everyone in a voice channel (v3 - 2-channel relay)",
+        description="Air this b**** out!",
         guild_ids=[GUILD_ID],
     )
     async def waterboard_party(self, interaction: nextcord.Interaction):
@@ -715,12 +1278,22 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     # ---------- Core waterboard logic ----------
     async def waterboard_user(
-        self, interaction: nextcord.Interaction, user: nextcord.Member
+        self,
+        interaction: nextcord.Interaction,
+        user: nextcord.Member,
+        *,
+        caused_by: nextcord.Member | None = None,
+        grant_retaliate: bool = False,
+        public_description: str | None = None,
+        ephemeral_description: str | None = None,
     ):
         guild = interaction.guild
         bot_spam = guild.get_channel(get_settings().get_int("bot_spam_id"))
+        caused_by = caused_by or interaction.user
         original_channel_id = user.voice.channel.id if user.voice else None
         session_counted = False
+        landed_home = False
+        tracking_retaliate = False
 
         try:
             async with self.waterboard_sessions_lock:
@@ -742,6 +1315,10 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                 self.cog_print(f"{self.s_print_static(user.name)} left voice before waterboard.")
                 return
 
+            if grant_retaliate:
+                self.retaliate_pending[user.id] = caused_by.id
+                tracking_retaliate = True
+
             for ch in channels:
                 if not user.voice or not user.voice.channel:
                     break
@@ -755,11 +1332,18 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
             if user.voice and original_channel_id:
                 orig = self.bot.get_channel(original_channel_id)
                 if orig:
-                    await self.move_user_with_rate_limit(user, orig)
+                    landed_home = await self.move_user_with_rate_limit(user, orig)
 
         except Exception as e:
             self.cog_print(f"Error waterboarding {self.s_print_static(user.name)}: {self.s_print_static(str(e))}")
         finally:
+            queued_retaliate = None
+            run_queued_retaliate = False
+            if tracking_retaliate:
+                queued_retaliate, run_queued_retaliate = self.finish_retaliate_window(
+                    user.id, caused_by.id, landed=landed_home
+                )
+
             if session_counted:
                 async with self.waterboard_sessions_lock:
                     self.active_waterboard_sessions -= 1
@@ -767,20 +1351,28 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
                         await self.hide_waterboard_category(guild)
 
             try:
-                embed = nextcord.Embed(
-                    description=f"{user.mention} was waterboarded by {interaction.user.mention}.",
-                    color=nextcord.Color.blue(),
+                public = public_description or (
+                    f"{user.mention} was waterboarded by {caused_by.mention}!"
                 )
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                ephemeral = ephemeral_description or (
+                    f"{user.mention} was waterboarded by {caused_by.mention}."
+                )
+                await interaction.followup.send(
+                    embed=nextcord.Embed(description=ephemeral, color=nextcord.Color.blue()),
+                    ephemeral=True,
+                )
                 if bot_spam:
                     await bot_spam.send(
-                        embed=nextcord.Embed(
-                            description=f"{user.mention} was waterboarded by {interaction.user.mention}!",
-                            color=nextcord.Color.blue(),
-                        )
+                        embed=nextcord.Embed(description=public, color=nextcord.Color.blue())
                     )
             except Exception:
                 pass
+
+            if queued_retaliate is not None:
+                if run_queued_retaliate:
+                    asyncio.create_task(self._run_queued_retaliate(queued_retaliate))
+                else:
+                    asyncio.create_task(self._drop_queued_retaliate(queued_retaliate))
 
     async def enhanced_waterboard_user(
         self, interaction: nextcord.Interaction, user: nextcord.Member

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,7 +41,7 @@ from nextcord.application_command import SlashApplicationCommand, SlashApplicati
 from nextcord.ext import commands
 
 import main_bot.cogs.production.waterboard_v3 as waterboard_mod
-from main_bot.cogs.production.waterboard_v3 import WaterboardCog3
+from main_bot.cogs.production.waterboard_v3 import WaterboardCog3, generate_water_challenge
 from main_bot.guild_settings import GuildSettings
 
 
@@ -517,6 +518,7 @@ class TestWaterboardSlashRegistration:
             "waterboard-party",
             "waterboard-ranks",
             "executivepardon",
+            "retaliate",
         }
 
     def test_waterboard_callbacks_are_async(self, waterboard_cog_unit: WaterboardCog3) -> None:
@@ -769,3 +771,373 @@ class TestWaterboardSetup:
         waterboard_bot.add_cog.assert_called_once()
         added = waterboard_bot.add_cog.call_args[0][0]
         assert isinstance(added, WaterboardCog3)
+
+
+def _capture_created_tasks():
+    """Return (side_effect, captured_locals) for patching ``asyncio.create_task``."""
+    captured: list[dict] = []
+
+    def _capture(coro, *, name=None):  # noqa: ARG001
+        if asyncio.iscoroutine(coro):
+            captured.append(dict(coro.cr_frame.f_locals))
+            coro.close()
+        return MagicMock()
+
+    return _capture, captured
+
+
+class _RepelProbe:
+    def __init__(self, active: bool = True, *, fail_if_called: bool = False):
+        self.fail_if_called = fail_if_called
+        self.calls = 0
+        self._active = active
+
+    async def is_repel_active(self, user_id: int) -> bool:  # noqa: ARG002
+        self.calls += 1
+        if self.fail_if_called:
+            raise AssertionError("repel should not have been checked")
+        return self._active
+
+
+# ---------------------------------------------------------------------------
+# Quicktime and retaliate
+# ---------------------------------------------------------------------------
+
+
+class TestWaterChallenge:
+    def test_generate_water_challenge_has_one_correct_among_four(self) -> None:
+        rng = random.Random(0)
+        for _ in range(40):
+            prompt, correct, options = generate_water_challenge(rng)
+            assert prompt
+            assert isinstance(correct, int)
+            assert len(options) == 4
+            assert len(set(options)) == 4
+            assert correct in options
+
+
+class TestRetaliateToken:
+    def test_missing_and_expired_tokens(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        assert waterboard_cog_unit.retaliate_token_status(1) == "missing"
+        waterboard_cog_unit.retaliate_tokens[1] = {"attacker_id": 9, "expires_at": time.time() - 1}
+        assert waterboard_cog_unit.retaliate_token_status(1) == "expired"
+        assert 1 not in waterboard_cog_unit.retaliate_tokens
+
+    def test_ready_token_round_trip(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        waterboard_cog_unit.grant_retaliate_token(4, 8)
+        assert waterboard_cog_unit.retaliate_token_status(4) == "ready"
+        assert waterboard_cog_unit.consume_retaliate_token(4) == 8
+        assert waterboard_cog_unit.consume_retaliate_token(4) is None
+
+    def test_does_not_grant_a_token_against_yourself(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        waterboard_cog_unit.grant_retaliate_token(5, 5)
+        assert waterboard_cog_unit.retaliate_token_status(5) == "missing"
+
+    def test_landing_starts_the_clock_and_returns_a_queued_command(
+        self, waterboard_cog_unit: WaterboardCog3
+    ) -> None:
+        queued = _make_interaction(user_id=4)
+        waterboard_cog_unit.retaliate_pending[4] = 8
+        waterboard_cog_unit.queued_retaliates[4] = queued
+        returned, run = waterboard_cog_unit.finish_retaliate_window(4, 8, landed=True)
+        assert run is True
+        assert returned is queued
+        assert waterboard_cog_unit.retaliate_token_status(4) == "ready"
+        assert 4 not in waterboard_cog_unit.retaliate_pending
+        assert 4 not in waterboard_cog_unit.queued_retaliates
+
+    def test_missing_the_return_home_does_not_start_the_clock(
+        self, waterboard_cog_unit: WaterboardCog3
+    ) -> None:
+        queued = _make_interaction(user_id=4)
+        waterboard_cog_unit.retaliate_pending[4] = 8
+        waterboard_cog_unit.queued_retaliates[4] = queued
+        returned, run = waterboard_cog_unit.finish_retaliate_window(4, 8, landed=False)
+        assert run is False
+        assert returned is queued
+        assert waterboard_cog_unit.retaliate_token_status(4) == "missing"
+
+
+@pytest.mark.usefixtures("_clean_waterboard_tables")
+class TestFreeWaterboardStats:
+    @pytest.mark.asyncio
+    async def test_free_dunk_counts_on_the_leaderboard_only(
+        self, waterboard_cog: WaterboardCog3
+    ) -> None:
+        await waterboard_cog.create_tables()
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                '''
+                INSERT INTO "waterboard".waterboarded_users
+                (user_id, last_waterboarded_time, usage_count, total_waterboarded, total_coins_spent)
+                VALUES ($1, $2, $3, $4, $5)
+                ''',
+                77,
+                12345.0,
+                4,
+                2,
+                800,
+            )
+        await waterboard_cog.record_free_waterboard(77)
+        await waterboard_cog.record_free_waterboard(88)
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                'SELECT * FROM "waterboard".waterboarded_users WHERE user_id = $1',
+                77,
+            )
+            fresh = await conn.fetchrow(
+                'SELECT * FROM "waterboard".waterboarded_users WHERE user_id = $1',
+                88,
+            )
+        assert existing["usage_count"] == 4
+        assert existing["total_coins_spent"] == 800
+        assert existing["total_waterboarded"] == 3
+        assert existing["last_waterboarded_time"] == 12345.0
+        assert fresh["usage_count"] == 0
+        assert fresh["total_coins_spent"] == 0
+        assert fresh["total_waterboarded"] == 1
+
+
+@pytest.mark.usefixtures("_clean_waterboard_tables")
+class TestRetaliateAndRepel:
+    @pytest.mark.asyncio
+    async def test_retaliate_without_a_token(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        ix = _make_interaction()
+        await waterboard_cog_unit.retaliate.callback(waterboard_cog_unit, ix)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Nothing to retaliate against..."
+
+    @pytest.mark.asyncio
+    async def test_retaliate_while_still_in_the_water_is_queued(
+        self, waterboard_cog_unit: WaterboardCog3
+    ) -> None:
+        waterboard_cog_unit.retaliate_pending[201] = 9
+        ix = _make_interaction(user_id=201)
+        await waterboard_cog_unit.retaliate.callback(waterboard_cog_unit, ix)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Still in the water"
+        assert "voice channel" in (embed.description or "")
+        assert waterboard_cog_unit.queued_retaliates[201] is ix
+
+    @pytest.mark.asyncio
+    async def test_second_retaliate_while_queued_does_not_replace_the_first(
+        self, waterboard_cog_unit: WaterboardCog3
+    ) -> None:
+        waterboard_cog_unit.retaliate_pending[201] = 9
+        first = _make_interaction(user_id=201)
+        waterboard_cog_unit.queued_retaliates[201] = first
+        ix = _make_interaction(user_id=201)
+        await waterboard_cog_unit.retaliate.callback(waterboard_cog_unit, ix)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Already queued"
+        assert waterboard_cog_unit.queued_retaliates[201] is first
+
+    @pytest.mark.asyncio
+    async def test_retaliate_too_slow(self, waterboard_cog_unit: WaterboardCog3) -> None:
+        waterboard_cog_unit.retaliate_tokens[201] = {
+            "attacker_id": 9,
+            "expires_at": time.time() - 5,
+        }
+        ix = _make_interaction(user_id=201)
+        await waterboard_cog_unit.retaliate.callback(waterboard_cog_unit, ix)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Too slow"
+        assert 201 not in waterboard_cog_unit.retaliate_tokens
+
+    @pytest.mark.asyncio
+    async def test_retaliate_out_of_voice_keeps_the_token(
+        self, waterboard_cog_unit: WaterboardCog3
+    ) -> None:
+        waterboard_cog_unit.grant_retaliate_token(201, 9)
+        ix = _make_interaction(user_id=201, in_voice=False)
+        await waterboard_cog_unit.retaliate.callback(waterboard_cog_unit, ix)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Not in Voice Channel"
+        assert waterboard_cog_unit.retaliate_token_status(201) == "ready"
+
+    @pytest.mark.asyncio
+    async def test_retaliate_pardon_blocks_and_spends_the_token(
+        self,
+        waterboard_cog: WaterboardCog3,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        attacker = _make_member(404)
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                'INSERT INTO "waterboard".exempt_users (user_id, exempt_until) VALUES ($1, $2)',
+                attacker.id,
+                time.time() + 3600,
+            )
+        waterboard_cog.grant_retaliate_token(201, attacker.id)
+        ix = _make_interaction(user_id=201)
+        ix.guild.get_member = MagicMock(return_value=attacker)
+        with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock()) as challenge:
+            await waterboard_cog.retaliate.callback(waterboard_cog, ix)
+        challenge.assert_not_awaited()
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Exempt User"
+        assert waterboard_cog.retaliate_token_status(201) == "missing"
+
+    @pytest.mark.asyncio
+    async def test_retaliate_success_dunks_the_attacker_for_free(
+        self,
+        waterboard_cog: WaterboardCog3,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        attacker = _make_member(404)
+        waterboard_cog.grant_retaliate_token(201, attacker.id)
+        ix = _make_interaction(user_id=201)
+        ix.guild.get_member = MagicMock(return_value=attacker)
+        capture, captured = _capture_created_tasks()
+        with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=True)):
+            with patch("asyncio.create_task", side_effect=capture):
+                await waterboard_cog.retaliate.callback(waterboard_cog, ix)
+        assert captured[0]["grant_retaliate"] is False
+        assert captured[0]["user"].id == attacker.id
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT total_waterboarded, usage_count, total_coins_spent '
+                'FROM "waterboard".waterboarded_users WHERE user_id = $1',
+                attacker.id,
+            )
+        assert row["total_waterboarded"] == 1
+        assert row["usage_count"] == 0
+        assert row["total_coins_spent"] == 0
+        assert waterboard_cog.retaliate_token_status(201) == "missing"
+
+    @pytest.mark.asyncio
+    async def test_retaliate_failure_dunks_the_victim_again(
+        self,
+        waterboard_cog: WaterboardCog3,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        attacker = _make_member(404)
+        waterboard_cog.grant_retaliate_token(201, attacker.id)
+        ix = _make_interaction(user_id=201)
+        ix.guild.get_member = MagicMock(return_value=attacker)
+        capture, captured = _capture_created_tasks()
+        with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=False)):
+            with patch("asyncio.create_task", side_effect=capture):
+                await waterboard_cog.retaliate.callback(waterboard_cog, ix)
+        assert captured[0]["grant_retaliate"] is False
+        assert captured[0]["user"].id == 201
+
+    @pytest.mark.asyncio
+    async def test_waterboard_exempt_target_never_checks_repel(
+        self,
+        waterboard_cog: WaterboardCog3,
+        waterboard_bot: MagicMock,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        probe = _RepelProbe(fail_if_called=True)
+        econ = MagicMock()
+        econ.deduct_user_balance = AsyncMock()
+        waterboard_bot.get_cog.side_effect = lambda name: {
+            "PowerupCog": probe,
+            "Economy": econ,
+        }.get(name)
+        target = _make_member(300)
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            await conn.execute(
+                'INSERT INTO "waterboard".exempt_users (user_id, exempt_until) VALUES ($1, $2)',
+                target.id,
+                time.time() + 3600,
+            )
+        ix = _make_interaction()
+        await waterboard_cog.waterboard.callback(waterboard_cog, ix, target)
+        embed = ix.response.send_message.await_args.kwargs["embed"]
+        assert embed.title == "Exempt User"
+        econ.deduct_user_balance.assert_not_awaited()
+        assert probe.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_repel_failure_dunks_the_attacker_without_charging(
+        self,
+        waterboard_cog: WaterboardCog3,
+        waterboard_bot: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        probe = _RepelProbe(active=True)
+        econ = MagicMock()
+        econ.get_user_balance = AsyncMock(return_value=10_000)
+        econ.deduct_user_balance = AsyncMock()
+        waterboard_bot.get_cog.side_effect = lambda name: {
+            "PowerupCog": probe,
+            "Economy": econ,
+        }.get(name)
+        ix = _make_interaction(user_id=201)
+        target = _make_member(300)
+        capture, captured = _capture_created_tasks()
+        with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=False)):
+            with patch("asyncio.create_task", side_effect=capture):
+                await waterboard_cog.waterboard.callback(waterboard_cog, ix, target)
+        econ.deduct_user_balance.assert_not_awaited()
+        assert captured[0]["grant_retaliate"] is False
+        assert captured[0]["user"].id == 201
+        assert waterboard_cog.retaliate_token_status(300) == "missing"
+        async with waterboard_cog.bot.pg_pool.acquire() as conn:
+            total = await conn.fetchval(
+                'SELECT total_waterboarded FROM "waterboard".waterboarded_users WHERE user_id = $1',
+                201,
+            )
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_repel_failure_out_of_voice_moves_nobody(
+        self,
+        waterboard_cog: WaterboardCog3,
+        waterboard_bot: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        probe = _RepelProbe(active=True)
+        econ = MagicMock()
+        econ.deduct_user_balance = AsyncMock()
+        waterboard_bot.get_cog.side_effect = lambda name: {"PowerupCog": probe, "Economy": econ}.get(name)
+        ix = _make_interaction(user_id=201, in_voice=False)
+        target = _make_member(300)
+        with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=False)):
+            with patch("asyncio.create_task") as ct:
+                ct.side_effect = _close_coro_fake_create_task
+                await waterboard_cog.waterboard.callback(waterboard_cog, ix, target)
+        ct.assert_not_called()
+        econ.deduct_user_balance.assert_not_awaited()
+        embed = ix.followup.send.await_args.kwargs["embed"]
+        assert embed.title == "The water finds no one"
+
+    @pytest.mark.asyncio
+    async def test_repel_success_charges_and_waterboards_the_target(
+        self,
+        waterboard_cog: WaterboardCog3,
+        waterboard_bot: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        await waterboard_cog.create_tables()
+        _patch_guild_settings(monkeypatch, waterboard_category_id=12345)
+        probe = _RepelProbe(active=True)
+        econ = MagicMock()
+        econ.get_user_balance = AsyncMock(return_value=10_000)
+        econ.deduct_user_balance = AsyncMock()
+        waterboard_bot.get_cog.side_effect = lambda name: {
+            "PowerupCog": probe,
+            "Economy": econ,
+        }.get(name)
+        ix = _make_interaction(user_id=201)
+        target = _make_member(300)
+        capture, captured = _capture_created_tasks()
+        with patch("time.time", return_value=8_000_000.0):
+            with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=True)):
+                with patch("asyncio.create_task", side_effect=capture):
+                    await waterboard_cog.waterboard.callback(waterboard_cog, ix, target)
+        econ.deduct_user_balance.assert_awaited_once_with(201, 200)
+        assert captured[0]["grant_retaliate"] is True
+        assert captured[0]["user"].id == target.id
