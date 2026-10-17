@@ -16,7 +16,7 @@ from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.guild_settings import config_missing_message, get_settings, is_bot_admin
 from main_bot.server_configs.config import GUILD_ID
 from main_bot.cogs.production.economy import Economy
-from main_bot.cogs.production.powerups import REPEL_WATER_CHALLENGE_DURATION_SECONDS
+from main_bot.cogs.production.shop import REPEL_WATER_CHALLENGE_DURATION_SECONDS
 
 _WB = "waterboard"
 
@@ -44,7 +44,7 @@ PHASE_DELAY_SECONDS = 1.0
 RETALIATE_WINDOW_SECONDS = 60
 
 # How long the /retaliate quicktime stays open.
-# Repel Water uses REPEL_WATER_CHALLENGE_DURATION_SECONDS in powerups.py.
+# Repel Water uses REPEL_WATER_CHALLENGE_DURATION_SECONDS in shop.py.
 CHALLENGE_TIMEOUT_SECONDS = 8
 
 # Inclusive range for the two-step math challenge operands.
@@ -284,7 +284,7 @@ class WaterboardCog3(commands.Cog, CogLogMixin):
 
     async def target_has_active_repel(self, user_id: int) -> bool:
         """True when Repel Water is running. Callers must not reveal the timer."""
-        cog = self.bot.get_cog("PowerupCog")
+        cog = self.bot.get_cog("ShopCog")
         if cog is None:
             return False
         checker = getattr(cog, "is_repel_active", None)

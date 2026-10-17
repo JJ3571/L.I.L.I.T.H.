@@ -1,3 +1,13 @@
+"""Clan Shop.
+
+Pardon, Repel Water, and name colors are powerups: they sit in inventory and
+turn on later. Just One More and art requests are General items: they happen
+at checkout.
+
+Postgres tables stay in the ``powerups`` schema. That schema stores powerup
+charges, active effects, and art requests.
+"""
+
 import nextcord
 from nextcord.ext import commands, tasks
 import time
@@ -9,10 +19,11 @@ from main_bot.cog_log_mixin import CogLogMixin
 from main_bot.guild_settings import get_settings
 from main_bot.server_configs.config import GUILD_ID
 
+# Postgres schema for powerup charges, active effects, and art requests.
 _PU = "powerups"
 
-# Stored charges. One of a single-active powerup can be running; the rest wait in inventory.
-MAX_INVENTORY_POWERUPS = 3
+# Stored charges of one type. Each storable powerup has its own cap.
+MAX_INVENTORY_PER_POWERUP = 3
 
 # Executive Pardon. One charge, no stacking.
 EXECUTIVE_PARDON_DURATION_HOURS = 1
@@ -27,8 +38,23 @@ _REPEL_MINUTES = REPEL_WATER_DURATION_SECONDS // 60
 _PARDON_HOURS = EXECUTIVE_PARDON_DURATION_HOURS
 _PARDON_HOUR_WORD = "hour" if _PARDON_HOURS == 1 else "hours"
 
-# Define Powerups
-POWERUP_TYPES = {
+CATEGORY_POWERUPS = "powerups"
+CATEGORY_GENERAL = "general"
+
+SHOP_CATEGORIES = {
+    CATEGORY_POWERUPS: {
+        "name": "Powerups",
+        "tag": "Powerup",
+        "description": "Powerups you can keep in your inventory.",
+    },
+    CATEGORY_GENERAL: {
+        "name": "General",
+        "tag": "General",
+        "description": "General items that are used/activated immediately.",
+    },
+}
+
+SHOP_ITEMS = {
     "executive_pardon": {
         "name": "Executive Pardon",
         "description": f"Grants immunity from the waterboard for {_PARDON_HOURS} {_PARDON_HOUR_WORD}.",
@@ -36,43 +62,8 @@ POWERUP_TYPES = {
         "duration_hours": EXECUTIVE_PARDON_DURATION_HOURS,
         "effect_type": "pardon",
         "single_active": True,
-        "storable": True
-    },
-    "name_color_red": {
-        "name": "Pink @ Color",
-        "description": "Change your name color to Red for 12 hours.",
-        "price": 1000,
-        "duration_hours": 12,
-        "effect_type": "role",
-        "role_name": "Pink",
-        "storable": True
-    },
-    "name_color_blue": {
-        "name": "Blue @ Color",
-        "description": "Change your name color to Blue for 12 hours.",
-        "price": 1000,
-        "duration_hours": 12,
-        "effect_type": "role",
-        "role_name": "Blue",
-        "storable": True
-    },
-    "just_one_more": {
-        "name": "Just One More",
-        "description": "Forces JJ3571 to play just one more game for 1 hour.",
-        "price": 10000,
-        "duration_hours": 1,
-        "effect_type": "just_one_more",
-        "target_user_id": 321888250136363009,  # JJ3571's user ID
-        "storable": False  # This powerup is purchased and used immediately
-    },
-    "art_request": {
-        "name": "TheGiftedNut - Art Request",
-        "description": "Commission custom artwork from TheGiftedNut.",
-        "price": 10000,
-        "duration_hours": 0,  # Duration is irrelevant for art requests
-        "effect_type": "art_request",
-        "target_user_id": 220656152994643969,  # Nut's user ID
-        "storable": False  # This powerup is purchased and used immediately
+        "storable": True,
+        "category": CATEGORY_POWERUPS,
     },
     REPEL_WATER_TYPE: {
         "name": "Repel Water",
@@ -85,11 +76,75 @@ POWERUP_TYPES = {
         "effect_type": "repel",
         "single_active": True,
         "storable": True,
+        "category": CATEGORY_POWERUPS,
     },
-    # More powerups tbd
+    "name_color_pink": {
+        "name": "Pink @ Color",
+        "description": "Change your name color to Pink for 12 hours.",
+        "price": 1000,
+        "duration_hours": 12,
+        "effect_type": "role",
+        "role_name": "Pink",
+        "storable": True,
+        "category": CATEGORY_POWERUPS,
+    },
+    "name_color_blue": {
+        "name": "Blue @ Color",
+        "description": "Change your name color to Blue for 12 hours.",
+        "price": 1000,
+        "duration_hours": 12,
+        "effect_type": "role",
+        "role_name": "Blue",
+        "storable": True,
+        "category": CATEGORY_POWERUPS,
+    },
+    "just_one_more": {
+        "name": "Just One More",
+        "description": "Forces JJ3571 to play just one more game...",
+        "price": 10000,
+        "duration_hours": 1,
+        "effect_type": "just_one_more",
+        "target_user_id": 321888250136363009,  # JJ3571's user ID
+        "storable": False,
+        "category": CATEGORY_GENERAL,
+    },
+    "art_request": {
+        "name": "TheGiftedNut - Art Request",
+        "description": "Commission custom artwork from TheGiftedNut.",
+        "price": 10000,
+        "duration_hours": 0,  # Duration is irrelevant for art requests
+        "effect_type": "art_request",
+        "target_user_id": 220656152994643969,  # Nut's user ID
+        "storable": False,
+        "category": CATEGORY_GENERAL,
+    },
 }
 
-class PowerupCog(commands.Cog, CogLogMixin):
+
+def items_in_category(category_id: str) -> dict:
+    return {
+        item_id: info
+        for item_id, info in SHOP_ITEMS.items()
+        if info.get("category") == category_id
+    }
+
+
+# Stored powerups only. General items live in SHOP_ITEMS and are not activated.
+POWERUP_TYPES = items_in_category(CATEGORY_POWERUPS)
+
+
+def art_request_artist_id() -> int | None:
+    """Discord user who fulfills the Art Request purchase."""
+    info = SHOP_ITEMS.get("art_request") or {}
+    target = info.get("target_user_id")
+    return int(target) if target is not None else None
+
+
+def user_is_art_request_artist(user_id: int) -> bool:
+    return user_id == art_request_artist_id()
+
+
+class ShopCog(commands.Cog, CogLogMixin):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.check_expired_powerups.start()
@@ -127,10 +182,17 @@ class PowerupCog(commands.Cog, CogLogMixin):
             )
             return [(r["powerup_type"], r["quantity"]) for r in rows]
 
-    async def get_user_total_inventory_count(self, user_id: int):
-        """Get the total number of powerups in a user's inventory"""
+    async def get_user_powerup_count(self, user_id: int, powerup_type: str) -> int:
+        """How many stored charges of one powerup type this user holds."""
         async with self.bot.pg_pool.acquire() as db:
-            n = await db.fetchval(f'SELECT COUNT(*) FROM "{_PU}".powerup_inventory WHERE user_id = $1', user_id)
+            n = await db.fetchval(
+                f'''
+                SELECT COUNT(*) FROM "{_PU}".powerup_inventory
+                WHERE user_id = $1 AND powerup_type = $2
+                ''',
+                user_id,
+                powerup_type,
+            )
             return int(n or 0)
 
     async def has_purchased_today(self, user_id: int, powerup_type: str):
@@ -295,7 +357,7 @@ class PowerupCog(commands.Cog, CogLogMixin):
         name = POWERUP_TYPES[powerup_type]["name"]
         return (
             f"{name} is already active. This one was returned to your inventory. "
-            "Use `/powerups inventory` again after it ends."
+            "Use `/shop inventory` again after it ends."
         )
 
     async def repel_activation_message(self, user_id: int) -> str:
@@ -442,55 +504,137 @@ class PowerupCog(commands.Cog, CogLogMixin):
                 except nextcord.HTTPException as e:
                     self.cog_print(f"Error: Failed to remove role '{role_name}': {e}")
     # --- Slash Commands ---
-    @nextcord.slash_command(name="powerups", description="Manage your powerups", guild_ids=[GUILD_ID])
-    async def powerups_group(self, interaction: nextcord.Interaction):
+    @nextcord.slash_command(name="shop", description="Clan Shop", guild_ids=[GUILD_ID])
+    async def shop_group(self, interaction: nextcord.Interaction):
         pass
 
-    @powerups_group.subcommand(name="purchase", description="Purchase powerups from the shop.")
-    async def purchase_powerup(self, interaction: nextcord.Interaction):
-        view = PowerupPurchaseView(self.bot, interaction.user.id, self)
-        embed = nextcord.Embed(title="Powerup Shop", description="Select a powerup and quantity to purchase.", color=nextcord.Color.blue())
-        if not POWERUP_TYPES:
-            embed.description = "The shop is currently empty."
+    @shop_group.subcommand(name="purchase", description="Buy from the Clan Shop.")
+    async def purchase_from_shop(self, interaction: nextcord.Interaction):
+        if not SHOP_ITEMS:
+            embed = nextcord.Embed(
+                title="Clan Shop",
+                description="The shop is empty right now.",
+                color=nextcord.Color.blue(),
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        for p_type, p_info in POWERUP_TYPES.items():
-            embed.add_field(name=f"{p_info['name']} ({p_info['price']} coins)", value=p_info['description'], inline=False)
-        
-        if not view.children: # No powerups to select
-             embed.description = "There are no powerups available for purchase at the moment."
-             await interaction.response.send_message(embed=embed, ephemeral=True)
-             return
+        view = ShopPurchaseView(self.bot, interaction.user.id, self)
+        await interaction.response.send_message(
+            embed=shop_catalog_embed(),
+            view=view,
+            ephemeral=True,
+        )
 
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @powerups_group.subcommand(name="inventory", description="View and use your owned powerups.")
-    async def inventory_powerup(self, interaction: nextcord.Interaction):
-        user_inventory = await self.get_user_inventory(interaction.user.id)
-        
-        embed = nextcord.Embed(title=f"{interaction.user.display_name}'s Powerup Inventory", color=nextcord.Color.green())
-        view = PowerupInventoryView(self.bot, interaction.user.id, self, user_inventory)
-
-        if not user_inventory or not view.children: # No items or no buttons generated
-            embed.description = "Your inventory is empty."
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        for powerup_type, quantity in user_inventory:
+    def render_inventory(
+        self,
+        display_name: str,
+        user_id: int,
+        inventory_items: list,
+        *,
+        empty_text: str,
+    ) -> tuple[nextcord.Embed, nextcord.ui.View | None]:
+        """Inventory embed, plus Art Requests when this user is the artist."""
+        show_art_requests = user_is_art_request_artist(user_id)
+        view = PowerupInventoryView(
+            self.bot,
+            user_id,
+            self,
+            inventory_items,
+            show_art_requests=show_art_requests,
+        )
+        embed = nextcord.Embed(
+            title=f"{display_name}'s Powerup Inventory",
+            color=nextcord.Color.green(),
+        )
+        for powerup_type, quantity in inventory_items:
             if quantity > 0:
                 powerup_info = POWERUP_TYPES.get(powerup_type)
                 if powerup_info:
-                    embed.add_field(name=f"{powerup_info['name']} (x{quantity})", value=powerup_info['description'], inline=False)
-        
-        if not embed.fields: # Should be caught by previous check, but as a safeguard
-            embed.description = "Your inventory is empty or contains no recognized powerups."
+                    embed.add_field(
+                        name=f"{powerup_info['name']} (x{quantity})",
+                        value=powerup_info["description"],
+                        inline=False,
+                    )
+        if not embed.fields:
+            if inventory_items:
+                embed.description = "Your inventory is empty or contains no recognized powerups."
+            else:
+                embed.description = empty_text
+        if not view.children:
+            return embed, None
+        return embed, view
+
+    async def present_art_requests(self, interaction: nextcord.Interaction) -> None:
+        """Art-request queue for the purchase's target user."""
+        artist_id = art_request_artist_id()
+        if artist_id is None or interaction.user.id != artist_id:
+            await interaction.response.send_message(
+                "Art requests are only available to the artist.",
+                ephemeral=True,
+            )
+            return
+
+        pending_requests = await self.get_pending_art_requests(artist_id)
+        if not pending_requests:
+            embed = nextcord.Embed(
+                title="🎨 Art Request Management",
+                description="No pending art requests at this time!",
+                color=nextcord.Color.green(),
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
+        embed = nextcord.Embed(
+            title="🎨 Art Request Management",
+            description=f"You have {len(pending_requests)} pending art request(s)",
+            color=nextcord.Color.purple(),
+        )
+        guild = interaction.guild
+        for request in pending_requests[:5]:
+            request_id, requester_user_id, request_description, purchase_date, amount_paid = request
+            requester = guild.get_member(requester_user_id) if guild else None
+            requester_name = requester.display_name if requester else f"User {requester_user_id}"
+            embed.add_field(
+                name=f"Request #{request_id} - {requester_name}",
+                value=(
+                    f"💰 {amount_paid} 🪙\n📅 {purchase_date[:10]}\n"
+                    f"📝 {request_description[:150]}{'...' if len(request_description) > 150 else ''}"
+                ),
+                inline=False,
+            )
+        if len(pending_requests) > 5:
+            embed.add_field(
+                name="📋 Additional Requests",
+                value=f"+ {len(pending_requests) - 5} more pending requests",
+                inline=False,
+            )
+
+        oldest_request = pending_requests[0]
+        request_details = await self.get_art_request_details(oldest_request[0])
+        view = ArtRequestManagementView(self, request_details) if request_details else None
+        if view is not None:
+            embed.set_footer(text="Use the buttons below to manage the oldest request.")
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @shop_group.subcommand(name="inventory", description="View and use powerups you own.")
+    async def inventory_powerup(self, interaction: nextcord.Interaction):
+        user_inventory = await self.get_user_inventory(interaction.user.id)
+        embed, view = self.render_inventory(
+            interaction.user.display_name,
+            interaction.user.id,
+            user_inventory,
+            empty_text="Your inventory is empty.",
+        )
+        # nextcord calls view.to_components() whenever view is passed, including None.
+        if view is None:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @powerups_group.subcommand(name="active", description="View and manage your active powerups.")
+    @shop_group.subcommand(name="active", description="View and manage your active powerups.")
     async def active_powerups_command(self, interaction: nextcord.Interaction):
         user_id = interaction.user.id
         active_powerups_data = await self.get_active_powerups_for_user(user_id)
@@ -544,66 +688,6 @@ class PowerupCog(commands.Cog, CogLogMixin):
 
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @powerups_group.subcommand(name="art-requests", description="Manage art requests (TheGiftedNut only)")
-    async def art_requests_command(self, interaction: nextcord.Interaction):
-        """Admin command for Nut to manage art requests"""
-        nut_user_id = 220656152994643969  # Nut's user ID
-        
-        if interaction.user.id != nut_user_id:
-            await interaction.response.send_message("⛔ This command is only available to TheGiftedNut!", ephemeral=True)
-            return
-        
-        # Get all pending art requests
-        pending_requests = await self.get_pending_art_requests(nut_user_id)
-        
-        if not pending_requests:
-            embed = nextcord.Embed(
-                title="🎨 Art Request Management",
-                description="No pending art requests at this time!",
-                color=nextcord.Color.green()
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        embed = nextcord.Embed(
-            title="🎨 Art Request Management",
-            description=f"You have {len(pending_requests)} pending art request(s)",
-            color=nextcord.Color.purple()
-        )
-        
-        # Show details of up to 5 requests
-        for i, request in enumerate(pending_requests[:5]):
-            request_id, requester_user_id, request_description, purchase_date, amount_paid = request
-            guild = interaction.guild
-            requester = guild.get_member(requester_user_id) if guild else None
-            requester_name = requester.display_name if requester else f"User {requester_user_id}"
-            
-            embed.add_field(
-                name=f"Request #{request_id} - {requester_name}",
-                value=f"💰 {amount_paid} 🪙\n📅 {purchase_date[:10]}\n📝 {request_description[:150]}{'...' if len(request_description) > 150 else ''}",
-                inline=False
-            )
-        
-        if len(pending_requests) > 5:
-            embed.add_field(
-                name="📋 Additional Requests",
-                value=f"+ {len(pending_requests) - 5} more pending requests",
-                inline=False
-            )
-        
-        # Create management view for the oldest request
-        if pending_requests:
-            oldest_request = pending_requests[0]  # First in list is oldest
-            request_details = await self.get_art_request_details(oldest_request[0])
-            if request_details:
-                view = ArtRequestManagementView(self, request_details)
-                embed.set_footer(text="Use the buttons below to manage the oldest request.")
-                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
     # --- Background Task ---
     @tasks.loop(minutes=1)
     async def check_expired_powerups(self):
@@ -651,11 +735,12 @@ class PowerupCog(commands.Cog, CogLogMixin):
 
     @tasks.loop(hours=24)  # Run once per day
     async def daily_art_request_reminder(self):
-        """Send daily reminder to Nut about pending art requests"""
-        nut_user_id = 220656152994643969  # Nut's user ID
-        
-        # Get pending art requests for Nut
-        pending_requests = await self.get_pending_art_requests(nut_user_id)
+        """Send daily reminder to the art-request artist about pending requests."""
+        artist_id = art_request_artist_id()
+        if artist_id is None:
+            return
+
+        pending_requests = await self.get_pending_art_requests(artist_id)
         
         if not pending_requests:
             return  # No pending requests, no reminder needed
@@ -669,14 +754,14 @@ class PowerupCog(commands.Cog, CogLogMixin):
         if not guild:
             return
         
-        nut_user = guild.get_member(nut_user_id)
-        if not nut_user:
+        artist = guild.get_member(artist_id)
+        if not artist:
             return
         
         # Create reminder embed
         embed = nextcord.Embed(
             title="🎨 Daily Art Request Reminder",
-            description=f"{nut_user.mention}, you have {len(pending_requests)} pending art request(s)!",
+            description=f"{artist.mention}, you have {len(pending_requests)} pending art request(s)!",
             color=nextcord.Color.purple()
         )
         
@@ -705,7 +790,7 @@ class PowerupCog(commands.Cog, CogLogMixin):
             request_details = await self.get_art_request_details(most_recent[0])
             if request_details:
                 view = ArtRequestManagementView(self, request_details)
-                embed.set_footer(text="Use the buttons below to manage the oldest request, or use /powerups art-requests for full management.")
+                embed.set_footer(text="Use the buttons below to manage the oldest request, or open /shop inventory for the queue.")
                 await bot_spam_channel.send(embed=embed, view=view)
             else:
                 await bot_spam_channel.send(embed=embed)
@@ -716,141 +801,206 @@ class PowerupCog(commands.Cog, CogLogMixin):
     async def before_daily_art_request_reminder(self):
         await self.bot.wait_until_ready()
 
+def coin_price(amount: int) -> str:
+    return f"🪙 {amount}"
+
+
+def item_option_label(info: dict) -> str:
+    tag = SHOP_CATEGORIES[info["category"]]["tag"]
+    return f"[{tag}] {info['name']}  - {coin_price(info['price'])}"
+
+
+def shop_catalog_embed(
+    *,
+    selected_item_id: str | None = None,
+    quantity: int = 1,
+    description: str | None = None,
+) -> nextcord.Embed:
+    embed = nextcord.Embed(title="Clan Shop", color=nextcord.Color.blue())
+    info = SHOP_ITEMS.get(selected_item_id) if selected_item_id else None
+    if description is not None:
+        embed.description = description
+    elif info:
+        embed.description = f"**Selected:** {item_option_label(info)}\n{info['description']}"
+        if not info.get("storable", True):
+            embed.description += "\n\nThis happens as soon as you buy it."
+        elif quantity > 1:
+            total_cost = info["price"] * quantity
+            embed.add_field(
+                name="Total",
+                value=f"{coin_price(total_cost)} (x{quantity})",
+                inline=True,
+            )
+    else:
+        embed.description = "Pick a category, then an item to buy."
+
+    for item in SHOP_ITEMS.values():
+        embed.add_field(name=item_option_label(item), value=item["description"], inline=False)
+    return embed
+
+
+def item_select_options(category_id: str) -> list[nextcord.SelectOption]:
+    return [
+        nextcord.SelectOption(
+            label=item_option_label(info)[:100],
+            value=item_id,
+            description=info["description"][:100],
+        )
+        for item_id, info in items_in_category(category_id).items()
+    ]
+
+
+def category_has_storable(category_id: str) -> bool:
+    return any(info.get("storable", True) for info in items_in_category(category_id).values())
+
+
 # --- UI Views ---
-class PowerupPurchaseView(nextcord.ui.View):
-    def __init__(self, bot: commands.Bot, user_id: int, cog: PowerupCog, timeout=180):
+class ShopPurchaseView(nextcord.ui.View):
+    def __init__(self, bot: commands.Bot, user_id: int, cog: ShopCog, timeout=180):
         super().__init__(timeout=timeout)
         self.bot = bot
         self.user_id = user_id
         self.cog = cog
-        self.selected_powerup = None
+        self.selected_category = CATEGORY_POWERUPS
+        self.selected_item = None
         self.selected_quantity = 1
 
-        powerup_options = []
-        for p_type, p_info in POWERUP_TYPES.items():
-            powerup_options.append(nextcord.SelectOption(
-                label=f"{p_info['name']} ({p_info['price']} coins)",
-                value=p_type,
-                description=p_info['description'][:100]
-            ))
-        
-        if powerup_options:
-            powerup_select = PowerupSelect(powerup_options)
-            self.add_item(powerup_select)
-            
-            # Only add quantity selector if there are storable powerups
-            has_storable = any(POWERUP_TYPES.get(p_type, {}).get("storable", True) for p_type in POWERUP_TYPES.keys())
-            if has_storable:
-                self.add_item(QuantitySelect())
-            
-            self.add_item(PurchaseButton(self.cog))
-        else:
-            pass
+        self.add_item(CategorySelect())
+        self.add_item(ShopItemSelect(item_select_options(CATEGORY_POWERUPS)))
+        if category_has_storable(CATEGORY_POWERUPS):
+            self.add_item(QuantitySelect())
+        self.add_item(PurchaseButton(self.cog))
 
-class PowerupSelect(nextcord.ui.Select):
-    def __init__(self, options: list[nextcord.SelectOption]):
-        super().__init__(placeholder="Choose a powerup...", min_values=1, max_values=1, options=options, custom_id="powerup_select")
+
+class CategorySelect(nextcord.ui.Select):
+    def __init__(self):
+        options = [
+            nextcord.SelectOption(
+                label=info["name"],
+                value=category_id,
+                description=info["description"][:100],
+                default=category_id == CATEGORY_POWERUPS,
+            )
+            for category_id, info in SHOP_CATEGORIES.items()
+        ]
+        super().__init__(
+            placeholder="Choose a category...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="shop_category_select",
+        )
 
     async def callback(self, interaction: nextcord.Interaction):
-        self.view.selected_powerup = self.values[0]
-        
-        # For non-storable powerups, set quantity to 1 and disable quantity selector
-        powerup_info = POWERUP_TYPES.get(self.values[0])
-        if powerup_info and not powerup_info.get("storable", True):
+        category_id = self.values[0]
+        view: ShopPurchaseView = self.view
+        view.selected_category = category_id
+        view.selected_item = None
+        view.selected_quantity = 1
+        category = SHOP_CATEGORIES[category_id]
+        self.placeholder = category["name"]
+        for option in self.options:
+            option.default = option.value == category_id
+
+        for child in view.children:
+            if isinstance(child, ShopItemSelect):
+                child.options = item_select_options(category_id)
+                child.placeholder = f"Choose from {category['name']}..."
+                for option in child.options:
+                    option.default = False
+            elif isinstance(child, QuantitySelect):
+                child.disabled = not category_has_storable(category_id)
+                child.placeholder = "Quantity..."
+                for option in child.options:
+                    option.default = option.value == "1"
+
+        embed = shop_catalog_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ShopItemSelect(nextcord.ui.Select):
+    def __init__(self, options: list[nextcord.SelectOption]):
+        super().__init__(
+            placeholder="Choose an item...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="shop_item_select",
+        )
+
+    async def callback(self, interaction: nextcord.Interaction):
+        item_id = self.values[0]
+        self.view.selected_item = item_id
+        info = SHOP_ITEMS.get(item_id)
+        storable = bool(info and info.get("storable", True))
+        if not storable:
             self.view.selected_quantity = 1
-            # Disable quantity selector for non-storable items
-            for item in self.view.children:
-                if isinstance(item, QuantitySelect):
-                    item.disabled = True
-        else:
-            # Re-enable quantity selector for storable items
-            for item in self.view.children:
-                if isinstance(item, QuantitySelect):
-                    item.disabled = False
-        
-        # Update the placeholder to show current selection
-        self.placeholder = f"{powerup_info['name']}" if powerup_info else "Choose a powerup..."
-        
-        # Update quantity selector placeholder too
-        for item in self.view.children:
-            if isinstance(item, QuantitySelect):
-                item.placeholder = f"Quantity: {self.view.selected_quantity}"
-        
-        # Update the embed to show the selected powerup
-        embed = nextcord.Embed(title="Powerup Shop", color=nextcord.Color.blue())
-        
-        if powerup_info:
-            embed.description = f"**Selected:** {powerup_info['name']} ({powerup_info['price']} coins)\n{powerup_info['description']}"
-            if not powerup_info.get("storable", True):
-                embed.description += "\n\n⚠️ This powerup activates immediately upon purchase."
-            
-            # Show total cost if quantity > 1
-            if self.view.selected_quantity > 1:
-                total_cost = powerup_info['price'] * self.view.selected_quantity
-                embed.add_field(name="Total Cost", value=f"{total_cost} coins (x{self.view.selected_quantity})", inline=True)
-        
-        # Still show all available powerups
-        for p_type, p_info in POWERUP_TYPES.items():
-            embed.add_field(name=f"{p_info['name']} ({p_info['price']} coins)", value=p_info['description'], inline=False)
-        
+
+        for child in self.view.children:
+            if isinstance(child, QuantitySelect):
+                child.disabled = not storable
+                child.placeholder = f"Quantity: {self.view.selected_quantity}"
+
+        self.placeholder = info["name"] if info else "Choose an item..."
+        for option in self.options:
+            option.default = option.value == item_id
+
+        embed = shop_catalog_embed(
+            selected_item_id=item_id,
+            quantity=self.view.selected_quantity,
+        )
         await interaction.response.edit_message(embed=embed, view=self.view)
+
 
 class QuantitySelect(nextcord.ui.Select):
     def __init__(self):
         options = [
             nextcord.SelectOption(label=str(i), value=str(i))
-            for i in range(1, MAX_INVENTORY_POWERUPS + 1)
+            for i in range(1, MAX_INVENTORY_PER_POWERUP + 1)
         ]
-        super().__init__(placeholder="Select quantity (default 1)...", min_values=1, max_values=1, options=options, custom_id="quantity_select")
-    
+        super().__init__(
+            placeholder="Select quantity (default 1)...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="quantity_select",
+        )
+
     async def callback(self, interaction: nextcord.Interaction):
         self.view.selected_quantity = int(self.values[0])
-        
-        # Update the placeholder to show current selection
         self.placeholder = f"Quantity: {self.view.selected_quantity}"
-        
-        # Update the embed if a powerup is selected
-        if self.view.selected_powerup:
-            powerup_info = POWERUP_TYPES.get(self.view.selected_powerup)
-            if powerup_info:
-                embed = nextcord.Embed(title="Powerup Shop", color=nextcord.Color.blue())
-                embed.description = f"**Selected:** {powerup_info['name']} ({powerup_info['price']} coins)\n{powerup_info['description']}"
-                
-                if not powerup_info.get("storable", True):
-                    embed.description += "\n\n⚠️ This powerup activates immediately upon purchase."
-                
-                # Show total cost
-                total_cost = powerup_info['price'] * self.view.selected_quantity
-                embed.add_field(name="Total Cost", value=f"{total_cost} coins (x{self.view.selected_quantity})", inline=True)
-                
-                # Show all available powerups
-                for p_type, p_info in POWERUP_TYPES.items():
-                    embed.add_field(name=f"{p_info['name']} ({p_info['price']} coins)", value=p_info['description'], inline=False)
-                
-                await interaction.response.edit_message(embed=embed, view=self.view)
-                return
-        
+        for option in self.options:
+            option.default = option.value == self.values[0]
+
+        if self.view.selected_item:
+            embed = shop_catalog_embed(
+                selected_item_id=self.view.selected_item,
+                quantity=self.view.selected_quantity,
+            )
+            await interaction.response.edit_message(embed=embed, view=self.view)
+            return
+
         await interaction.response.defer()
 
 class PurchaseButton(nextcord.ui.Button):
-    def __init__(self, powerup_cog_instance: PowerupCog):
+    def __init__(self, powerup_cog_instance: ShopCog):
         super().__init__(label="Purchase", style=nextcord.ButtonStyle.green, custom_id="purchase_button")
         self.powerup_cog_instance = powerup_cog_instance
 
     async def callback(self, interaction: nextcord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        if not self.view.selected_powerup:
-            await interaction.followup.send("Please select a powerup first.", ephemeral=True)
+        if not self.view.selected_item:
+            await interaction.followup.send("Pick an item first.", ephemeral=True)
             return
         
-        selected_powerup_type = self.view.selected_powerup
-        selected_quantity = self.view.selected_quantity
-
-        powerup_info = POWERUP_TYPES.get(selected_powerup_type)
+        selected_item_id = self.view.selected_item
+        powerup_info = SHOP_ITEMS.get(selected_item_id)
         if not powerup_info:
-            await interaction.followup.send("Invalid powerup selected.", ephemeral=True)
+            await interaction.followup.send("That item is not in the shop.", ephemeral=True)
             return
+
+        selected_quantity = 1 if not powerup_info.get("storable", True) else self.view.selected_quantity
 
         economy_cog = self.powerup_cog_instance.bot.get_cog('Economy')
         if not economy_cog or not hasattr(economy_cog, 'get_user_balance') or not hasattr(economy_cog, 'deduct_user_balance'):
@@ -864,12 +1014,12 @@ class PurchaseButton(nextcord.ui.Button):
             await interaction.followup.send(f"You need {total_cost} coins, but have {user_balance or 0}.", ephemeral=True)
             return
 
-        # Handle non-storable powerups (like "Just one more")
+        # General items are not stored. They run at checkout.
         if not powerup_info.get("storable", True):
             # Special handling for just_one_more powerup
-            if selected_powerup_type == "just_one_more":
+            if selected_item_id == "just_one_more":
                 # Check if user has already purchased this powerup today
-                if await self.powerup_cog_instance.has_purchased_today(interaction.user.id, selected_powerup_type):
+                if await self.powerup_cog_instance.has_purchased_today(interaction.user.id, selected_item_id):
                     embed = nextcord.Embed(
                         title="⏰ Daily Limit Reached",
                         description=f"You can only purchase **Just One More** once per day (PST timezone)!\n\nNext purchase available tomorrow at midnight PST.",
@@ -895,7 +1045,7 @@ class PurchaseButton(nextcord.ui.Button):
                 success = await economy_cog.deduct_user_balance(interaction.user.id, total_cost)
                 if success:
                     # Record the daily purchase
-                    await self.powerup_cog_instance.record_daily_purchase(interaction.user.id, selected_powerup_type)
+                    await self.powerup_cog_instance.record_daily_purchase(interaction.user.id, selected_item_id)
                     
                     # Add money to JJ3571's trust fund
                     await economy_cog.add_to_trust_fund(powerup_info["target_user_id"], total_cost)
@@ -923,7 +1073,7 @@ class PurchaseButton(nextcord.ui.Button):
                     self.view.stop()
                 else:
                     await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
-            elif selected_powerup_type == "art_request":
+            elif selected_item_id == "art_request":
                 # Show art request modal for user to input their request
                 modal = ArtRequestModal(self.powerup_cog_instance, economy_cog, powerup_info, total_cost)
                 
@@ -939,21 +1089,26 @@ class PurchaseButton(nextcord.ui.Button):
                 self.view.stop()
                 return
             else:
-                await interaction.followup.send("This powerup type is not yet implemented.", ephemeral=True)
+                await interaction.followup.send("This item is not set up yet.", ephemeral=True)
             return
 
-        # Check inventory limit - only for storable powerups
-        current_inventory_count = await self.powerup_cog_instance.get_user_total_inventory_count(interaction.user.id)
-        if current_inventory_count + selected_quantity > MAX_INVENTORY_POWERUPS:
-            remaining_slots = max(0, MAX_INVENTORY_POWERUPS - current_inventory_count)
+        # Each storable type has its own cap.
+        owned = await self.powerup_cog_instance.get_user_powerup_count(
+            interaction.user.id, selected_item_id
+        )
+        if owned + selected_quantity > MAX_INVENTORY_PER_POWERUP:
+            remaining_slots = max(0, MAX_INVENTORY_PER_POWERUP - owned)
+            name = powerup_info["name"]
             if remaining_slots == 0:
                 await interaction.followup.send(
-                    f"Your inventory is full! You can only hold {MAX_INVENTORY_POWERUPS} powerups at a time. Use some powerups first.",
+                    f"You already have {MAX_INVENTORY_PER_POWERUP} **{name}**. "
+                    f"You can hold {MAX_INVENTORY_PER_POWERUP} of each powerup. Use some first.",
                     ephemeral=True,
                 )
             else:
                 await interaction.followup.send(
-                    f"You can only purchase {remaining_slots} more powerup(s). Your inventory limit is {MAX_INVENTORY_POWERUPS} total.",
+                    f"You can only purchase {remaining_slots} more **{name}**. "
+                    f"You can hold {MAX_INVENTORY_PER_POWERUP} of each powerup.",
                     ephemeral=True,
                 )
             return
@@ -962,14 +1117,14 @@ class PurchaseButton(nextcord.ui.Button):
         
         if success:
             for _ in range(selected_quantity):
-                await self.powerup_cog_instance.add_powerup_to_inventory(interaction.user.id, selected_powerup_type)
+                await self.powerup_cog_instance.add_powerup_to_inventory(interaction.user.id, selected_item_id)
             # Create success message with optional activate button
             purchase_description = (
                 f"Purchased {selected_quantity}x **{powerup_info['name']}** for {total_cost} coins!"
             )
             if powerup_info.get("single_active"):
                 purchase_description += (
-                    "\n\nOnly one can be active at a time. When it ends, use `/powerups inventory` to start the next one."
+                    "\n\nOnly one can be active at a time. When it ends, use `/shop inventory` to start the next one."
                 )
             success_embed = nextcord.Embed(
                 title="✅ Purchase Successful!",
@@ -979,7 +1134,7 @@ class PurchaseButton(nextcord.ui.Button):
             
             # Add activate button for storable powerups
             if powerup_info.get("storable", True):
-                activate_view = ActivateNowView(selected_powerup_type, powerup_info['name'], self.powerup_cog_instance)
+                activate_view = ActivateNowView(selected_item_id, powerup_info['name'], self.powerup_cog_instance)
                 await interaction.followup.send(embed=success_embed, view=activate_view, ephemeral=True)
             else:
                 await interaction.followup.send(embed=success_embed, ephemeral=True)
@@ -988,8 +1143,30 @@ class PurchaseButton(nextcord.ui.Button):
         else:
             await interaction.followup.send("Transaction failed. Please try again.", ephemeral=True)
 
+class ArtRequestsButton(nextcord.ui.Button):
+    def __init__(self, cog: ShopCog):
+        super().__init__(
+            label="Art Requests",
+            style=nextcord.ButtonStyle.secondary,
+            custom_id="shop_art_requests",
+        )
+        self.cog = cog
+
+    async def callback(self, interaction: nextcord.Interaction):
+        await self.cog.present_art_requests(interaction)
+
+
 class PowerupInventoryView(nextcord.ui.View):
-    def __init__(self, bot: commands.Bot, user_id: int, cog: PowerupCog, inventory_items: list, timeout=180):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        user_id: int,
+        cog: ShopCog,
+        inventory_items: list,
+        timeout=180,
+        *,
+        show_art_requests: bool = False,
+    ):
         super().__init__(timeout=timeout)
         self.bot = bot
         self.user_id = user_id
@@ -1000,14 +1177,16 @@ class PowerupInventoryView(nextcord.ui.View):
                 powerup_info = POWERUP_TYPES.get(powerup_type)
                 if powerup_info:
                     self.add_item(UsePowerupButton(powerup_type, powerup_info['name'], self.cog))
+        if show_art_requests:
+            self.add_item(ArtRequestsButton(self.cog))
 
 class ActivateNowView(nextcord.ui.View):
-    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog, timeout=300):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: ShopCog, timeout=300):
         super().__init__(timeout=timeout)
         self.add_item(ActivateNowButton(powerup_type, powerup_name, cog))
 
 class ActivateNowButton(nextcord.ui.Button):
-    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: ShopCog):
         super().__init__(label=f"🚀 Activate {powerup_name}", style=nextcord.ButtonStyle.success, custom_id=f"activate_{powerup_type}")
         self.powerup_type = powerup_type
         self.cog = cog
@@ -1068,7 +1247,7 @@ class ActivateNowButton(nextcord.ui.Button):
                 await interaction.followup.send("Failed to activate powerup. It has been returned to your inventory.", ephemeral=True)
 
 class UsePowerupButton(nextcord.ui.Button):
-    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: ShopCog):
         super().__init__(label=f"Use {powerup_name}", style=nextcord.ButtonStyle.primary, custom_id=f"use_{powerup_type}")
         self.powerup_type = powerup_type
         self.cog = cog
@@ -1098,25 +1277,14 @@ class UsePowerupButton(nextcord.ui.Button):
             else:
                 await interaction.followup.send(f"Used {powerup_info['name']}! Lasts {powerup_info['duration_hours']} hour(s).", ephemeral=True)
             
-            # Refresh the inventory message by re-generating it
             new_inventory_items = await self.cog.get_user_inventory(interaction.user.id)
-            new_embed = nextcord.Embed(title=f"{interaction.user.display_name}'s Powerup Inventory", color=nextcord.Color.green())
-            new_view = PowerupInventoryView(self.cog.bot, interaction.user.id, self.cog, new_inventory_items)
-
-            if not new_inventory_items or not new_view.children:
-                new_embed.description = "Your inventory is now empty."
-                await interaction.edit_original_message(embed=new_embed, view=None)
-            else:
-                for p_type, quantity in new_inventory_items:
-                    if quantity > 0:
-                        p_info = POWERUP_TYPES.get(p_type)
-                        if p_info:
-                            new_embed.add_field(name=f"{p_info['name']} (x{quantity})", value=p_info['description'], inline=False)
-                if not new_embed.fields: # Safeguard
-                     new_embed.description = "Your inventory is now empty."
-                     await interaction.edit_original_message(embed=new_embed, view=None)
-                else:
-                    await interaction.edit_original_message(embed=new_embed, view=new_view)
+            new_embed, new_view = self.cog.render_inventory(
+                interaction.user.display_name,
+                interaction.user.id,
+                new_inventory_items,
+                empty_text="Your inventory is now empty.",
+            )
+            await interaction.edit_original_message(embed=new_embed, view=new_view)
         else:
             await self.cog.add_powerup_to_inventory(interaction.user.id, self.powerup_type)
             if powerup_info.get("single_active") and await self.cog.is_powerup_active(
@@ -1129,7 +1297,7 @@ class UsePowerupButton(nextcord.ui.Button):
                 await interaction.followup.send(f"Failed to activate {powerup_info['name']}. Returned to inventory. (Check bot console for errors like missing roles/permissions).", ephemeral=True)
 
 class ActivePowerupsView(nextcord.ui.View):
-    def __init__(self, bot: commands.Bot, user_id: int, cog: PowerupCog, active_powerups: list, timeout=180):
+    def __init__(self, bot: commands.Bot, user_id: int, cog: ShopCog, active_powerups: list, timeout=180):
         super().__init__(timeout=timeout)
         self.bot = bot
         self.user_id = user_id
@@ -1143,7 +1311,7 @@ class ActivePowerupsView(nextcord.ui.View):
                     self.add_item(DeactivatePowerupButton(powerup_type, powerup_info['name'], self.cog))
 
 class DeactivatePowerupButton(nextcord.ui.Button):
-    def __init__(self, powerup_type: str, powerup_name: str, cog: PowerupCog):
+    def __init__(self, powerup_type: str, powerup_name: str, cog: ShopCog):
         super().__init__(label=f"Deactivate {powerup_name}", style=nextcord.ButtonStyle.red, custom_id=f"deactivate_{powerup_type}")
         self.powerup_type = powerup_type
         self.cog = cog
@@ -1216,7 +1384,7 @@ class ArtRequestTriggerView(nextcord.ui.View):
         await interaction.response.send_modal(self.modal)
 
 class ArtRequestModal(nextcord.ui.Modal):
-    def __init__(self, powerup_cog_instance: PowerupCog, economy_cog, powerup_info: dict, total_cost: int):
+    def __init__(self, powerup_cog_instance: ShopCog, economy_cog, powerup_info: dict, total_cost: int):
         super().__init__("Art Request - TheGiftedNut", timeout=300)  # 5 minute timeout
         self.powerup_cog_instance = powerup_cog_instance
         self.economy_cog = economy_cog
@@ -1274,7 +1442,7 @@ class ArtRequestModal(nextcord.ui.Modal):
             await bot_spam_channel.send(embed=public_embed)
 
 class ArtRequestManagementView(nextcord.ui.View):
-    def __init__(self, powerup_cog_instance: PowerupCog, request_details: tuple):
+    def __init__(self, powerup_cog_instance: ShopCog, request_details: tuple):
         super().__init__(timeout=None)  # Persistent view
         self.powerup_cog_instance = powerup_cog_instance
         self.request_id, self.requester_user_id, self.artist_user_id, self.request_description, \
@@ -1324,7 +1492,7 @@ class ArtRequestManagementView(nextcord.ui.View):
         await interaction.response.send_modal(modal)
 
 class ArtRejectionModal(nextcord.ui.Modal):
-    def __init__(self, powerup_cog_instance: PowerupCog, request_id: int, requester_user_id: int, amount_paid: int):
+    def __init__(self, powerup_cog_instance: ShopCog, request_id: int, requester_user_id: int, amount_paid: int):
         super().__init__("Reject Art Request", timeout=300)
         self.powerup_cog_instance = powerup_cog_instance
         self.request_id = request_id
@@ -1363,7 +1531,7 @@ class ArtRejectionModal(nextcord.ui.Modal):
         await interaction.followup.send(embed=embed)
 
 async def setup(bot):
-    cog_instance = PowerupCog(bot)
+    cog_instance = ShopCog(bot)
     await cog_instance.create_tables()
     bot.add_cog(cog_instance)
-    boot_print("PowerupCog has been loaded.")
+    boot_print("ShopCog has been loaded.")

@@ -103,7 +103,7 @@ Channels, roles, and IDs come from environment variables. See [docs/CONFIGURATIO
 - [Information](#information)
 - [Administration](#administration)
 - [Request system](#request-system)
-- [Powerups](#powerups)
+- [Clan Shop](#clan-shop)
 - [Music and local audio](#music-and-local-audio)
 - [More production commands](#more-production-commands)
 - [How coins work](#how-coins-work)
@@ -336,17 +336,13 @@ Submit and manage bug reports.
 
 Enable, disable, list, or reload selected admin-only commands.
 
-### Powerups
+### Clan Shop
 
-Powerups are purchasable features such as cosmetic name colors or waterboard defense.
+The Clan Shop sells powerups and general items. Powerups (pardon, repel, name colors) are held and turned on later. General items (Just One More, art requests) happen at checkout.
 
-#### `/powerups purchase` / `/powerups inventory` / `/powerups active`
+#### `/shop purchase` / `/shop inventory` / `/shop active`
 
-Browse, buy, and manage powerups.
-
-#### `/powerups art-requests` (restricted)
-
-Art commission requests for configured maintainers.
+Browse the shop, buy items, and manage powerups you own. The art-request artist also gets an Art Requests button on `/shop inventory`.
 
 ### Music and local audio
 
@@ -377,7 +373,7 @@ Crafty Controller integration: server list, start, stop, restart, status, backup
 
 ### How coins work
 
-Users earn coins from voice activity, text activity, special events, and gambling. Users spend coins on gambling, waterboarding, character messages, powerups, and community wagers.
+Users earn coins from voice activity, text activity, special events, and gambling. Users spend coins on gambling, waterboarding, character messages, the Clan Shop, and community wagers.
 
 ### Permission levels
 

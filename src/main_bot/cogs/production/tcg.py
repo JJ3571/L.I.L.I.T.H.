@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import re
 import time
@@ -28,12 +30,327 @@ SCRYFALL_HEADERS = {
 # Minimum seconds between replies in channels listed by MTG_AUTOLINK_COOLDOWN_CHANNEL_IDS (not per-user).
 MTG_AUTOLINK_COOLDOWN_SEC = 90
 
+# Discord string selects accept at most 25 options.
+_SELECT_MAX = 25
+
+# Card and set menus stay valid after a restart: timeout is None, these ids
+# never change, and TCG.register_persistent_views() registers one view for
+# every lookup post. The chosen card, printing, and page are read off the message.
+TCG_CARD_SELECT_ID = "tcg_card_select"
+TCG_SET_SELECT_ID = "tcg_set_select"
+TCG_SET_PREV_ID = "tcg_set_prev"
+TCG_SET_NEXT_ID = "tcg_set_next"
+_PRINTING_PAGE_RE = re.compile(r"Printings (\d+)-\d+ of (\d+)")
+
+
+def card_select_options(names: list[str]) -> list[nextcord.SelectOption]:
+    """Build card-name options. Values are the names the lookup will search."""
+    options: list[nextcord.SelectOption] = []
+    seen: set[str] = set()
+    for name in names:
+        value = str(name)[:100]
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        options.append(nextcord.SelectOption(label=value, value=value))
+        if len(options) >= _SELECT_MAX:
+            break
+    return options
+
+
+def set_select_options(printings: list[dict]) -> list[nextcord.SelectOption]:
+    """One option per printing. Callers page this list down to 25 before sending it."""
+    options: list[nextcord.SelectOption] = []
+    seen: set[str] = set()
+    for printing in printings:
+        value = str(printing.get("id") or "")[:100]
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        label = str(printing.get("set_name") or "Unknown set")[:100]
+        bits: list[str] = []
+        code = printing.get("set")
+        number = printing.get("collector_number")
+        if code:
+            bits.append(str(code).upper())
+        if number:
+            bits.append(f"#{number}")
+        description = " ".join(bits)[:100] or None
+        options.append(
+            nextcord.SelectOption(label=label, value=value, description=description)
+        )
+    return options
+
+
+def page_count(total: int) -> int:
+    if total <= 0:
+        return 1
+    return (total + _SELECT_MAX - 1) // _SELECT_MAX
+
+
+def page_containing(options: list[nextcord.SelectOption], value: str | None) -> int:
+    if not value:
+        return 0
+    index = next((i for i, opt in enumerate(options) if opt.value == value), None)
+    if index is None:
+        return 0
+    return index // _SELECT_MAX
+
+
+def option_page(
+    options: list[nextcord.SelectOption],
+    page: int,
+) -> tuple[list[nextcord.SelectOption], int, int]:
+    """Return one Discord-sized page, clamped into range, plus the page count."""
+    pages = page_count(len(options))
+    if not options:
+        return [], 0, 1
+    current = min(max(page, 0), pages - 1)
+    start = current * _SELECT_MAX
+    return options[start : start + _SELECT_MAX], current, pages
+
+
+def printing_footer(set_name: str, *, page: int, total: int) -> str:
+    name = set_name or "Unknown set"
+    if total <= _SELECT_MAX:
+        return f"Set: {name}"
+    start = page * _SELECT_MAX + 1
+    end = min(total, (page + 1) * _SELECT_MAX)
+    return f"Set: {name}\nPrintings {start}-{end} of {total}"
+
+
+def page_state_from_footer(text: str | None) -> tuple[int, int]:
+    """Page index and total printings. Total is 0 when the footer has no page line."""
+    match = _PRINTING_PAGE_RE.search(text or "")
+    if not match:
+        return 0, 0
+    start = int(match.group(1))
+    total = int(match.group(2))
+    return max(0, (start - 1) // _SELECT_MAX), total
+
+
+def footer_text(embed: nextcord.Embed | None) -> str:
+    if embed is None:
+        return ""
+    footer = getattr(embed, "footer", None)
+    if footer is None:
+        return ""
+    return str(getattr(footer, "text", "") or "")
+
+
+def with_selection(
+    options: list[nextcord.SelectOption],
+    selected: str | None,
+) -> list[nextcord.SelectOption]:
+    """Copy options and check the one the user picked."""
+    marked: list[nextcord.SelectOption] = []
+    for opt in options[:_SELECT_MAX]:
+        marked.append(
+            nextcord.SelectOption(
+                label=opt.label[:100],
+                value=(opt.value or opt.label)[:100],
+                description=opt.description[:100] if opt.description else None,
+                emoji=opt.emoji,
+                default=selected is not None and opt.value == selected,
+            )
+        )
+    return marked
+
+
+def chosen_value(options: list[nextcord.SelectOption]) -> str | None:
+    for opt in options:
+        if opt.default:
+            return opt.value
+    return None
+
+
+def remembered_card(options: list[nextcord.SelectOption], title: str | None) -> str | None:
+    """Keep the card checkmark from the menu, or from the embed title if Discord omitted it."""
+    picked = chosen_value(options)
+    if picked:
+        return picked
+    if not title:
+        return None
+    for opt in options:
+        if opt.value == title or opt.label == title:
+            return opt.value
+    return None
+
+
+def selected_from_interaction(interaction: nextcord.Interaction) -> str | None:
+    """Read the click payload. The registered view is shared, so do not use ``Select.values``."""
+    data = interaction.data or {}
+    values = data.get("values") or []
+    if not values:
+        return None
+    return str(values[0])
+
+
+def options_from_message(
+    message: nextcord.Message | None,
+    custom_id: str,
+) -> list[nextcord.SelectOption]:
+    """Read the options Discord already stored on this post."""
+    if message is None:
+        return []
+    for row in message.components or []:
+        for child in getattr(row, "children", []) or []:
+            if getattr(child, "custom_id", None) != custom_id:
+                continue
+            copied: list[nextcord.SelectOption] = []
+            for opt in getattr(child, "options", []) or []:
+                copied.append(
+                    nextcord.SelectOption(
+                        label=opt.label,
+                        value=opt.value,
+                        description=getattr(opt, "description", None),
+                        emoji=getattr(opt, "emoji", None),
+                        default=bool(getattr(opt, "default", False)),
+                    )
+                )
+            return copied
+    return []
+
+
+def lookup_view(
+    cog: TCG,
+    *,
+    card_options: list[nextcord.SelectOption] | None = None,
+    selected_card: str | None = None,
+    set_options: list[nextcord.SelectOption] | None = None,
+    selected_set: str | None = None,
+    page: int = 0,
+    page_count: int = 1,
+) -> TCGLookupView | None:
+    if not card_options and not set_options:
+        return None
+    return TCGLookupView(
+        cog,
+        card_options=card_options,
+        selected_card=selected_card,
+        set_options=set_options,
+        selected_set=selected_set,
+        page=page,
+        page_count=page_count,
+    )
+
+
+class TCGLookupView(nextcord.ui.View):
+    """One view for every card lookup. ``prevent_update`` keeps clicks on the registered instance."""
+
+    def __init__(
+        self,
+        cog: TCG,
+        *,
+        card_options: list[nextcord.SelectOption] | None = None,
+        selected_card: str | None = None,
+        set_options: list[nextcord.SelectOption] | None = None,
+        selected_set: str | None = None,
+        page: int = 0,
+        page_count: int = 1,
+    ):
+        super().__init__(timeout=None, prevent_update=False)
+        self.cog = cog
+        if card_options:
+            self.add_item(TCGCardSelect(card_options, selected=selected_card))
+        if set_options:
+            self.add_item(
+                TCGSetSelect(
+                    set_options,
+                    selected=selected_set,
+                    row=1 if card_options else 0,
+                )
+            )
+        if set_options and page_count > 1:
+            button_row = 2 if card_options else 1
+            self.add_item(
+                TCGSetPageButton(
+                    custom_id=TCG_SET_PREV_ID,
+                    label="Previous printings",
+                    row=button_row,
+                    disabled=page <= 0,
+                )
+            )
+            self.add_item(
+                TCGSetPageButton(
+                    custom_id=TCG_SET_NEXT_ID,
+                    label="Next printings",
+                    row=button_row,
+                    disabled=page >= page_count - 1,
+                )
+            )
+
+
+class TCGCardSelect(nextcord.ui.Select):
+    def __init__(self, options: list[nextcord.SelectOption], *, selected: str | None = None):
+        marked = with_selection(options, selected)
+        label = next((opt.label for opt in marked if opt.default), None)
+        super().__init__(
+            placeholder=(label or "Choose a card")[:150],
+            min_values=1,
+            max_values=1,
+            options=marked,
+            custom_id=TCG_CARD_SELECT_ID,
+            row=0,
+        )
+
+    async def callback(self, interaction: nextcord.Interaction):
+        card_name = selected_from_interaction(interaction)
+        if not card_name:
+            await interaction.response.send_message("Pick a card from the list.", ephemeral=True)
+            return
+        await self.view.cog.on_card_selected(interaction, card_name)
+
+
+class TCGSetSelect(nextcord.ui.Select):
+    def __init__(
+        self,
+        options: list[nextcord.SelectOption],
+        *,
+        selected: str | None = None,
+        row: int = 1,
+    ):
+        marked = with_selection(options, selected)
+        label = next((opt.label for opt in marked if opt.default), None)
+        super().__init__(
+            placeholder=(label or "Choose a set")[:150],
+            min_values=1,
+            max_values=1,
+            options=marked,
+            custom_id=TCG_SET_SELECT_ID,
+            row=row,
+        )
+
+    async def callback(self, interaction: nextcord.Interaction):
+        set_id = selected_from_interaction(interaction)
+        if not set_id:
+            await interaction.response.send_message("Pick a set from the list.", ephemeral=True)
+            return
+        await self.view.cog.on_set_selected(interaction, set_id)
+
+
+class TCGSetPageButton(nextcord.ui.Button):
+    def __init__(self, *, custom_id: str, label: str, row: int, disabled: bool = False):
+        super().__init__(
+            style=nextcord.ButtonStyle.secondary,
+            label=label,
+            custom_id=custom_id,
+            disabled=disabled,
+            row=row,
+        )
+
+    async def callback(self, interaction: nextcord.Interaction):
+        raw = str((interaction.data or {}).get("custom_id") or "")
+        delta = -1 if raw == TCG_SET_PREV_ID else 1
+        await self.view.cog.on_set_page(interaction, delta)
+
 
 class TCG(commands.Cog, CogLogMixin):
     def __init__(self, bot):
         self.bot = bot
         self._autolink_session: aiohttp.ClientSession | None = None
         self._mtg_autolink_last_sent_at: dict[int, float] = {}
+        self._persistent_views: list[nextcord.ui.View] = []
 
     async def cog_load(self) -> None:
         timeout = aiohttp.ClientTimeout(total=30)
@@ -44,6 +361,7 @@ class TCG(commands.Cog, CogLogMixin):
 
     def cog_unload(self) -> None:
         # Nextcord calls cog_unload() synchronously (does not await); schedule aiohttp shutdown.
+        self._remove_persistent_views()
         sess = self._autolink_session
         self._autolink_session = None
         if sess is not None and not sess.closed:
@@ -51,6 +369,30 @@ class TCG(commands.Cog, CogLogMixin):
                 self.bot.loop.create_task(sess.close())
             except RuntimeError:
                 pass
+
+    def register_persistent_views(self) -> None:
+        """Keep card and set menus working across restarts.
+
+        Discord only delivers a selection after a process restart when every
+        menu has a stable ``custom_id``, ``timeout`` is ``None``, and the view
+        is registered here. One view serves every lookup post. The chosen
+        values are read from that message, not stored on this instance.
+        """
+        self._remove_persistent_views()
+        view = TCGLookupView(
+            self,
+            card_options=[nextcord.SelectOption(label="Card", value="card")],
+            set_options=[nextcord.SelectOption(label="Set", value="set")],
+            page=0,
+            page_count=2,
+        )
+        self._persistent_views = [view]
+        self.bot.add_view(view)
+
+    def _remove_persistent_views(self) -> None:
+        for view in self._persistent_views:
+            self.bot.remove_view(view)
+        self._persistent_views = []
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message) -> None:
@@ -190,7 +532,9 @@ class TCG(commands.Cog, CogLogMixin):
         if len(suggestions) == 1:
             await self.display_card_details(interaction, suggestions[0])
         else:
-            await self.present_suggestions(interaction, suggestions)
+            options = card_select_options(suggestions)
+            view = lookup_view(self, card_options=options)
+            await interaction.followup.send("Select a card:", view=view)
 
     def get_card_suggestions(self, card_name):
         headers = {
@@ -205,34 +549,156 @@ class TCG(commands.Cog, CogLogMixin):
             return data.get("data", [])
         return None
 
-    async def present_suggestions(self, interaction, suggestions):
-        options = [nextcord.SelectOption(label=suggestion) for suggestion in suggestions]
-        select = nextcord.ui.Select(placeholder="Choose a card", options=options)
+    def _lookup_message(
+        self,
+        card: dict,
+        *,
+        printings: list[dict],
+        card_options: list[nextcord.SelectOption] | None = None,
+        selected_card: str | None = None,
+        selected_set: str | None = None,
+        page: int | None = None,
+    ) -> tuple[nextcord.Embed, TCGLookupView | None]:
+        """One embed plus the card menu, the set menu, and printing pages when needed."""
+        all_sets = set_select_options(printings)
+        if page is None:
+            page = page_containing(all_sets, selected_set)
+        page_options, page, pages = option_page(all_sets, page)
+        embed = self.create_card_embed(card)
+        embed.set_footer(
+            text=printing_footer(
+                str(card.get("set_name") or "Unknown set"),
+                page=page,
+                total=len(all_sets),
+            )
+        )
+        view = lookup_view(
+            self,
+            card_options=card_options,
+            selected_card=selected_card,
+            set_options=page_options or None,
+            selected_set=selected_set,
+            page=page,
+            page_count=pages,
+        )
+        return embed, view
 
-        async def select_callback(interaction):
-            await self.display_card_details(interaction, select.values[0])
-
-        select.callback = select_callback
-        view = nextcord.ui.View()
-        view.add_item(select)
-        await interaction.followup.send("Select a card:", view=view)
-
-    async def display_card_details(self, interaction, card_name):
+    def _build_card_message(
+        self,
+        card_name: str,
+        card_options: list[nextcord.SelectOption] | None = None,
+    ) -> tuple[nextcord.Embed, TCGLookupView | None] | None:
         card = self.get_card_data(card_name)
         if not card:
-            await interaction.followup.send(f"Could not retrieve details for '{card_name}'.")
-            return
+            return None
+        printings = self.get_card_sets(card) or []
+        return self._lookup_message(
+            card,
+            printings=printings,
+            card_options=card_options,
+            selected_card=card_name if card_options else None,
+            selected_set=card.get("id") if printings else None,
+        )
 
-        embed = self.create_card_embed(card)
+    async def _edit_lookup(
+        self,
+        interaction: nextcord.Interaction,
+        *,
+        embed: nextcord.Embed,
+        view: TCGLookupView | None,
+    ) -> None:
+        try:
+            await interaction.edit_original_message(content=None, embed=embed, view=view)
+        except nextcord.HTTPException as exc:
+            self.cog_print(f"TCG lookup menu update failed: {exc}")
+            await interaction.followup.send(
+                "Couldn't update that card. Try the lookup again.",
+                ephemeral=True,
+            )
 
+    async def display_card_details(self, interaction, card_name):
         if not interaction.response.is_done():
             await interaction.response.defer()
 
-        original_message = await interaction.followup.send(embed=embed)
+        built = self._build_card_message(card_name)
+        if built is None:
+            await interaction.followup.send(f"Could not retrieve details for '{card_name}'.")
+            return
 
-        sets = self.get_card_sets(card)
-        if sets:
-            await self.present_set_options(interaction, card, sets, original_message)
+        embed, view = built
+        await interaction.followup.send(embed=embed, view=view)
+
+    async def on_card_selected(self, interaction: nextcord.Interaction, card_name: str) -> None:
+        await interaction.response.defer()
+        card_options = options_from_message(interaction.message, TCG_CARD_SELECT_ID)
+        if not card_options:
+            card_options = card_select_options([card_name])
+        built = self._build_card_message(card_name, card_options=card_options)
+        if built is None:
+            await interaction.followup.send(
+                f"Could not retrieve details for '{card_name}'.",
+                ephemeral=True,
+            )
+            return
+        embed, view = built
+        await self._edit_lookup(interaction, embed=embed, view=view)
+
+    async def on_set_selected(self, interaction: nextcord.Interaction, set_id: str) -> None:
+        await interaction.response.defer()
+        card = self.get_card_data_by_set(set_id)
+        if not card:
+            await interaction.followup.send(
+                "Could not retrieve details for the selected set.",
+                ephemeral=True,
+            )
+            return
+
+        message = interaction.message
+        embeds = list(message.embeds) if message is not None and message.embeds else []
+        title = embeds[0].title if embeds else None
+        card_options = options_from_message(message, TCG_CARD_SELECT_ID)
+        catalog = self.get_card_data(card.get("name") or title or "") or card
+        printings = self.get_card_sets(catalog) or [card]
+        embed, view = self._lookup_message(
+            card,
+            printings=printings,
+            card_options=card_options or None,
+            selected_card=remembered_card(card_options, title or card.get("name")),
+            selected_set=set_id,
+        )
+        await self._edit_lookup(interaction, embed=embed, view=view)
+
+    async def on_set_page(self, interaction: nextcord.Interaction, delta: int) -> None:
+        await interaction.response.defer()
+        message = interaction.message
+        embeds = list(message.embeds) if message is not None and message.embeds else []
+        if not embeds or not embeds[0].title:
+            await interaction.followup.send("Couldn't tell which card this is.", ephemeral=True)
+            return
+
+        title = embeds[0].title
+        card_options = options_from_message(message, TCG_CARD_SELECT_ID)
+        set_options = options_from_message(message, TCG_SET_SELECT_ID)
+        selected_set = chosen_value(set_options)
+        page, _total = page_state_from_footer(footer_text(embeds[0]))
+        named = self.get_card_data(title)
+        if not named:
+            await interaction.followup.send(
+                "Couldn't refresh printings for that card.",
+                ephemeral=True,
+            )
+            return
+        printings = self.get_card_sets(named) or []
+        shown = self.get_card_data_by_set(selected_set) if selected_set else None
+        embed, view = self._lookup_message(
+            shown or named,
+            printings=printings,
+            card_options=card_options or None,
+            selected_card=remembered_card(card_options, title),
+            selected_set=selected_set,
+            page=page + delta,
+        )
+        await self._edit_lookup(interaction, embed=embed, view=view)
 
     def get_card_data(self, card_name):
         headers = {
@@ -247,38 +713,25 @@ class TCG(commands.Cog, CogLogMixin):
         return None
 
     def get_card_sets(self, card):
+        url = card.get("prints_search_uri") if isinstance(card, dict) else None
+        if not url:
+            return []
         headers = {
             "User-Agent": "DiscordBot (JJ3571, v0.1)",
             "Accept": "application/json",
         }
-        response = requests.get(card["prints_search_uri"], headers=headers)
-        if response.status_code == 200:
+        printings: list[dict] = []
+        for _ in range(6):
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                break
             data = response.json()
-            return data.get("data", [])
-        return None
-
-    async def present_set_options(self, interaction, card, sets, original_message):
-        options = [nextcord.SelectOption(label=s["set_name"], value=s["id"]) for s in sets]
-        select = nextcord.ui.Select(placeholder="Choose a set", options=options)
-
-        async def select_callback(interaction):
-            selected_set = next((s for s in sets if s["id"] == select.values[0]), None)
-            if selected_set:
-                await self.update_card_image(interaction, selected_set, original_message)
-
-        select.callback = select_callback
-        view = nextcord.ui.View()
-        view.add_item(select)
-        await original_message.edit(content="Select a set:", view=view, embed=None)
-
-    async def update_card_image(self, interaction, selected_set, original_message):
-        card = self.get_card_data_by_set(selected_set["id"])
-        if not card:
-            await interaction.followup.send("Could not retrieve details for the selected set.")
-            return
-
-        embed = self.create_card_embed(card)
-        await original_message.edit(embed=embed, view=None, content=None)
+            printings.extend(data.get("data") or [])
+            url = data.get("next_page") if data.get("has_more") else None
+            if not url:
+                break
+            time.sleep(0.1)
+        return printings
 
     def create_card_embed(self, card, *, art_as_thumbnail: bool = False):
         embed = nextcord.Embed(
@@ -343,5 +796,7 @@ class TCG(commands.Cog, CogLogMixin):
 
 
 def setup(bot):
-    bot.add_cog(TCG(bot))
+    cog = TCG(bot)
+    bot.add_cog(cog)
+    cog.register_persistent_views()
     boot_print("TCGCog has been added to the bot.")

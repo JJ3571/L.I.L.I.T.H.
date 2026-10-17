@@ -1039,7 +1039,7 @@ class TestRetaliateAndRepel:
         econ = MagicMock()
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.side_effect = lambda name: {
-            "PowerupCog": probe,
+            "ShopCog": probe,
             "Economy": econ,
         }.get(name)
         target = _make_member(300)
@@ -1070,7 +1070,7 @@ class TestRetaliateAndRepel:
         econ.get_user_balance = AsyncMock(return_value=10_000)
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.side_effect = lambda name: {
-            "PowerupCog": probe,
+            "ShopCog": probe,
             "Economy": econ,
         }.get(name)
         ix = _make_interaction(user_id=201)
@@ -1102,7 +1102,7 @@ class TestRetaliateAndRepel:
         probe = _RepelProbe(active=True)
         econ = MagicMock()
         econ.deduct_user_balance = AsyncMock()
-        waterboard_bot.get_cog.side_effect = lambda name: {"PowerupCog": probe, "Economy": econ}.get(name)
+        waterboard_bot.get_cog.side_effect = lambda name: {"ShopCog": probe, "Economy": econ}.get(name)
         ix = _make_interaction(user_id=201, in_voice=False)
         target = _make_member(300)
         with patch.object(waterboard_cog, "present_quicktime", new=AsyncMock(return_value=False)):
@@ -1128,7 +1128,7 @@ class TestRetaliateAndRepel:
         econ.get_user_balance = AsyncMock(return_value=10_000)
         econ.deduct_user_balance = AsyncMock()
         waterboard_bot.get_cog.side_effect = lambda name: {
-            "PowerupCog": probe,
+            "ShopCog": probe,
             "Economy": econ,
         }.get(name)
         ix = _make_interaction(user_id=201)
