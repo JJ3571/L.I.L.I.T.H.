@@ -108,12 +108,17 @@ Only one process may use a given bot token. Do not start the cloud bot while the
 
 The contributor stack is Docker Compose with a **locally built** bot image, bundled Postgres (`COMPOSE_PROFILES=bundled-db`, leave `DATABASE_URL` empty), and Lavalink.
 
-Cloud VMs do not ship Docker by default. The saved Cloud environment should:
+The saved Cloud environment already provides `uv`, Python 3.13, PostgreSQL 17, Docker CE with the Compose plugin (`fuse-overlayfs`, `iptables-legacy`), and the Doppler CLI. `install` runs `uv sync --group dev`. `start` starts host PostgreSQL and the Docker daemon. Do not install those again.
 
-1. Install `uv`, Python 3.13, Docker CE, the Compose plugin, and (if using Doppler) the Doppler CLI.
-2. `install`: `uv sync --group dev` (idempotent). Optionally start a disposable Postgres for pytest.
-3. `start`: `sudo service docker start` if the image includes Docker. Nested Docker needs `fuse-overlayfs` / `iptables-legacy`; see [Cursor: Running Docker](https://cursor.com/docs/cloud-agent/setup#running-docker).
-4. After code changes that need a live bot: follow **After implementing: offer a local Docker bring-up** (ask first; do not auto-start Compose).
+Host PostgreSQL listens on `127.0.0.1:5432` with role `postgres`, password `postgres`, and database `testdb` (the CI `DATABASE_URL` above). Bundled Compose Postgres publishes that same host port. Stop the host cluster before `./scripts/docker_compose_up.sh`:
+
+```bash
+sudo service postgresql stop
+```
+
+Start it again with `sudo service postgresql start` after Compose is down if pytest needs the CI database.
+
+After code changes that need a live bot: follow **After implementing: offer a local Docker bring-up** (ask first; do not auto-start Compose).
 
 Music/Lavalink is optional for most cog tasks. If voice is not in scope, still let Compose start when the human accepted bring-up; do not debug Lavalink unless the issue is about music.
 
